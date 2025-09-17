@@ -12,6 +12,16 @@ try:
 except ImportError:
     TELEGRAM_AVAILABLE = False
     print("Warning: python-telegram-bot not installed. Telegram features will be limited.")
+    
+    # Create dummy classes when telegram is not available
+    class Update:
+        pass
+    
+    class ContextTypes:
+        DEFAULT_TYPE = None
+    
+    class Bot:
+        pass
 
 import pandas as pd
 from trading_bot import TradingBot

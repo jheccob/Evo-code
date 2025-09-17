@@ -122,24 +122,51 @@ if st.sidebar.button("🔄 Atualizar Agora"):
 st.sidebar.markdown("---")
 st.sidebar.subheader("📱 Telegram Alerts")
 
+# Try to load config from file
+try:
+    from config.telegram_config import TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
+    has_config_file = True
+    default_token = TELEGRAM_BOT_TOKEN if TELEGRAM_BOT_TOKEN != "SEU_BOT_TOKEN_AQUI" else ""
+    default_chat_id = TELEGRAM_CHAT_ID if TELEGRAM_CHAT_ID != "SEU_CHAT_ID_AQUI" else ""
+except ImportError:
+    has_config_file = False
+    default_token = ""
+    default_chat_id = ""
+
+if has_config_file and default_token and default_chat_id:
+    st.sidebar.success("✅ Configuração carregada do arquivo config/")
+    use_file_config = st.sidebar.checkbox("🔧 Usar configuração do arquivo", value=True)
+else:
+    use_file_config = False
+    if has_config_file:
+        st.sidebar.info("💡 Configure o arquivo config/telegram_config.py")
+
 telegram_enabled = st.sidebar.checkbox(
     "🔔 Ativar notificações Telegram", 
     value=st.session_state.telegram_notifications
 )
 
 if telegram_enabled:
-    telegram_token = st.sidebar.text_input(
-        "🤖 Bot Token", 
-        type="password",
-        placeholder="123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11",
-        help="Obtenha um token criando um bot via @BotFather"
-    )
-    
-    telegram_chat_id = st.sidebar.text_input(
-        "💬 Chat ID",
-        placeholder="-1001234567890 ou 123456789",
-        help="ID do chat onde receber alertas"
-    )
+    if use_file_config and default_token and default_chat_id:
+        telegram_token = default_token
+        telegram_chat_id = default_chat_id
+        st.sidebar.info(f"🤖 Token: {telegram_token[:10]}...")
+        st.sidebar.info(f"💬 Chat ID: {telegram_chat_id}")
+    else:
+        telegram_token = st.sidebar.text_input(
+            "🤖 Bot Token", 
+            type="password",
+            placeholder="123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11",
+            help="Obtenha um token criando um bot via @BotFather",
+            value=default_token
+        )
+        
+        telegram_chat_id = st.sidebar.text_input(
+            "💬 Chat ID",
+            placeholder="-1001234567890 ou 123456789",
+            help="ID do chat onde receber alertas",
+            value=default_chat_id
+        )
     
     if telegram_token and telegram_chat_id:
         if st.sidebar.button("✅ Configurar Telegram"):

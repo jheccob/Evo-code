@@ -7,7 +7,7 @@ from indicators import TechnicalIndicators
 
 class TradingBot:
     def __init__(self):
-        self.exchange = ccxt.coinbasepro({
+        self.exchange = ccxt.coinbase({
             'enableRateLimit': True,
             'sandbox': False,
             'rateLimit': 1000,
