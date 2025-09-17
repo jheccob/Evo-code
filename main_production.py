@@ -1,4 +1,3 @@
-
 #!/usr/bin/env python3
 """
 Trading Bot - Versão Profissional para Produção
@@ -33,6 +32,16 @@ from services.billing_service import BillingService
 from monitoring.prometheus_metrics import TradingBotMetrics
 from config.production_config import ProductionConfig
 
+# Mock classes if telegram not available
+try:
+    from telegram import Update
+    from telegram.ext import Application
+except ImportError:
+    class Update:
+        pass
+    class Application:
+        pass
+
 # Variáveis globais
 telegram_service = None
 billing_service = None
@@ -42,24 +51,24 @@ metrics = None
 async def lifespan(app: FastAPI):
     """Gerenciamento do ciclo de vida da aplicação"""
     global telegram_service, billing_service, metrics
-    
+
     logger.info("🚀 Iniciando Trading Bot Professional")
-    
+
     try:
         # Inicializar serviços
         telegram_service = ProfessionalTelegramService()
         billing_service = BillingService()
         metrics = TradingBotMetrics()
-        
+
         # Inicializar Telegram service
         success = await telegram_service.initialize()
         if not success:
             raise Exception("Falha ao inicializar serviço Telegram")
-        
+
         logger.info("✅ Todos os serviços inicializados com sucesso")
-        
+
         yield
-        
+
     except Exception as e:
         logger.error(f"❌ Erro na inicialização: {e}")
         raise
@@ -90,16 +99,16 @@ async def telegram_webhook(request: Request):
         secret_token = request.headers.get("X-Telegram-Bot-Api-Secret-Token")
         if secret_token != ProductionConfig.TELEGRAM_SECRET_TOKEN:
             raise HTTPException(status_code=403, detail="Invalid secret token")
-        
+
         # Processar update
         body = await request.body()
         update = Update.de_json(body.decode('utf-8'), telegram_service.bot)
-        
+
         # Processar update de forma assíncrona
         asyncio.create_task(telegram_service.application.process_update(update))
-        
+
         return JSONResponse({"status": "ok"})
-        
+
     except Exception as e:
         logger.error(f"Erro no webhook: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
@@ -110,14 +119,14 @@ async def stripe_webhook(request: Request):
     try:
         payload = await request.body()
         signature = request.headers.get("Stripe-Signature")
-        
+
         success = await billing_service.handle_webhook(payload, signature)
-        
+
         if success:
             return JSONResponse({"status": "ok"})
         else:
             raise HTTPException(status_code=400, detail="Invalid webhook")
-            
+
     except Exception as e:
         logger.error(f"Erro no webhook Stripe: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
@@ -126,7 +135,8 @@ async def stripe_webhook(request: Request):
 async def get_metrics():
     """Endpoint de métricas Prometheus"""
     from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
-    
+    from fastapi.responses import Response
+
     return Response(
         generate_latest(metrics.registry),
         media_type=CONTENT_TYPE_LATEST
@@ -135,11 +145,11 @@ async def get_metrics():
 async def signal_handler(signum, frame):
     """Handler para sinais do sistema"""
     logger.info(f"Recebido sinal {signum}, encerrando...")
-    
+
     # Cleanup
     if telegram_service:
         await telegram_service.application.stop()
-    
+
     sys.exit(0)
 
 async def main():
@@ -148,13 +158,13 @@ async def main():
         # Configurar handlers de sinal
         signal.signal(signal.SIGINT, signal_handler)
         signal.signal(signal.SIGTERM, signal_handler)
-        
+
         # Validar configuração
         ProductionConfig.validate_config()
-        
+
         logger.info("🎯 Trading Bot Professional - Modo Produção")
         logger.info("📊 Configurações validadas com sucesso")
-        
+
         # Iniciar servidor FastAPI
         config = uvicorn.Config(
             app=app,
@@ -163,10 +173,10 @@ async def main():
             log_level="info",
             access_log=True
         )
-        
+
         server = uvicorn.Server(config)
         await server.serve()
-        
+
     except Exception as e:
         logger.error(f"❌ Erro fatal: {e}")
         sys.exit(1)

@@ -4,10 +4,15 @@ version = "0.1.0"
 description = "Add your description here"
 requires-python = ">=3.11"
 dependencies = [
+    "aioredis>=2.0.1",
     "ccxt>=4.5.5",
+    "fastapi>=0.116.2",
     "numpy>=2.3.3",
     "pandas>=2.3.2",
     "plotly>=6.3.0",
+    "prometheus-client>=0.22.1",
     "python-telegram-bot>=22.4",
+    "sqlalchemy>=2.0.43",
     "streamlit>=1.49.1",
+    "uvicorn>=0.35.0",
 ]
