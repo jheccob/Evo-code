@@ -10,7 +10,21 @@ import asyncio
 import threading
 from trading_bot import TradingBot
 from indicators import TechnicalIndicators
-from telegram_bot import TelegramNotifier
+try:
+    from telegram_bot import TelegramNotifier
+    TELEGRAM_AVAILABLE = True
+except ImportError:
+    TELEGRAM_AVAILABLE = False
+    # Create a dummy class for compatibility
+    class TelegramNotifier:
+        def __init__(self):
+            self.enabled = False
+        def configure(self, *args): return False
+        def is_configured(self): return False
+        async def test_connection(self): return False, "Not available"
+        async def send_signal_alert(self, *args): return False, "Not available"
+        async def send_custom_message(self, *args): return False, "Not available"
+
 from backtest import BacktestEngine
 
 # Configure page

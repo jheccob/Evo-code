@@ -4,9 +4,15 @@ import asyncio
 import logging
 import re
 from datetime import datetime
-from telegram import Bot, Update
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
-from telegram.error import TelegramError
+try:
+    from telegram import Bot, Update
+    from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+    from telegram.error import TelegramError
+    TELEGRAM_AVAILABLE = True
+except ImportError:
+    TELEGRAM_AVAILABLE = False
+    print("Warning: python-telegram-bot not installed. Telegram features will be limited.")
+
 import pandas as pd
 from trading_bot import TradingBot
 from user_manager import UserManager
@@ -22,12 +28,16 @@ class TelegramTradingBot:
         self.bot_token = None
         self.bot = None
         self.application = None
-        self.enabled = False
+        self.enabled = False and TELEGRAM_AVAILABLE
         self.trading_bot = TradingBot()
         self.user_manager = UserManager()
         
     def configure(self, bot_token):
         """Configure Telegram bot"""
+        if not TELEGRAM_AVAILABLE:
+            logger.error("python-telegram-bot not available")
+            return False
+        
         try:
             self.bot_token = bot_token
             self.bot = Bot(token=bot_token)
