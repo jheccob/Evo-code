@@ -11,6 +11,7 @@ import threading
 from trading_bot import TradingBot
 from indicators import TechnicalIndicators
 from telegram_bot import TelegramNotifier
+from backtest import BacktestEngine
 
 # Configure page
 st.set_page_config(
@@ -41,6 +42,12 @@ if 'current_data' not in st.session_state:
 
 if 'telegram_notifications' not in st.session_state:
     st.session_state.telegram_notifications = False
+
+if 'backtest_engine' not in st.session_state:
+    st.session_state.backtest_engine = BacktestEngine()
+
+if 'backtest_results' not in st.session_state:
+    st.session_state.backtest_results = None
 
 # Sidebar configuration
 st.sidebar.title("🔧 Configurações")
@@ -170,7 +177,11 @@ st.session_state.trading_bot.update_config(
 
 # Main dashboard
 st.title("📈 Trading Signals Dashboard")
-st.markdown("---")
+
+# Create tabs for different sections
+tab1, tab2, tab3 = st.tabs(["📊 Análise em Tempo Real", "🔬 Backtesting", "⚙️ Exportar Dados"])
+
+with tab1:
 
 # Multi-Symbol Overview (if enabled) - with caching and performance optimization
 if enable_multi_symbol and len(selected_symbols) > 1:
@@ -699,16 +710,193 @@ if st.session_state.signals_history:
 else:
     st.info("Nenhum sinal gerado ainda. Os sinais aparecerão aqui quando as condições forem atendidas.")
 
-# Auto-refresh mechanism - throttled for performance  
-if auto_refresh:
-    # Only refresh every 30 seconds to reduce API calls
-    if st.session_state.last_update is None or (datetime.now() - st.session_state.last_update).total_seconds() > 30:
-        time.sleep(1)
-        st.rerun()
-    else:
-        time.sleep(1)
-        # Just rerun UI without data refresh
-        st.rerun()
+    # Auto-refresh mechanism - throttled for performance  
+    if auto_refresh:
+        # Only refresh every 30 seconds to reduce API calls
+        if st.session_state.last_update is None or (datetime.now() - st.session_state.last_update).total_seconds() > 30:
+            time.sleep(1)
+            st.rerun()
+        else:
+            time.sleep(1)
+            # Just rerun UI without data refresh
+            st.rerun()
+
+# Backtesting Tab
+with tab2:
+    st.subheader("🔬 Sistema de Backtesting")
+    st.markdown("Teste suas estratégias com dados históricos")
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        bt_symbol = st.selectbox(
+            "Par para Backtest:",
+            ["XLM/USDT", "BTC/USDT", "ETH/USDT", "ADA/USDT", "DOT/USDT", "MATIC/USDT"]
+        )
+        
+        bt_timeframe = st.selectbox(
+            "Timeframe:",
+            ["5m", "15m", "30m", "1h", "4h"],
+            index=0
+        )
+        
+        # Date selection
+        from datetime import date
+        end_date = st.date_input("Data Final", value=date.today())
+        start_date = st.date_input("Data Inicial", value=date.today() - timedelta(days=30))
+    
+    with col2:
+        bt_initial_balance = st.number_input("Saldo Inicial ($)", min_value=100, max_value=100000, value=10000)
+        bt_rsi_period = st.slider("RSI Período", 5, 50, rsi_period)
+        bt_rsi_min = st.slider("RSI Mín (Compra)", 10, 40, rsi_min)
+        bt_rsi_max = st.slider("RSI Máx (Venda)", 60, 90, rsi_max)
+    
+    if st.button("🚀 Executar Backtest"):
+        if start_date >= end_date:
+            st.error("❌ Data inicial deve ser anterior à data final")
+        else:
+            with st.spinner("Executando backtest..."):
+                try:
+                    # Convert dates to datetime
+                    start_dt = datetime.combine(start_date, datetime.min.time())
+                    end_dt = datetime.combine(end_date, datetime.max.time())
+                    
+                    results = st.session_state.backtest_engine.run_backtest(
+                        symbol=bt_symbol,
+                        timeframe=bt_timeframe,
+                        start_date=start_dt,
+                        end_date=end_dt,
+                        initial_balance=bt_initial_balance,
+                        rsi_period=bt_rsi_period,
+                        rsi_min=bt_rsi_min,
+                        rsi_max=bt_rsi_max
+                    )
+                    st.session_state.backtest_results = results
+                    st.success("✅ Backtest concluído!")
+                    
+                except Exception as e:
+                    st.error(f"❌ Erro no backtest: {str(e)}")
+    
+    # Display results if available
+    if st.session_state.backtest_results:
+        results = st.session_state.backtest_results
+        stats = results['stats']
+        
+        st.markdown("---")
+        st.subheader("📊 Resultados do Backtest")
+        
+        # Display key metrics
+        col1, col2, col3, col4 = st.columns(4)
+        
+        with col1:
+            st.metric("Retorno Total", f"{stats['total_return_pct']:.2f}%")
+        with col2:
+            st.metric("Total de Trades", stats['total_trades'])
+        with col3:
+            st.metric("Taxa de Acerto", f"{stats['win_rate']:.1f}%")
+        with col4:
+            st.metric("Max Drawdown", f"{stats['max_drawdown']:.2f}%")
+        
+        # Detailed stats
+        st.subheader("📈 Estatísticas Detalhadas")
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.info(f"""
+            **Saldo Inicial:** ${stats['initial_balance']:,.2f}  
+            **Saldo Final:** ${stats['final_balance']:,.2f}  
+            **Retorno Total:** {stats['total_return_pct']:.2f}%  
+            **Sharpe Ratio:** {stats['sharpe_ratio']:.2f}  
+            """)
+        
+        with col2:
+            st.info(f"""
+            **Trades Vencedores:** {stats['winning_trades']}  
+            **Trades Perdedores:** {stats['losing_trades']}  
+            **Lucro Médio:** {stats['avg_profit']:.2f}%  
+            **Perda Média:** {stats['avg_loss']:.2f}%  
+            """)
+        
+        # Trade history
+        if results['trades']:
+            st.subheader("📋 Histórico de Trades")
+            trade_df = st.session_state.backtest_engine.get_trade_summary_df()
+            if not trade_df.empty:
+                trade_df_display = trade_df.copy()
+                trade_df_display['timestamp'] = trade_df_display['timestamp'].dt.strftime('%Y-%m-%d %H:%M')
+                trade_df_display['entry_price'] = trade_df_display['entry_price'].apply(lambda x: f"${x:.6f}")
+                trade_df_display['price'] = trade_df_display['price'].apply(lambda x: f"${x:.6f}")
+                trade_df_display['profit_loss_pct'] = trade_df_display['profit_loss_pct'].apply(lambda x: f"{x:.2f}%")
+                trade_df_display['profit_loss'] = trade_df_display['profit_loss'].apply(lambda x: f"${x:.2f}")
+                
+                trade_df_display.columns = ['Data/Hora', 'Preço Entrada', 'Preço Saída', 'Retorno %', 'Lucro/Perda $', 'Sinal']
+                
+                st.dataframe(trade_df_display, use_container_width=True, hide_index=True)
+
+# Export Data Tab
+with tab3:
+    st.subheader("⚙️ Exportar Dados")
+    st.markdown("Exporte dados e sinais para análise externa")
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.markdown("### 📊 Dados Atuais")
+        if st.session_state.current_data is not None:
+            if st.button("💾 Exportar Dados OHLCV (CSV)"):
+                csv_data = st.session_state.current_data.to_csv()
+                st.download_button(
+                    label="⬇️ Download CSV",
+                    data=csv_data,
+                    file_name=f"{symbol}_{timeframe}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                    mime="text/csv"
+                )
+        else:
+            st.info("Nenhum dado disponível para exportar")
+    
+    with col2:
+        st.markdown("### 🚨 Histórico de Sinais")
+        if st.session_state.signals_history:
+            if st.button("💾 Exportar Sinais (CSV)"):
+                signals_df = pd.DataFrame(st.session_state.signals_history)
+                csv_data = signals_df.to_csv(index=False)
+                st.download_button(
+                    label="⬇️ Download CSV",
+                    data=csv_data,
+                    file_name=f"sinais_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                    mime="text/csv"
+                )
+        else:
+            st.info("Nenhum sinal disponível para exportar")
+    
+    # Backtest results export
+    if st.session_state.backtest_results:
+        st.markdown("---")
+        st.markdown("### 🔬 Resultados de Backtest")
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            if st.button("💾 Exportar Trades do Backtest"):
+                trade_df = st.session_state.backtest_engine.get_trade_summary_df()
+                if not trade_df.empty:
+                    csv_data = trade_df.to_csv(index=False)
+                    st.download_button(
+                        label="⬇️ Download Trades CSV",
+                        data=csv_data,
+                        file_name=f"backtest_trades_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                        mime="text/csv"
+                    )
+        
+        with col2:
+            if st.button("💾 Exportar Portfolio do Backtest"):
+                portfolio_df = pd.DataFrame(st.session_state.backtest_results['portfolio_values'])
+                csv_data = portfolio_df.to_csv(index=False)
+                st.download_button(
+                    label="⬇️ Download Portfolio CSV",
+                    data=csv_data,
+                    file_name=f"backtest_portfolio_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                    mime="text/csv"
+                )
 
 # Footer
 st.markdown("---")
