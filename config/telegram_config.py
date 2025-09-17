@@ -3,8 +3,8 @@ Configuração do Telegram Bot
 """
 
 # Configure aqui suas credenciais do Telegram
-TELEGRAM_BOT_TOKEN = "SEU_BOT_TOKEN_AQUI"  # Token do @BotFather
-TELEGRAM_CHAT_ID = "SEU_CHAT_ID_AQUI"    # ID do chat para receber alertas
+TELEGRAM_BOT_TOKEN = "8454268048:AAFSiHU963ch55L5EhLSrpwdRtKBtPSO_0A"  # Token do @BotFather
+TELEGRAM_CHAT_ID = "2081890738"    # ID do chat para receber alertas
 
 # INSTRUÇÕES:
 # 1. Obtenha o token do bot:
