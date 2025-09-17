@@ -58,7 +58,7 @@ class TechnicalIndicators:
         Returns:
             Series with EMA values
         """
-        return prices.ewm(span=period).mean()
+        return prices.ewm(span=period, adjust=False).mean()
     
     def calculate_bollinger_bands(self, prices, period=20, std_dev=2):
         """
