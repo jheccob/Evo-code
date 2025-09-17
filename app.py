@@ -10,6 +10,7 @@ import asyncio
 import threading
 from trading_bot import TradingBot
 from indicators import TechnicalIndicators
+from telegram_bot import TelegramNotifier
 
 # Configure page
 st.set_page_config(
@@ -23,6 +24,9 @@ st.set_page_config(
 if 'trading_bot' not in st.session_state:
     st.session_state.trading_bot = TradingBot()
 
+if 'telegram_bot' not in st.session_state:
+    st.session_state.telegram_bot = TelegramNotifier()
+
 if 'signals_history' not in st.session_state:
     st.session_state.signals_history = []
 
@@ -35,15 +39,41 @@ if 'auto_refresh' not in st.session_state:
 if 'current_data' not in st.session_state:
     st.session_state.current_data = None
 
+if 'telegram_notifications' not in st.session_state:
+    st.session_state.telegram_notifications = False
+
 # Sidebar configuration
 st.sidebar.title("🔧 Configurações")
 
-# Trading pair selection
-symbol = st.sidebar.selectbox(
-    "Par de Trading",
-    ["XLM/USDT", "BTC/USDT", "ETH/USDT", "ADA/USDT", "DOT/USDT", "MATIC/USDT"],
-    index=0
-)
+# Multi-symbol monitoring
+st.sidebar.subheader("📊 Pares de Moedas")
+enable_multi_symbol = st.sidebar.checkbox("🔀 Monitoramento Múltiplo", value=False)
+
+if enable_multi_symbol:
+    # Multi-symbol selection
+    available_pairs = ["XLM/USDT", "BTC/USDT", "ETH/USDT", "ADA/USDT", "DOT/USDT", "MATIC/USDT", 
+                       "LINK/USDT", "UNI/USDT", "SOL/USDT", "AVAX/USDT"]
+    selected_symbols = st.sidebar.multiselect(
+        "Selecionar pares para monitorar:",
+        available_pairs,
+        default=["XLM/USDT", "BTC/USDT", "ETH/USDT"]
+    )
+    
+    if not selected_symbols:
+        st.sidebar.warning("⚠️ Selecione pelo menos um par")
+        selected_symbols = ["XLM/USDT"]
+    
+    # For multi-symbol mode, use the first selected as primary
+    symbol = selected_symbols[0] if selected_symbols else "XLM/USDT"
+    
+else:
+    # Single symbol selection
+    symbol = st.sidebar.selectbox(
+        "Par de Trading",
+        ["XLM/USDT", "BTC/USDT", "ETH/USDT", "ADA/USDT", "DOT/USDT", "MATIC/USDT"],
+        index=0
+    )
+    selected_symbols = [symbol]
 
 # Timeframe selection
 timeframe = st.sidebar.selectbox(
@@ -67,6 +97,68 @@ if st.sidebar.button("🔄 Atualizar Agora"):
     st.session_state.last_update = None
     st.rerun()
 
+# Telegram Configuration Section
+st.sidebar.markdown("---")
+st.sidebar.subheader("📱 Telegram Alerts")
+
+telegram_enabled = st.sidebar.checkbox(
+    "🔔 Ativar notificações Telegram", 
+    value=st.session_state.telegram_notifications
+)
+
+if telegram_enabled:
+    telegram_token = st.sidebar.text_input(
+        "🤖 Bot Token", 
+        type="password",
+        placeholder="123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11",
+        help="Obtenha um token criando um bot via @BotFather"
+    )
+    
+    telegram_chat_id = st.sidebar.text_input(
+        "💬 Chat ID",
+        placeholder="-1001234567890 ou 123456789",
+        help="ID do chat onde receber alertas"
+    )
+    
+    if telegram_token and telegram_chat_id:
+        if st.sidebar.button("✅ Configurar Telegram"):
+            success = st.session_state.telegram_bot.configure(telegram_token, telegram_chat_id)
+            if success:
+                st.session_state.telegram_notifications = True
+                # Test connection
+                try:
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                    success, message = loop.run_until_complete(
+                        st.session_state.telegram_bot.test_connection()
+                    )
+                    if success:
+                        st.sidebar.success("✅ Telegram configurado com sucesso!")
+                    else:
+                        st.sidebar.error(f"❌ Erro: {message}")
+                except Exception as e:
+                    st.sidebar.error(f"❌ Erro ao testar conexão: {str(e)}")
+            else:
+                st.sidebar.error("❌ Erro na configuração do Telegram")
+    
+    if st.session_state.telegram_bot.is_configured():
+        st.sidebar.success("🟢 Telegram ativo")
+        if st.sidebar.button("📤 Teste de Mensagem"):
+            try:
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                success, message = loop.run_until_complete(
+                    st.session_state.telegram_bot.send_custom_message("📊 Teste do bot de trading!")
+                )
+                if success:
+                    st.sidebar.success("✅ Mensagem enviada!")
+                else:
+                    st.sidebar.error(f"❌ {message}")
+            except Exception as e:
+                st.sidebar.error(f"❌ Erro: {str(e)}")
+else:
+    st.session_state.telegram_notifications = False
+
 # Update bot configuration
 st.session_state.trading_bot.update_config(
     symbol=symbol,
@@ -80,7 +172,142 @@ st.session_state.trading_bot.update_config(
 st.title("📈 Trading Signals Dashboard")
 st.markdown("---")
 
-# Status indicators
+# Multi-Symbol Overview (if enabled) - with caching and performance optimization
+if enable_multi_symbol and len(selected_symbols) > 1:
+    st.subheader("🔀 Overview - Múltiplos Pares")
+    
+    # Initialize multi-symbol last signals tracking
+    if 'multi_symbol_signals' not in st.session_state:
+        st.session_state.multi_symbol_signals = {}
+    
+    # Create overview table for all selected symbols
+    overview_data = []
+    current_time = datetime.now()
+    
+    for sym in selected_symbols:
+        try:
+            # Check if we have cached data for this symbol that's less than 60 seconds old
+            cache_key = f"{sym}_{timeframe}"
+            should_refresh = True
+            
+            if cache_key in st.session_state.multi_symbol_data:
+                cached_data = st.session_state.multi_symbol_data[cache_key]
+                if cached_data['last_update'] and (current_time - cached_data['last_update']).total_seconds() < 60:
+                    should_refresh = False
+                    sym_data = cached_data['data']
+                    signal = cached_data['signal']
+                    last_candle = cached_data['last_candle']
+            
+            if should_refresh:
+                # Use shared trading bot instance
+                st.session_state.trading_bot.update_config(symbol=sym, timeframe=timeframe, rsi_period=rsi_period, rsi_min=rsi_min, rsi_max=rsi_max)
+                sym_data = st.session_state.trading_bot.get_market_data(limit=200)
+                
+                if sym_data is not None and not sym_data.empty:
+                    last_candle = sym_data.iloc[-1]
+                    signal = st.session_state.trading_bot.check_signal(sym_data)
+                    
+                    # Cache the data
+                    st.session_state.multi_symbol_data[cache_key] = {
+                        'data': sym_data,
+                        'signal': signal,
+                        'last_candle': last_candle,
+                        'last_update': current_time
+                    }
+                else:
+                    continue
+            
+            # Check for new signals to send alerts
+            if (signal not in ["NEUTRO"] and 
+                st.session_state.telegram_notifications and 
+                st.session_state.telegram_bot.is_configured()):
+                
+                # Check if this is a new signal for this symbol
+                last_signal_key = f"{sym}_last_signal"
+                if (last_signal_key not in st.session_state.multi_symbol_signals or 
+                    st.session_state.multi_symbol_signals[last_signal_key]['signal'] != signal or
+                    (current_time - st.session_state.multi_symbol_signals[last_signal_key]['timestamp']).total_seconds() > 300):
+                    
+                    # Send alert for this symbol
+                    try:
+                        loop = asyncio.new_event_loop()
+                        asyncio.set_event_loop(loop)
+                        loop.run_until_complete(
+                            st.session_state.telegram_bot.send_signal_alert(
+                                symbol=sym,
+                                signal=signal,
+                                price=last_candle['close'],
+                                rsi=last_candle['rsi'],
+                                macd=last_candle['macd'],
+                                macd_signal=last_candle['macd_signal']
+                            )
+                        )
+                        
+                        # Update last signal tracking
+                        st.session_state.multi_symbol_signals[last_signal_key] = {
+                            'signal': signal,
+                            'timestamp': current_time
+                        }
+                    except Exception as e:
+                        pass  # Silent fail for overview performance
+                
+                # Add to signals history
+                st.session_state.signals_history.append({
+                    'timestamp': current_time,
+                    'symbol': sym,
+                    'price': last_candle['close'],
+                    'rsi': last_candle['rsi'],
+                    'macd': last_candle['macd'],
+                    'macd_signal': last_candle['macd_signal'],
+                    'signal': signal
+                })
+            
+            overview_data.append({
+                'Par': sym,
+                'Preço': f"${last_candle['close']:.6f}",
+                'RSI': f"{last_candle['rsi']:.2f}",
+                'MACD': f"{last_candle['macd']:.4f}",
+                'Sinal': signal,
+                'Variação': f"{((last_candle['close'] - last_candle['open']) / last_candle['open'] * 100):.2f}%"
+            })
+                
+        except Exception as e:
+            overview_data.append({
+                'Par': sym,
+                'Preço': 'Erro',
+                'RSI': 'N/A',
+                'MACD': 'N/A', 
+                'Sinal': 'ERRO',
+                'Variação': 'N/A'
+            })
+    
+    # Trim signals history to last 50 across all symbols
+    if len(st.session_state.signals_history) > 50:
+        st.session_state.signals_history = st.session_state.signals_history[-50:]
+    
+    if overview_data:
+        overview_df = pd.DataFrame(overview_data)
+        
+        # Style the dataframe
+        def style_signals(val):
+            if val == 'COMPRA':
+                return 'background-color: #90EE90'
+            elif val == 'VENDA':
+                return 'background-color: #FFB6C1'
+            elif val == 'COMPRA_FRACA':
+                return 'background-color: #FFFF99'
+            elif val == 'VENDA_FRACA':
+                return 'background-color: #FFD4A3'
+            return ''
+        
+        styled_df = overview_df.style.applymap(style_signals, subset=['Sinal'])
+        st.dataframe(styled_df, use_container_width=True, hide_index=True)
+    
+    st.markdown("---")
+    
+    st.subheader(f"📈 Análise Detalhada - {symbol}")
+
+# Status indicators for main symbol
 col1, col2, col3, col4, col5 = st.columns(5)
 
 # Check if we need to update data
@@ -99,6 +326,10 @@ if should_update:
     except Exception as e:
         st.error(f"Erro ao carregar dados: {str(e)}")
 
+# Store multi-symbol data
+if 'multi_symbol_data' not in st.session_state:
+    st.session_state.multi_symbol_data = {}
+
 if st.session_state.current_data is not None:
     data = st.session_state.current_data
     last_candle = data.iloc[-1]
@@ -106,17 +337,45 @@ if st.session_state.current_data is not None:
     # Calculate signal
     signal = st.session_state.trading_bot.check_signal(data)
     
+    # Store data for multi-symbol monitoring
+    st.session_state.multi_symbol_data[symbol] = {
+        'data': data,
+        'signal': signal,
+        'last_candle': last_candle,
+        'last_update': st.session_state.last_update
+    }
+    
     # Add signal to history if it's a new signal
     if signal not in ["NEUTRO"] and (
         not st.session_state.signals_history or 
         st.session_state.signals_history[-1]['signal'] != signal or
         st.session_state.signals_history[-1]['timestamp'] < datetime.now() - timedelta(minutes=5)
     ):
+        # Send Telegram notification if enabled
+        if st.session_state.telegram_notifications and st.session_state.telegram_bot.is_configured():
+            try:
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                loop.run_until_complete(
+                    st.session_state.telegram_bot.send_signal_alert(
+                        symbol=symbol,
+                        signal=signal,
+                        price=last_candle['close'],
+                        rsi=last_candle['rsi'],
+                        macd=last_candle['macd'],
+                        macd_signal=last_candle['macd_signal']
+                    )
+                )
+            except Exception as e:
+                st.sidebar.warning(f"⚠️ Erro ao enviar alerta: {str(e)}")
+        
         st.session_state.signals_history.append({
             'timestamp': datetime.now(),
             'symbol': symbol,
             'price': last_candle['close'],
             'rsi': last_candle['rsi'],
+            'macd': last_candle['macd'],
+            'macd_signal': last_candle['macd_signal'],
             'signal': signal
         })
         # Keep only last 50 signals
@@ -235,12 +494,12 @@ if st.session_state.current_data is not None:
     buy_signals = data[data['signal'].isin(['COMPRA', 'COMPRA_FRACA'])]
     sell_signals = data[data['signal'].isin(['VENDA', 'VENDA_FRACA'])]
 
-    if not buy_signals.empty:
+    if len(buy_signals) > 0:
         # Strong buy signals (larger markers)
         strong_buys = buy_signals[buy_signals['signal'] == 'COMPRA']
         weak_buys = buy_signals[buy_signals['signal'] == 'COMPRA_FRACA']
         
-        if not strong_buys.empty:
+        if len(strong_buys) > 0:
             fig.add_trace(
                 go.Scatter(
                     x=strong_buys.index,
@@ -253,7 +512,7 @@ if st.session_state.current_data is not None:
                 row=1, col=1
             )
         
-        if not weak_buys.empty:
+        if len(weak_buys) > 0:
             fig.add_trace(
                 go.Scatter(
                     x=weak_buys.index,
@@ -266,12 +525,12 @@ if st.session_state.current_data is not None:
                 row=1, col=1
             )
 
-    if not sell_signals.empty:
+    if len(sell_signals) > 0:
         # Strong sell signals (larger markers)
         strong_sells = sell_signals[sell_signals['signal'] == 'VENDA']
         weak_sells = sell_signals[sell_signals['signal'] == 'VENDA_FRACA']
         
-        if not strong_sells.empty:
+        if len(strong_sells) > 0:
             fig.add_trace(
                 go.Scatter(
                     x=strong_sells.index,
@@ -284,7 +543,7 @@ if st.session_state.current_data is not None:
                 row=1, col=1
             )
         
-        if not weak_sells.empty:
+        if len(weak_sells) > 0:
             fig.add_trace(
                 go.Scatter(
                     x=weak_sells.index,
@@ -331,7 +590,11 @@ if st.session_state.current_data is not None:
     )
     
     # Add MACD zero line
-    fig.add_hline(y=0, line_dash="dot", line_color="gray", row=3)
+    fig.add_shape(
+        type="line", xref="x3", yref="y3",
+        x0=0, x1=1, y0=0, y1=0,
+        line=dict(color="gray", width=1, dash="dot")
+    )
 
     # Update layout
     fig.update_layout(
@@ -411,8 +674,17 @@ if st.session_state.signals_history:
     display_df['price'] = display_df['price'].apply(lambda x: f"${x:.6f}")
     display_df['rsi'] = display_df['rsi'].apply(lambda x: f"{x:.2f}")
     
+    # Add MACD columns if they exist
+    if 'macd' in display_df.columns:
+        display_df['macd'] = display_df['macd'].apply(lambda x: f"{x:.4f}" if pd.notna(x) else "N/A")
+    if 'macd_signal' in display_df.columns:
+        display_df['macd_signal'] = display_df['macd_signal'].apply(lambda x: f"{x:.4f}" if pd.notna(x) else "N/A")
+        
     # Rename columns
-    display_df.columns = ['Data/Hora', 'Par', 'Preço', 'RSI', 'Sinal']
+    if 'macd' in display_df.columns and 'macd_signal' in display_df.columns:
+        display_df.columns = ['Data/Hora', 'Par', 'Preço', 'RSI', 'MACD', 'MACD Signal', 'Sinal']
+    else:
+        display_df.columns = ['Data/Hora', 'Par', 'Preço', 'RSI', 'Sinal']
     
     st.dataframe(
         display_df,
@@ -427,10 +699,16 @@ if st.session_state.signals_history:
 else:
     st.info("Nenhum sinal gerado ainda. Os sinais aparecerão aqui quando as condições forem atendidas.")
 
-# Auto-refresh mechanism
+# Auto-refresh mechanism - throttled for performance  
 if auto_refresh:
-    time.sleep(1)
-    st.rerun()
+    # Only refresh every 30 seconds to reduce API calls
+    if st.session_state.last_update is None or (datetime.now() - st.session_state.last_update).total_seconds() > 30:
+        time.sleep(1)
+        st.rerun()
+    else:
+        time.sleep(1)
+        # Just rerun UI without data refresh
+        st.rerun()
 
 # Footer
 st.markdown("---")
