@@ -81,7 +81,7 @@ st.title("📈 Trading Signals Dashboard")
 st.markdown("---")
 
 # Status indicators
-col1, col2, col3, col4 = st.columns(4)
+col1, col2, col3, col4, col5 = st.columns(5)
 
 # Check if we need to update data
 should_update = (
@@ -107,7 +107,7 @@ if st.session_state.current_data is not None:
     signal = st.session_state.trading_bot.check_signal(data)
     
     # Add signal to history if it's a new signal
-    if signal != "NEUTRO" and (
+    if signal not in ["NEUTRO"] and (
         not st.session_state.signals_history or 
         st.session_state.signals_history[-1]['signal'] != signal or
         st.session_state.signals_history[-1]['timestamp'] < datetime.now() - timedelta(minutes=5)
@@ -145,30 +145,48 @@ if st.session_state.current_data is not None:
         )
 
     with col3:
-        signal_emoji = {"COMPRA": "🟢", "VENDA": "🔴", "NEUTRO": "⚪"}
+        signal_emoji = {
+            "COMPRA": "🟢", "VENDA": "🔴", "NEUTRO": "⚪",
+            "COMPRA_FRACA": "🟡", "VENDA_FRACA": "🟠"
+        }
         st.metric(
             label="🚨 Sinal",
-            value=f"{signal_emoji.get(signal, '⚪')} {signal}",
+            value=f"{signal_emoji.get(signal, '⚪')} {signal.replace('_', ' ')}",
             delta=None
         )
 
     with col4:
+        if not pd.isna(last_candle['macd']) and not pd.isna(last_candle['macd_signal']):
+            macd_trend = "📈" if last_candle['macd'] > last_candle['macd_signal'] else "📉"
+            st.metric(
+                label="📊 MACD",
+                value=f"{macd_trend} {last_candle['macd']:.4f}",
+                delta=f"Signal: {last_candle['macd_signal']:.4f}"
+            )
+        else:
+            st.metric(
+                label="📊 MACD",
+                value="Calculando...",
+                delta=None
+            )
+
+    with col5:
         st.metric(
             label="🕒 Última Atualização",
             value=st.session_state.last_update.strftime("%H:%M:%S") if st.session_state.last_update else "---",
             delta=None
         )
 
-    # Price and RSI Charts
+    # Price, RSI and MACD Charts
     st.subheader("📈 Gráficos")
     
-    # Create subplots
+    # Create subplots with 3 rows now
     fig = make_subplots(
-        rows=2, cols=1,
+        rows=3, cols=1,
         shared_xaxes=True,
-        vertical_spacing=0.1,
-        subplot_titles=('Preço', 'RSI'),
-        row_heights=[0.7, 0.3]
+        vertical_spacing=0.08,
+        subplot_titles=('Preço', 'RSI', 'MACD'),
+        row_heights=[0.5, 0.25, 0.25]
     )
 
     # Candlestick chart
@@ -214,45 +232,118 @@ if st.session_state.current_data is not None:
     )
 
     # Add signal markers
-    buy_signals = data[data['signal'] == 'COMPRA']
-    sell_signals = data[data['signal'] == 'VENDA']
+    buy_signals = data[data['signal'].isin(['COMPRA', 'COMPRA_FRACA'])]
+    sell_signals = data[data['signal'].isin(['VENDA', 'VENDA_FRACA'])]
 
     if not buy_signals.empty:
-        fig.add_trace(
-            go.Scatter(
-                x=buy_signals.index,
-                y=buy_signals['close'],
-                mode='markers',
-                marker=dict(symbol='triangle-up', size=15, color='green'),
-                name='Compra',
-                showlegend=True
-            ),
-            row=1, col=1
-        )
+        # Strong buy signals (larger markers)
+        strong_buys = buy_signals[buy_signals['signal'] == 'COMPRA']
+        weak_buys = buy_signals[buy_signals['signal'] == 'COMPRA_FRACA']
+        
+        if not strong_buys.empty:
+            fig.add_trace(
+                go.Scatter(
+                    x=strong_buys.index,
+                    y=strong_buys['close'],
+                    mode='markers',
+                    marker=dict(symbol='triangle-up', size=20, color='green'),
+                    name='Compra Forte',
+                    showlegend=True
+                ),
+                row=1, col=1
+            )
+        
+        if not weak_buys.empty:
+            fig.add_trace(
+                go.Scatter(
+                    x=weak_buys.index,
+                    y=weak_buys['close'],
+                    mode='markers',
+                    marker=dict(symbol='triangle-up', size=12, color='lightgreen', opacity=0.7),
+                    name='Compra Fraca',
+                    showlegend=True
+                ),
+                row=1, col=1
+            )
 
     if not sell_signals.empty:
-        fig.add_trace(
-            go.Scatter(
-                x=sell_signals.index,
-                y=sell_signals['close'],
-                mode='markers',
-                marker=dict(symbol='triangle-down', size=15, color='red'),
-                name='Venda',
-                showlegend=True
-            ),
-            row=1, col=1
-        )
+        # Strong sell signals (larger markers)
+        strong_sells = sell_signals[sell_signals['signal'] == 'VENDA']
+        weak_sells = sell_signals[sell_signals['signal'] == 'VENDA_FRACA']
+        
+        if not strong_sells.empty:
+            fig.add_trace(
+                go.Scatter(
+                    x=strong_sells.index,
+                    y=strong_sells['close'],
+                    mode='markers',
+                    marker=dict(symbol='triangle-down', size=20, color='red'),
+                    name='Venda Forte',
+                    showlegend=True
+                ),
+                row=1, col=1
+            )
+        
+        if not weak_sells.empty:
+            fig.add_trace(
+                go.Scatter(
+                    x=weak_sells.index,
+                    y=weak_sells['close'],
+                    mode='markers',
+                    marker=dict(symbol='triangle-down', size=12, color='lightcoral', opacity=0.7),
+                    name='Venda Fraca',
+                    showlegend=True
+                ),
+                row=1, col=1
+            )
+
+    # MACD chart
+    fig.add_trace(
+        go.Scatter(
+            x=data.index,
+            y=data['macd'],
+            mode='lines',
+            name='MACD',
+            line=dict(color='blue', width=2)
+        ),
+        row=3, col=1
+    )
+    
+    fig.add_trace(
+        go.Scatter(
+            x=data.index,
+            y=data['macd_signal'],
+            mode='lines',
+            name='Signal',
+            line=dict(color='orange', width=2)
+        ),
+        row=3, col=1
+    )
+    
+    fig.add_trace(
+        go.Bar(
+            x=data.index,
+            y=data['macd_histogram'],
+            name='Histogram',
+            marker_color=['green' if x >= 0 else 'red' for x in data['macd_histogram']]
+        ),
+        row=3, col=1
+    )
+    
+    # Add MACD zero line
+    fig.add_hline(y=0, line_dash="dot", line_color="gray", row=3)
 
     # Update layout
     fig.update_layout(
         title=f'{symbol} - {timeframe}',
-        height=600,
+        height=800,
         xaxis_rangeslider_visible=False,
         showlegend=True
     )
 
     fig.update_yaxes(title_text="Preço ($)", row=1, col=1)
     fig.update_yaxes(title_text="RSI", range=[0, 100], row=2, col=1)
+    fig.update_yaxes(title_text="MACD", row=3, col=1)
 
     st.plotly_chart(fig, use_container_width=True)
 
@@ -267,26 +358,41 @@ if st.session_state.current_data is not None:
         **Timeframe:** {timeframe}  
         **Preço Atual:** ${last_candle['close']:.6f}  
         **RSI:** {last_candle['rsi']:.2f}  
-        **Volume:** {last_candle['volume']:,.0f}
+        **MACD:** {last_candle['macd']:.4f}  
+        **MACD Signal:** {last_candle['macd_signal']:.4f}  
+        **Volume:** {last_candle['volume']:,.0f}  
+        **Volume MA:** {last_candle['volume_ma']:,.0f}
         """)
     
     with analysis_col2:
         if signal == "COMPRA":
             st.success(f"""
-            🟢 **SINAL DE COMPRA**  
-            RSI abaixo de {rsi_min} indica possível reversão para alta.  
+            🟢 **SINAL DE COMPRA FORTE**  
+            RSI abaixo de {rsi_min} e MACD bullish convergem para alta.  
             Considere entrada em posição de compra.
             """)
         elif signal == "VENDA":
             st.error(f"""
-            🔴 **SINAL DE VENDA**  
-            RSI acima de {rsi_max} indica possível reversão para baixa.  
+            🔴 **SINAL DE VENDA FORTE**  
+            RSI acima de {rsi_max} e MACD bearish convergem para baixa.  
             Considere saída da posição ou entrada em venda.
+            """)
+        elif signal == "COMPRA_FRACA":
+            st.info(f"""
+            🟡 **SINAL DE COMPRA FRACA**  
+            Apenas um indicador favorável à compra.  
+            Aguarde confirmação ou entrada parcial.
+            """)
+        elif signal == "VENDA_FRACA":
+            st.info(f"""
+            🟠 **SINAL DE VENDA FRACA**  
+            Apenas um indicador favorável à venda.  
+            Aguarde confirmação ou saída parcial.
             """)
         else:
             st.warning("""
             ⚪ **SINAL NEUTRO**  
-            RSI em zona neutra.  
+            Indicadores em zona neutra.  
             Aguardar melhor oportunidade.
             """)
 

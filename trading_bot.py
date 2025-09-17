@@ -66,20 +66,39 @@ class TradingBot:
         # Calculate volume moving average
         df['volume_ma'] = df['volume'].rolling(window=20).mean()
         
+        # Calculate MACD
+        macd_data = self.indicators.calculate_macd(df['close'])
+        df['macd'] = macd_data['macd']
+        df['macd_signal'] = macd_data['signal'] 
+        df['macd_histogram'] = macd_data['histogram']
+        
         # Generate signals
         df['signal'] = df.apply(self._generate_signal, axis=1)
         
         return df
     
     def _generate_signal(self, row):
-        """Generate trading signal based on RSI"""
-        if pd.isna(row['rsi']):
+        """Generate trading signal based on RSI and MACD"""
+        if pd.isna(row['rsi']) or pd.isna(row['macd']) or pd.isna(row['macd_signal']):
             return "NEUTRO"
         
-        if row['rsi'] < self.rsi_min:
+        # RSI signals
+        rsi_bullish = row['rsi'] < self.rsi_min
+        rsi_bearish = row['rsi'] > self.rsi_max
+        
+        # MACD signals
+        macd_bullish = row['macd'] > row['macd_signal'] and row['macd_histogram'] > 0
+        macd_bearish = row['macd'] < row['macd_signal'] and row['macd_histogram'] < 0
+        
+        # Combined signals - both indicators need to agree for strong signal
+        if rsi_bullish and macd_bullish:
             return "COMPRA"
-        elif row['rsi'] > self.rsi_max:
+        elif rsi_bearish and macd_bearish:
             return "VENDA"
+        elif rsi_bullish or macd_bullish:
+            return "COMPRA_FRACA"
+        elif rsi_bearish or macd_bearish:
+            return "VENDA_FRACA"
         else:
             return "NEUTRO"
     
