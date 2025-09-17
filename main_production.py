@@ -22,9 +22,23 @@ logging.basicConfig(
 
 logger = logging.getLogger(__name__)
 
+# Verificar dependências primeiro
+try:
+    from telegram import Bot
+    logger.info("✅ python-telegram-bot importado com sucesso")
+except ImportError as e:
+    logger.error(f"❌ Erro ao importar python-telegram-bot: {e}")
+    logger.error("💡 Execute: pip install python-telegram-bot")
+    sys.exit(1)
+
 # Imports dos serviços
-from services.telegram_service import ProfessionalTelegramService
-from config.production_config import ProductionConfig
+try:
+    from services.telegram_service import ProfessionalTelegramService
+    from config.production_config import ProductionConfig
+    logger.info("✅ Serviços importados com sucesso")
+except ImportError as e:
+    logger.error(f"❌ Erro ao importar serviços: {e}")
+    sys.exit(1)
 
 # Variável global
 telegram_service = None
