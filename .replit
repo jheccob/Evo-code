@@ -6,10 +6,11 @@ packages = ["glibcLocales"]
 
 [deployment]
 deploymentTarget = "autoscale"
-run = ["streamlit", "run", "app.py", "--server.port", "5000"]
+run = ["sh", "-c", "python main_production.py"]
+build = ["sh", "-c", "pip install -r requirements_production.txt"]
 
 [workflows]
-runButton = "Project"
+runButton = "Production Bot"
 
 [[workflows.workflow]]
 name = "Project"
@@ -52,6 +53,15 @@ mode = "sequential"
 [[workflows.workflow.tasks]]
 task = "shell.exec"
 args = "python start_telegram_bot.py"
+
+[[workflows.workflow]]
+name = "Production Bot"
+author = 47714575
+mode = "sequential"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "python main_production.py"
 
 [[ports]]
 localPort = 5000
