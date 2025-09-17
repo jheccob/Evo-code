@@ -1,0 +1,164 @@
+import ccxt from "ccxt";
+import TelegramBot from "node-telegram-bot-api";
+
+// ===== CONFIGURAÇÕES =====
+const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN || "SEU_TOKEN_AQUI";
+const CHAT_ID = process.env.CHAT_ID || "SEU_CHAT_ID_AQUI";
+
+const SYMBOL = "XLM/USDT";
+const TIMEFRAME = "5m";
+
+const MACD_FAST = 8;
+const MACD_SLOW = 17;
+const MACD_SIGNAL = 9;
+const RSI_PERIOD = 9;
+const RSI_MIN = 20;
+const RSI_MAX = 80;
+const VOLUME_MA = 20;
+
+const exchange = new ccxt.binance({ enableRateLimit: true });
+const bot = new TelegramBot(TELEGRAM_TOKEN, { polling: true });
+
+// log de erros no polling do Telegram
+bot.on("polling_error", (err) => {
+  console.error("Telegram polling error:", err?.message ?? err);
+});
+
+// validação básica das credenciais (apenas alerta para facilitar debug)
+if (!TELEGRAM_TOKEN || TELEGRAM_TOKEN === "SEU_TOKEN_AQUI") {
+  console.warn("AVISO: TELEGRAM_TOKEN não foi definido corretamente. Verifique a variável de ambiente.");
+}
+if (!CHAT_ID || CHAT_ID === "SEU_CHAT_ID_AQUI") {
+  console.warn("AVISO: CHAT_ID não foi definido corretamente. Verifique a variável de ambiente.");
+}
+
+// Teste rápido de envio e logs (executa ao iniciar)
+(async () => {
+  try {
+    console.log("DEBUG: executando teste de inicialização do bot...");
+    await bot.sendMessage(CHAT_ID, "🔧 Bot iniciado — teste de envio (mensagem automática).");
+    console.log("DEBUG: mensagem de teste enviada com sucesso ao CHAT_ID:", CHAT_ID);
+  } catch (err) {
+    console.error("ERRO DEBUG: não foi possível enviar mensagem de teste ao Telegram:", err);
+  }
+})();
+
+// ===== FUNÇÕES =====
+async function getOHLCV(symbol, limit = 200) {
+  try {
+    const data = await exchange.fetchOHLCV(symbol, TIMEFRAME, undefined, limit);
+    if (!Array.isArray(data) || data.length === 0) {
+      throw new Error("fetchOHLCV retornou vazio ou formato inesperado");
+    }
+    return data.map(([timestamp, open, high, low, close, volume]) => ({
+      timestamp: new Date(timestamp),
+      open,
+      high,
+      low,
+      close,
+      volume,
+    }));
+  } catch (err) {
+    console.error(`Erro em getOHLCV para ${symbol}:`, err?.message ?? err);
+    throw err;
+  }
+}
+
+function calculateIndicators(df) {
+  // Implementação melhorada do RSI (janela sobre os últimos `RSI_PERIOD` candles)
+  const closes = df.map((c) => c.close);
+
+  function rsi(values, period = 14) {
+    if (!Array.isArray(values) || values.length < period + 1) return null;
+    let gains = 0,
+      losses = 0;
+    // calcule sobre a janela final de tamanho `period`
+    for (let i = values.length - period; i < values.length; i++) {
+      const diff = values[i] - values[i - 1];
+      if (diff > 0) gains += diff;
+      else losses += Math.abs(diff);
+    }
+    const rs = gains / (losses === 0 ? 1 : losses);
+    return 100 - 100 / (1 + rs);
+  }
+
+  const lastRsi = rsi(closes, RSI_PERIOD);
+  df[df.length - 1].rsi = lastRsi;
+  return df;
+}
+
+function checkSignal(df) {
+  const last = df[df.length - 1];
+  if (last.rsi === null || last.rsi === undefined || Number.isNaN(last.rsi)) return null;
+
+  // regras simplificadas: só sinal quando RSI estiver claramente alto/baixo
+  if (last.rsi > 60) return "COMPRA";
+  if (last.rsi < 40) return "VENDA";
+  return "NEUTRO";
+}
+
+// ===== LOOP AUTOMÁTICO =====
+async function autoLoop() {
+  try {
+    const df = await getOHLCV(SYMBOL, 200);
+    if (!Array.isArray(df) || df.length === 0) {
+      console.warn("autoLoop: dados inválidos de OHLCV, pulando execução.");
+      return;
+    }
+    const withIndicators = calculateIndicators(df);
+    const last = withIndicators[withIndicators.length - 1];
+    const signal = checkSignal(withIndicators);
+
+    // log detalhado para ajudar no debug
+    console.log(
+      `[${new Date().toISOString()}] ${SYMBOL} close=${last.close} rsi=${last.rsi} signal=${signal}`
+    );
+
+    if (signal && signal !== "NEUTRO") {
+      const price = last.close;
+      const msg = `🚨 SINAL ${signal}\nPar: ${SYMBOL}\n💰 Preço: ${price}\nRSI: ${last.rsi !== null ? last.rsi.toFixed(2) : "N/A"}`;
+      try {
+        await bot.sendMessage(CHAT_ID, msg);
+        console.log("Mensagem enviada:", msg);
+      } catch (sendErr) {
+        console.error("Erro ao enviar mensagem ao Telegram:", sendErr?.message ?? sendErr);
+      }
+    }
+  } catch (e) {
+    console.error("Erro no loop (stack):", e && e.stack ? e.stack : e);
+  }
+}
+
+// roda automático a cada 1 min, e roda imediatamente ao iniciar
+autoLoop().catch((e) => console.error("Erro no primeiro run do autoLoop:", e?.message ?? e));
+setInterval(autoLoop, 60 * 1000);
+
+// ===== COMANDOS MANUAIS =====
+bot.onText(/\/start/, (msg) => {
+  bot.sendMessage(
+    msg.chat.id,
+    "🤖 Olá! Eu sou seu bot de sinais.\n\nUse:\n`/signal BTC/USDT` → analisa uma moeda\n`/status` → mostra o que estou monitorando.",
+    { parse_mode: "Markdown" }
+  );
+});
+
+bot.onText(/\/status/, (msg) => {
+  bot.sendMessage(msg.chat.id, `Atualmente monitorando: ${SYMBOL} no timeframe ${TIMEFRAME}`);
+});
+
+bot.onText(/\/signal (.+)/, async (msg, match) => {
+  const symbol = match[1].toUpperCase();
+  try {
+    const df = await getOHLCV(symbol, 200);
+    const withIndicators = calculateIndicators(df);
+    const signal = checkSignal(withIndicators);
+    const price = withIndicators[withIndicators.length - 1].close;
+    const rsi = withIndicators[withIndicators.length - 1].rsi;
+    bot.sendMessage(
+      msg.chat.id,
+      `📊 Análise de ${symbol}\n💰 Preço: ${price}\nRSI: ${rsi !== null ? rsi.toFixed(2) : "N/A"}\nSinal: ${signal}`
+    );
+  } catch (e) {
+    bot.sendMessage(msg.chat.id, `Erro ao analisar ${symbol}: ${e?.message ?? e}`);
+  }
+});
