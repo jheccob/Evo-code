@@ -182,9 +182,8 @@ st.title("📈 Trading Signals Dashboard")
 tab1, tab2, tab3 = st.tabs(["📊 Análise em Tempo Real", "🔬 Backtesting", "⚙️ Exportar Dados"])
 
 with tab1:
-
-# Multi-Symbol Overview (if enabled) - with caching and performance optimization
-if enable_multi_symbol and len(selected_symbols) > 1:
+    # Multi-Symbol Overview (if enabled) - with caching and performance optimization
+    if enable_multi_symbol and len(selected_symbols) > 1:
     st.subheader("🔀 Overview - Múltiplos Pares")
     
     # Initialize multi-symbol last signals tracking
