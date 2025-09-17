@@ -7,8 +7,12 @@ from indicators import TechnicalIndicators
 
 class TradingBot:
     def __init__(self):
-        self.exchange = ccxt.binance({'enableRateLimit': True})
-        self.symbol = "XLM/USDT"
+        self.exchange = ccxt.coinbase({
+            'enableRateLimit': True,
+            'sandbox': False,
+            'rateLimit': 1000,
+        })
+        self.symbol = "XLM-USD"
         self.timeframe = "5m"
         self.rsi_period = 9
         self.rsi_min = 20
@@ -31,8 +35,11 @@ class TradingBot:
     def get_market_data(self, limit=200):
         """Fetch OHLCV data from exchange"""
         try:
+            # Format symbol for Coinbase Pro
+            formatted_symbol = self.format_symbol_for_coinbase(self.symbol)
+            
             # Fetch raw OHLCV data
-            ohlcv = self.exchange.fetch_ohlcv(self.symbol, self.timeframe, limit=limit)
+            ohlcv = self.exchange.fetch_ohlcv(formatted_symbol, self.timeframe, limit=limit)
             
             if not ohlcv:
                 raise Exception("No data received from exchange")
@@ -140,6 +147,15 @@ class TradingBot:
         """Validate if symbol exists on the exchange"""
         try:
             markets = self.exchange.load_markets()
+            # Convert format: BTC/USDT -> BTC-USD
+            if '/' in symbol:
+                symbol = symbol.replace('/USDT', '-USD').replace('/BTC', '-BTC')
             return symbol in markets
         except:
             return False
+
+    def format_symbol_for_coinbase(self, symbol):
+        """Convert symbol format for Coinbase Pro"""
+        if '/' in symbol:
+            return symbol.replace('/USDT', '-USD').replace('/BTC', '-BTC').replace('/', '-')
+        return symbol

@@ -10,7 +10,21 @@ import asyncio
 import threading
 from trading_bot import TradingBot
 from indicators import TechnicalIndicators
-from telegram_bot import TelegramNotifier
+try:
+    from telegram_bot import TelegramNotifier
+    TELEGRAM_AVAILABLE = True
+except ImportError:
+    TELEGRAM_AVAILABLE = False
+    # Create a dummy class for compatibility
+    class TelegramNotifier:
+        def __init__(self):
+            self.enabled = False
+        def configure(self, *args): return False
+        def is_configured(self): return False
+        async def test_connection(self): return False, "Not available"
+        async def send_signal_alert(self, *args): return False, "Not available"
+        async def send_custom_message(self, *args): return False, "Not available"
+
 from backtest import BacktestEngine
 
 # Configure page
@@ -57,9 +71,9 @@ st.sidebar.subheader("📊 Pares de Moedas")
 enable_multi_symbol = st.sidebar.checkbox("🔀 Monitoramento Múltiplo", value=False)
 
 if enable_multi_symbol:
-    # Multi-symbol selection
-    available_pairs = ["XLM/USDT", "BTC/USDT", "ETH/USDT", "ADA/USDT", "DOT/USDT", "MATIC/USDT", 
-                       "LINK/USDT", "UNI/USDT", "SOL/USDT", "AVAX/USDT"]
+    # Multi-symbol selection - Updated for Coinbase Pro
+    available_pairs = ["XLM-USD", "BTC-USD", "ETH-USD", "ADA-USD", "DOT-USD", "MATIC-USD", 
+                       "LINK-USD", "UNI-USD", "SOL-USD", "AVAX-USD"]
     selected_symbols = st.sidebar.multiselect(
         "Selecionar pares para monitorar:",
         available_pairs,
@@ -71,13 +85,13 @@ if enable_multi_symbol:
         selected_symbols = ["XLM/USDT"]
     
     # For multi-symbol mode, use the first selected as primary
-    symbol = selected_symbols[0] if selected_symbols else "XLM/USDT"
+    symbol = selected_symbols[0] if selected_symbols else "XLM-USD"
     
 else:
-    # Single symbol selection
+    # Single symbol selection - Updated for Coinbase Pro
     symbol = st.sidebar.selectbox(
         "Par de Trading",
-        ["XLM/USDT", "BTC/USDT", "ETH/USDT", "ADA/USDT", "DOT/USDT", "MATIC/USDT"],
+        ["XLM-USD", "BTC-USD", "ETH-USD", "ADA-USD", "DOT-USD", "MATIC-USD"],
         index=0
     )
     selected_symbols = [symbol]
@@ -108,24 +122,51 @@ if st.sidebar.button("🔄 Atualizar Agora"):
 st.sidebar.markdown("---")
 st.sidebar.subheader("📱 Telegram Alerts")
 
+# Try to load config from file
+try:
+    from config.telegram_config import TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
+    has_config_file = True
+    default_token = TELEGRAM_BOT_TOKEN if TELEGRAM_BOT_TOKEN != "SEU_BOT_TOKEN_AQUI" else ""
+    default_chat_id = TELEGRAM_CHAT_ID if TELEGRAM_CHAT_ID != "SEU_CHAT_ID_AQUI" else ""
+except ImportError:
+    has_config_file = False
+    default_token = ""
+    default_chat_id = ""
+
+if has_config_file and default_token and default_chat_id:
+    st.sidebar.success("✅ Configuração carregada do arquivo config/")
+    use_file_config = st.sidebar.checkbox("🔧 Usar configuração do arquivo", value=True)
+else:
+    use_file_config = False
+    if has_config_file:
+        st.sidebar.info("💡 Configure o arquivo config/telegram_config.py")
+
 telegram_enabled = st.sidebar.checkbox(
     "🔔 Ativar notificações Telegram", 
     value=st.session_state.telegram_notifications
 )
 
 if telegram_enabled:
-    telegram_token = st.sidebar.text_input(
-        "🤖 Bot Token", 
-        type="password",
-        placeholder="123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11",
-        help="Obtenha um token criando um bot via @BotFather"
-    )
-    
-    telegram_chat_id = st.sidebar.text_input(
-        "💬 Chat ID",
-        placeholder="-1001234567890 ou 123456789",
-        help="ID do chat onde receber alertas"
-    )
+    if use_file_config and default_token and default_chat_id:
+        telegram_token = default_token
+        telegram_chat_id = default_chat_id
+        st.sidebar.info(f"🤖 Token: {telegram_token[:10]}...")
+        st.sidebar.info(f"💬 Chat ID: {telegram_chat_id}")
+    else:
+        telegram_token = st.sidebar.text_input(
+            "🤖 Bot Token", 
+            type="password",
+            placeholder="123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11",
+            help="Obtenha um token criando um bot via @BotFather",
+            value=default_token
+        )
+        
+        telegram_chat_id = st.sidebar.text_input(
+            "💬 Chat ID",
+            placeholder="-1001234567890 ou 123456789",
+            help="ID do chat onde receber alertas",
+            value=default_chat_id
+        )
     
     if telegram_token and telegram_chat_id:
         if st.sidebar.button("✅ Configurar Telegram"):
@@ -178,14 +219,24 @@ st.session_state.trading_bot.update_config(
 # Main dashboard
 st.title("📈 Trading Signals Dashboard")
 
+# Import user manager for admin features
+from user_manager import UserManager
+from telegram_bot import TelegramTradingBot
+
+# Initialize user manager
+if 'user_manager' not in st.session_state:
+    st.session_state.user_manager = UserManager()
+
+if 'telegram_trading_bot' not in st.session_state:
+    st.session_state.telegram_trading_bot = TelegramTradingBot()
+
 # Create tabs for different sections
-tab1, tab2, tab3 = st.tabs(["📊 Análise em Tempo Real", "🔬 Backtesting", "⚙️ Exportar Dados"])
+tab1, tab2, tab3, tab4 = st.tabs(["📊 Análise em Tempo Real", "🔬 Backtesting", "⚙️ Exportar Dados", "👑 Admin Panel"])
 
 with tab1:
-
-# Multi-Symbol Overview (if enabled) - with caching and performance optimization
-if enable_multi_symbol and len(selected_symbols) > 1:
-    st.subheader("🔀 Overview - Múltiplos Pares")
+    # Multi-Symbol Overview (if enabled) - with caching and performance optimization
+    if enable_multi_symbol and len(selected_symbols) > 1:
+        st.subheader("🔀 Overview - Múltiplos Pares")
     
     # Initialize multi-symbol last signals tracking
     if 'multi_symbol_signals' not in st.session_state:
@@ -311,12 +362,83 @@ if enable_multi_symbol and len(selected_symbols) > 1:
                 return 'background-color: #FFD4A3'
             return ''
         
-        styled_df = overview_df.style.applymap(style_signals, subset=['Sinal'])
-        st.dataframe(styled_df, use_container_width=True, hide_index=True)
+        styled_df = overview_df.style.map(style_signals, subset=['Sinal'])
+        st.dataframe(styled_df, width='stretch', hide_index=True)
     
     st.markdown("---")
     
     st.subheader(f"📈 Análise Detalhada - {symbol}")
+
+# Telegram Configuration Card (if not configured)
+if not st.session_state.telegram_bot.is_configured():
+    with st.expander("📱 Configurar Notificações Telegram", expanded=False):
+        st.markdown("Configure o bot do Telegram para receber alertas de sinais em tempo real!")
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            telegram_token_main = st.text_input(
+                "🤖 Token do Bot",
+                type="password",
+                placeholder="1234567890:ABC-def_GhIjKlMnOpQrStUvWxYz",
+                help="1. Acesse @BotFather no Telegram\n2. Digite /newbot\n3. Siga as instruções\n4. Cole o token aqui",
+                key="telegram_token_main"
+            )
+        
+        with col2:
+            telegram_chat_id_main = st.text_input(
+                "💬 Chat ID",
+                placeholder="-1001234567890 ou 123456789",
+                help="1. Adicione @userinfobot ao seu chat\n2. Digite /start\n3. Cole o Chat ID aqui",
+                key="telegram_chat_id_main"
+            )
+        
+        col1, col2, col3 = st.columns([1, 1, 2])
+        
+        with col1:
+            if st.button("✅ Configurar", key="config_telegram_main"):
+                if telegram_token_main and telegram_chat_id_main:
+                    success = st.session_state.telegram_bot.configure(telegram_token_main, telegram_chat_id_main)
+                    if success:
+                        st.session_state.telegram_notifications = True
+                        try:
+                            loop = asyncio.new_event_loop()
+                            asyncio.set_event_loop(loop)
+                            success, message = loop.run_until_complete(
+                                st.session_state.telegram_bot.test_connection()
+                            )
+                            if success:
+                                st.success("✅ Telegram configurado com sucesso!")
+                                st.rerun()
+                            else:
+                                st.error(f"❌ Erro: {message}")
+                        except Exception as e:
+                            st.error(f"❌ Erro ao testar: {str(e)}")
+                    else:
+                        st.error("❌ Erro na configuração")
+                else:
+                    st.warning("⚠️ Preencha ambos os campos")
+        
+        with col2:
+            if telegram_token_main and telegram_chat_id_main:
+                if st.button("📤 Testar", key="test_telegram_main"):
+                    temp_bot = st.session_state.telegram_bot
+                    if temp_bot.configure(telegram_token_main, telegram_chat_id_main):
+                        try:
+                            loop = asyncio.new_event_loop()
+                            asyncio.set_event_loop(loop)
+                            success, message = loop.run_until_complete(
+                                temp_bot.send_custom_message("🧪 Teste do bot de trading!")
+                            )
+                            if success:
+                                st.success("✅ Mensagem enviada!")
+                            else:
+                                st.error(f"❌ {message}")
+                        except Exception as e:
+                            st.error(f"❌ Erro: {str(e)}")
+        
+        with col3:
+            st.info("💡 **Como configurar:**\n1. Crie um bot no @BotFather\n2. Obtenha seu Chat ID no @userinfobot\n3. Configure aqui")
 
 # Status indicators for main symbol
 col1, col2, col3, col4, col5 = st.columns(5)
@@ -441,11 +563,18 @@ if st.session_state.current_data is not None:
             )
 
     with col5:
-        st.metric(
-            label="🕒 Última Atualização",
-            value=st.session_state.last_update.strftime("%H:%M:%S") if st.session_state.last_update else "---",
-            delta=None
-        )
+        if st.session_state.telegram_bot.is_configured():
+            st.metric(
+                label="📱 Telegram",
+                value="🟢 Ativo",
+                delta="Notificações ON"
+            )
+        else:
+            st.metric(
+                label="🕒 Última Atualização",
+                value=st.session_state.last_update.strftime("%H:%M:%S") if st.session_state.last_update else "---",
+                delta=None
+            )
 
     # Price, RSI and MACD Charts
     st.subheader("📈 Gráficos")
@@ -699,7 +828,7 @@ if st.session_state.signals_history:
     
     st.dataframe(
         display_df,
-        use_container_width=True,
+        width='stretch',
         hide_index=True
     )
     
@@ -831,7 +960,7 @@ with tab2:
                 
                 trade_df_display.columns = ['Data/Hora', 'Preço Entrada', 'Preço Saída', 'Retorno %', 'Lucro/Perda $', 'Sinal']
                 
-                st.dataframe(trade_df_display, use_container_width=True, hide_index=True)
+                st.dataframe(trade_df_display, width='stretch', hide_index=True)
 
 # Export Data Tab
 with tab3:
@@ -897,6 +1026,124 @@ with tab3:
                     file_name=f"backtest_portfolio_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
                     mime="text/csv"
                 )
+
+# Admin Panel Tab
+with tab4:
+    st.subheader("👑 Painel Administrativo")
+    
+    # Admin authentication
+    admin_password = st.text_input("🔐 Senha de Admin", type="password", key="admin_pass")
+    
+    if admin_password == "admin123":  # Change this password
+        st.success("✅ Acesso autorizado!")
+        
+        # Admin stats
+        stats = st.session_state.user_manager.get_user_stats()
+        
+        col1, col2, col3, col4 = st.columns(4)
+        
+        with col1:
+            st.metric("👥 Total Usuários", stats['total_users'])
+        with col2:
+            st.metric("🆓 Usuários Free", stats['free_users'])
+        with col3:
+            st.metric("💎 Usuários Premium", stats['premium_users'])
+        with col4:
+            st.metric("🔥 Ativos Hoje", stats['active_today'])
+        
+        # User management
+        st.markdown("---")
+        st.subheader("👥 Gerenciamento de Usuários")
+        
+        # List users
+        users = st.session_state.user_manager.list_users(50)
+        if users:
+            users_df = pd.DataFrame(users)
+            
+            # Format datetime columns
+            if 'joined' in users_df.columns:
+                users_df['joined'] = pd.to_datetime(users_df['joined']).dt.strftime('%d/%m/%Y')
+            if 'last_analysis' in users_df.columns:
+                users_df['last_analysis'] = users_df['last_analysis'].fillna('Nunca')
+                users_df.loc[users_df['last_analysis'] != 'Nunca', 'last_analysis'] = pd.to_datetime(users_df.loc[users_df['last_analysis'] != 'Nunca', 'last_analysis']).dt.strftime('%d/%m/%Y %H:%M')
+            
+            st.dataframe(users_df, width='stretch', hide_index=True)
+        
+        # User actions
+        st.markdown("---")
+        st.subheader("🔧 Ações de Usuário")
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            user_id_upgrade = st.number_input("ID do Usuário para Upgrade", min_value=1, key="upgrade_user")
+            if st.button("💎 Promover para Premium"):
+                if st.session_state.user_manager.upgrade_to_premium(int(user_id_upgrade)):
+                    st.success(f"✅ Usuário {user_id_upgrade} promovido para Premium!")
+                else:
+                    st.error("❌ Usuário não encontrado")
+        
+        with col2:
+            new_admin_id = st.number_input("ID do Novo Admin", min_value=1, key="new_admin")
+            if st.button("👑 Adicionar Admin"):
+                st.session_state.user_manager.add_admin(int(new_admin_id))
+                st.success(f"✅ Usuário {new_admin_id} adicionado como Admin!")
+        
+        # Telegram Bot Configuration
+        st.markdown("---")
+        st.subheader("🤖 Configuração do Bot Telegram")
+        
+        bot_token_admin = st.text_input(
+            "Token do Bot Telegram",
+            type="password",
+            help="Token para o bot interativo do Telegram",
+            key="bot_token_admin"
+        )
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            if st.button("🚀 Configurar Bot") and bot_token_admin:
+                if st.session_state.telegram_trading_bot.configure(bot_token_admin):
+                    st.success("✅ Bot Telegram configurado com sucesso!")
+                    st.info("💡 O bot agora está pronto para receber comandos dos usuários!")
+                else:
+                    st.error("❌ Erro na configuração do bot")
+        
+        with col2:
+            if st.button("📤 Testar Bot") and st.session_state.telegram_trading_bot.is_configured():
+                try:
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                    success, message = loop.run_until_complete(
+                        st.session_state.telegram_trading_bot.test_connection()
+                    )
+                    if success:
+                        st.success(f"✅ {message}")
+                    else:
+                        st.error(f"❌ {message}")
+                except Exception as e:
+                    st.error(f"❌ Erro: {str(e)}")
+        
+        # Bot status
+        if st.session_state.telegram_trading_bot.is_configured():
+            st.success("🟢 Bot Telegram está ativo e pronto para uso!")
+            st.info("💬 Os usuários podem usar comandos como /analise BTC/USDT")
+        else:
+            st.warning("🟡 Bot Telegram não configurado")
+        
+        # Broadcast message
+        st.markdown("---")
+        st.subheader("📢 Enviar Comunicado")
+        
+        broadcast_msg = st.text_area("Mensagem para todos os usuários", key="broadcast_msg")
+        if st.button("📤 Enviar para Todos") and broadcast_msg:
+            st.info("Funcionalidade de broadcast disponível via comando /broadcast no Telegram")
+        
+    elif admin_password:
+        st.error("❌ Senha incorreta")
+    else:
+        st.info("🔐 Digite a senha de administrador para acessar o painel")
 
 # Footer
 st.markdown("---")
