@@ -184,7 +184,7 @@ tab1, tab2, tab3 = st.tabs(["📊 Análise em Tempo Real", "🔬 Backtesting", "
 with tab1:
     # Multi-Symbol Overview (if enabled) - with caching and performance optimization
     if enable_multi_symbol and len(selected_symbols) > 1:
-    st.subheader("🔀 Overview - Múltiplos Pares")
+        st.subheader("🔀 Overview - Múltiplos Pares")
     
     # Initialize multi-symbol last signals tracking
     if 'multi_symbol_signals' not in st.session_state:
@@ -317,6 +317,77 @@ with tab1:
     
     st.subheader(f"📈 Análise Detalhada - {symbol}")
 
+# Telegram Configuration Card (if not configured)
+if not st.session_state.telegram_bot.is_configured():
+    with st.expander("📱 Configurar Notificações Telegram", expanded=False):
+        st.markdown("Configure o bot do Telegram para receber alertas de sinais em tempo real!")
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            telegram_token_main = st.text_input(
+                "🤖 Token do Bot",
+                type="password",
+                placeholder="1234567890:ABC-def_GhIjKlMnOpQrStUvWxYz",
+                help="1. Acesse @BotFather no Telegram\n2. Digite /newbot\n3. Siga as instruções\n4. Cole o token aqui",
+                key="telegram_token_main"
+            )
+        
+        with col2:
+            telegram_chat_id_main = st.text_input(
+                "💬 Chat ID",
+                placeholder="-1001234567890 ou 123456789",
+                help="1. Adicione @userinfobot ao seu chat\n2. Digite /start\n3. Cole o Chat ID aqui",
+                key="telegram_chat_id_main"
+            )
+        
+        col1, col2, col3 = st.columns([1, 1, 2])
+        
+        with col1:
+            if st.button("✅ Configurar", key="config_telegram_main"):
+                if telegram_token_main and telegram_chat_id_main:
+                    success = st.session_state.telegram_bot.configure(telegram_token_main, telegram_chat_id_main)
+                    if success:
+                        st.session_state.telegram_notifications = True
+                        try:
+                            loop = asyncio.new_event_loop()
+                            asyncio.set_event_loop(loop)
+                            success, message = loop.run_until_complete(
+                                st.session_state.telegram_bot.test_connection()
+                            )
+                            if success:
+                                st.success("✅ Telegram configurado com sucesso!")
+                                st.rerun()
+                            else:
+                                st.error(f"❌ Erro: {message}")
+                        except Exception as e:
+                            st.error(f"❌ Erro ao testar: {str(e)}")
+                    else:
+                        st.error("❌ Erro na configuração")
+                else:
+                    st.warning("⚠️ Preencha ambos os campos")
+        
+        with col2:
+            if telegram_token_main and telegram_chat_id_main:
+                if st.button("📤 Testar", key="test_telegram_main"):
+                    temp_bot = st.session_state.telegram_bot
+                    if temp_bot.configure(telegram_token_main, telegram_chat_id_main):
+                        try:
+                            loop = asyncio.new_event_loop()
+                            asyncio.set_event_loop(loop)
+                            success, message = loop.run_until_complete(
+                                temp_bot.send_custom_message("🧪 Teste do bot de trading!")
+                            )
+                            if success:
+                                st.success("✅ Mensagem enviada!")
+                            else:
+                                st.error(f"❌ {message}")
+                        except Exception as e:
+                            st.error(f"❌ Erro: {str(e)}")
+        
+        with col3:
+            st.info("💡 **Como configurar:**\n1. Crie um bot no @BotFather\n2. Obtenha seu Chat ID no @userinfobot\n3. Configure aqui")
+
 # Status indicators for main symbol
 col1, col2, col3, col4, col5 = st.columns(5)
 
@@ -440,11 +511,18 @@ if st.session_state.current_data is not None:
             )
 
     with col5:
-        st.metric(
-            label="🕒 Última Atualização",
-            value=st.session_state.last_update.strftime("%H:%M:%S") if st.session_state.last_update else "---",
-            delta=None
-        )
+        if st.session_state.telegram_bot.is_configured():
+            st.metric(
+                label="📱 Telegram",
+                value="🟢 Ativo",
+                delta="Notificações ON"
+            )
+        else:
+            st.metric(
+                label="🕒 Última Atualização",
+                value=st.session_state.last_update.strftime("%H:%M:%S") if st.session_state.last_update else "---",
+                delta=None
+            )
 
     # Price, RSI and MACD Charts
     st.subheader("📈 Gráficos")
