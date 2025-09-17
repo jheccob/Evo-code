@@ -179,14 +179,17 @@ Olá, {user.first_name}! 👋
         
         symbol = context.args[0].upper()
         
-        # Validate symbol format
-        if not re.match(r'^[A-Z]+/USD[T]?$', symbol):
+        # Validate symbol format and convert to Coinbase format
+        valid_symbols = ["BTC/USDT", "ETH/USDT", "XLM/USDT", "ADA/USDT", "DOT/USDT", "MATIC/USDT", "LINK/USDT", "UNI/USDT", "SOL/USDT"]
+        
+        if symbol not in valid_symbols:
             await update.message.reply_text(
                 f"❌ **Par inválido: {symbol}**\n\n"
                 "📖 **Formato correto:** `BTC/USDT`\n\n"
                 "💡 **Pares suportados:**\n"
                 "• BTC/USDT, ETH/USDT, XLM/USDT\n"
-                "• ADA/USDT, DOT/USDT, MATIC/USDT",
+                "• ADA/USDT, DOT/USDT, MATIC/USDT\n"
+                "• LINK/USDT, UNI/USDT, SOL/USDT",
                 parse_mode='Markdown'
             )
             return
@@ -213,8 +216,11 @@ Olá, {user.first_name}! 👋
     async def perform_analysis(self, symbol):
         """Perform technical analysis for a symbol"""
         try:
+            # Convert symbol format for Coinbase (BTC/USDT -> BTC-USD)
+            coinbase_symbol = symbol.replace('/USDT', '-USD').replace('/BTC', '-BTC')
+            
             # Configure trading bot
-            self.trading_bot.update_config(symbol=symbol, timeframe='15m')
+            self.trading_bot.update_config(symbol=coinbase_symbol, timeframe='15m')
             
             # Get market data
             data = self.trading_bot.get_market_data(limit=100)

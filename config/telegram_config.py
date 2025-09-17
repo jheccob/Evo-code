@@ -2,8 +2,8 @@
 # Telegram Bot Configuration
 # Substitua pelos seus valores reais
 
-TELEGRAM_BOT_TOKEN = "SEU_BOT_TOKEN_AQUI"
-TELEGRAM_CHAT_ID = "SEU_CHAT_ID_AQUI"
+TELEGRAM_BOT_TOKEN = "7932883397:AAF4lFjIk5KYgFGDI3VdE9vb7kWJJ2sTe5I"
+TELEGRAM_CHAT_ID = "1035830659"
 
 # Para obter o bot token:
 # 1. Acesse @BotFather no Telegram

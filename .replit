@@ -44,6 +44,15 @@ author = "agent"
 task = "shell.exec"
 args = "uv add ccxt plotly pandas numpy"
 
+[[workflows.workflow]]
+name = "Telegram Bot"
+author = 47714575
+mode = "sequential"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "python start_telegram_bot.py"
+
 [[ports]]
 localPort = 5000
 externalPort = 80
