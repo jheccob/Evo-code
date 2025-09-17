@@ -1,52 +1,67 @@
 
 #!/usr/bin/env python3
 """
-Teste simples do bot Telegram
+Teste simples do bot Telegram - Versão Produção
 """
 
 import asyncio
 import logging
-from telegram_bot import TelegramTradingBot
-from config.telegram_config import TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
+from services.telegram_service import ProfessionalTelegramService
+from config.production_config import ProductionConfig
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 async def test_bot():
-    """Teste básico do bot"""
-    bot = TelegramTradingBot()
-    
-    # Configurar bot
-    success = bot.configure(TELEGRAM_BOT_TOKEN)
-    if not success:
-        logger.error("❌ Falha na configuração do bot")
-        return
-    
-    # Testar conexão
-    connection_ok, message = await bot.test_connection()
-    logger.info(f"Conexão: {connection_ok} - {message}")
-    
-    if connection_ok:
-        logger.info("✅ Bot conectado! Enviando mensagem de teste...")
+    """Teste do bot profissional"""
+    try:
+        logger.info("🧪 Testando bot profissional...")
         
-        # Enviar mensagem de teste
-        success, result = await bot.send_custom_message(
-            "🤖 **Bot Online!**\n\n"
-            "Seu bot está funcionando perfeitamente!\n\n"
-            "📊 **Comandos disponíveis:**\n"
-            "• `/start` - Iniciar bot\n"
-            "• `/help` - Ver ajuda\n"
-            "• `/analise BTC/USDT` - Análise\n"
-            "• `/status` - Ver status\n\n"
-            "🚀 Digite qualquer comando para testar!"
-        )
+        # Validar configuração
+        if not ProductionConfig.validate_config():
+            logger.error("❌ Configuração inválida!")
+            return False
         
-        if success:
-            logger.info("✅ Mensagem de teste enviada!")
-        else:
-            logger.error(f"❌ Erro ao enviar: {result}")
-    
-    return connection_ok
+        # Criar e inicializar serviço
+        service = ProfessionalTelegramService()
+        
+        success = await service.initialize()
+        if not success:
+            logger.error("❌ Falha na inicialização")
+            return False
+        
+        # Testar conexão
+        try:
+            me = await service.bot.get_me()
+            logger.info(f"✅ Bot conectado: @{me.username}")
+            logger.info(f"📝 Nome: {me.first_name}")
+            logger.info(f"🆔 ID: {me.id}")
+            
+            # Enviar mensagem de teste (se chat ID configurado)
+            if ProductionConfig.TELEGRAM_CHAT_ID != "SEU_CHAT_ID_AQUI":
+                await service.bot.send_message(
+                    ProductionConfig.TELEGRAM_CHAT_ID,
+                    "✅ **Bot Teste Profissional**\n\n"
+                    "🤖 Bot funcionando perfeitamente!\n"
+                    "🚀 Sistema pronto para produção!\n\n"
+                    "Digite `/start` para começar!",
+                    parse_mode='Markdown'
+                )
+                logger.info("📤 Mensagem de teste enviada!")
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"❌ Erro na conexão: {e}")
+            return False
+            
+    except Exception as e:
+        logger.error(f"❌ Erro no teste: {e}")
+        return False
 
 if __name__ == '__main__':
-    asyncio.run(test_bot())
+    result = asyncio.run(test_bot())
+    if result:
+        logger.info("🎉 Teste concluído com sucesso!")
+    else:
+        logger.error("💥 Teste falhou!")
