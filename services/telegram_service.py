@@ -50,18 +50,50 @@ class SecureTelegramService:
             return False, "❌ Token e Chat ID são obrigatórios"
             
         try:
-            # Testar configuração
+            # Limpar e validar entradas
             self.bot_token = token.strip()
             self.chat_id = chat_id.strip()
+            
+            # Validações básicas
+            if not self.bot_token.count(':') == 1:
+                return False, "❌ Formato do token inválido. Deve ser como: 123456789:ABCDEF..."
+            
+            # Tentar criar o bot
             self.bot = Bot(token=self.bot_token)
             
-            # Salvar configuração de forma segura no banco
-            db.save_setting("telegram_token", self.bot_token)
-            db.save_setting("telegram_chat_id", self.chat_id)
-            db.save_setting("telegram_enabled", True)
-            
-            self.enabled = True
-            return True, "✅ Telegram configurado com sucesso!"
+            # Teste de conexão antes de salvar
+            try:
+                import asyncio
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                
+                # Testar autenticação
+                me = loop.run_until_complete(self.bot.get_me())
+                logger.info(f"Bot autenticado: @{me.username}")
+                
+                # Testar envio de mensagem
+                test_msg = f"🤖 Teste de configuração\n✅ Bot @{me.username} conectado!"
+                loop.run_until_complete(
+                    self.bot.send_message(chat_id=self.chat_id, text=test_msg)
+                )
+                
+                # Salvar apenas se tudo funcionou
+                db.save_setting("telegram_token", self.bot_token)
+                db.save_setting("telegram_chat_id", self.chat_id)
+                db.save_setting("telegram_enabled", True)
+                
+                self.enabled = True
+                return True, f"✅ Telegram configurado! Bot: @{me.username}"
+                
+            except TelegramError as te:
+                if "Unauthorized" in str(te):
+                    return False, "❌ Token inválido ou bot desabilitado"
+                elif "Chat not found" in str(te):
+                    return False, "❌ Chat ID não encontrado. Verifique se enviou /start para o bot"
+                elif "Forbidden" in str(te):
+                    return False, "❌ Bot foi bloqueado. Desbloqueie e envie /start"
+                else:
+                    return False, f"❌ Erro do Telegram: {str(te)}"
             
         except Exception as e:
             logger.error(f"Erro ao configurar Telegram: {e}")
