@@ -888,11 +888,28 @@ if signals_df is not None and len(signals_df) > 0:
     if 'macd_signal' in display_df.columns:
         display_df['macd_signal'] = display_df['macd_signal'].apply(lambda x: f"{x:.4f}" if pd.notna(x) else "N/A")
         
-    # Rename columns
-    if 'macd' in display_df.columns and 'macd_signal' in display_df.columns:
-        display_df.columns = ['Data/Hora', 'Par', 'Preço', 'RSI', 'MACD', 'MACD Signal', 'Sinal']
-    else:
-        display_df.columns = ['Data/Hora', 'Par', 'Preço', 'RSI', 'Sinal']
+    # Rename columns baseado nas colunas disponíveis
+    column_map = {
+        'timestamp': 'Data/Hora',
+        'symbol': 'Par', 
+        'price': 'Preço',
+        'rsi': 'RSI',
+        'macd': 'MACD',
+        'macd_signal': 'MACD Signal',
+        'signal': 'Sinal',
+        'signal_type': 'Sinal'
+    }
+    
+    # Renomear apenas as colunas que existem
+    display_df = display_df.rename(columns=column_map)
+    
+    # Selecionar apenas as colunas que queremos mostrar
+    available_columns = []
+    for col in ['Data/Hora', 'Par', 'Preço', 'RSI', 'MACD', 'MACD Signal', 'Sinal']:
+        if col in display_df.columns:
+            available_columns.append(col)
+    
+    display_df = display_df[available_columns]
     
     st.dataframe(
         display_df,

@@ -85,5 +85,9 @@ args = "python start_telegram_bot.py"
 localPort = 5000
 externalPort = 80
 
+[[ports]]
+localPort = 43759
+externalPort = 3000
+
 [agent]
 expertMode = true
