@@ -31,6 +31,8 @@ class SecureTelegramService:
         self.bot_token = None
         self.chat_id = None
         self.enabled = False
+        # Tentar carregar configuração existente
+        self.load_config()
         
     def configure(self, token: str, chat_id: str) -> Tuple[bool, str]:
         """
@@ -160,7 +162,9 @@ class SecureTelegramService:
             logger.error(error_msg)
             return False, error_msg
     
-    async def send_signal_alert(self, signal_data: Dict[str, Any]) -> Tuple[bool, str]:
+    async def send_signal_alert(self, symbol=None, signal=None, price=None, 
+                              rsi=None, macd=None, macd_signal=None, 
+                              timeframe='1h', signal_data=None, **kwargs) -> Tuple[bool, str]:
         """
         Enviar alerta de sinal de trading
         
@@ -174,12 +178,23 @@ class SecureTelegramService:
             return False, "❌ Telegram não configurado"
             
         try:
-            # Construir mensagem do sinal
-            symbol = signal_data.get('symbol', 'N/A')
-            signal = signal_data.get('signal', 'NEUTRO')
-            price = signal_data.get('price', 0)
-            rsi = signal_data.get('rsi', 0)
-            timeframe = signal_data.get('timeframe', '1h')
+            # Se signal_data foi passado como dict, usar ele
+            if signal_data and isinstance(signal_data, dict):
+                symbol = signal_data.get('symbol', 'N/A')
+                signal = signal_data.get('signal', 'NEUTRO')
+                price = signal_data.get('price', 0)
+                rsi = signal_data.get('rsi', 0)
+                timeframe = signal_data.get('timeframe', '1h')
+                macd = signal_data.get('macd', 0)
+                macd_signal = signal_data.get('macd_signal', 0)
+            # Senão, usar parâmetros individuais
+            else:
+                symbol = symbol or 'N/A'
+                signal = signal or 'NEUTRO'
+                price = price or 0
+                rsi = rsi or 0
+                macd = macd or 0
+                macd_signal = macd_signal or 0
             
             # Emoji baseado no sinal
             emoji_map = {
