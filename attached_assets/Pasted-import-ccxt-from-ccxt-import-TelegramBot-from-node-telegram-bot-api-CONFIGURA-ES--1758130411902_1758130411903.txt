@@ -1,5 +1,5 @@
-import ccxt from "ccxt";
-import TelegramBot from "node-telegram-bot-api";
+From telegram import update 
+From telegram.ex import aplicativo,commandHandler , contextTypes
 
 // ===== CONFIGURAÇÕES =====
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN || "SEU_TOKEN_AQUI";
