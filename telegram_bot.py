@@ -1,9 +1,17 @@
 import asyncio
 import logging
 from datetime import datetime
-from telegram import Bot, Update
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
-from telegram.error import TelegramError, RetryAfter, TimedOut
+from typing import Optional, Dict, Any
+import time
+
+try:
+    from telegram import Bot, Update
+    from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+    from telegram.error import TelegramError, RetryAfter, TimedOut, NetworkError
+    TELEGRAM_AVAILABLE = True
+except ImportError:
+    TELEGRAM_AVAILABLE = False
+
 from user_manager import UserManager
 from trading_bot import TradingBot
 
@@ -13,12 +21,17 @@ class TelegramTradingBot:
     """Trading bot for Telegram"""
     
     def __init__(self):
+        if not TELEGRAM_AVAILABLE:
+            logger.error("❌ Telegram library not available. Install with: pip install python-telegram-bot")
+            
         self.bot_token = None
         self.bot = None
         self.application = None
         self.enabled = False
         self.user_manager = UserManager()
         self.trading_bot = TradingBot()
+        self.last_error_time = 0
+        self.error_count = 0
         
     def configure(self, bot_token):
         """Configure the Telegram bot"""
@@ -157,9 +170,9 @@ Exemplo: /analise BTC/USDT
         
         symbol = context.args[0].upper()
         
-        # Validate symbol
-        valid_symbols = ["BTC/USDT", "ETH/USDT", "XLM/USDT", "ADA/USDT", "DOT/USDT", "MATIC/USDT", "LINK/USDT", "UNI/USDT", "SOL/USDT"]
-        if symbol not in valid_symbols:
+        # Validate symbol - usar configuração centralizada
+        from config.telegram_bot_config import TelegramBotConfig
+        if not TelegramBotConfig.is_valid_pair(symbol):
             await update.message.reply_text(
                 f"❌ **Par não suportado:** `{symbol}`\n\n"
                 "💡 **Pares disponíveis:**\n"
@@ -175,11 +188,20 @@ Exemplo: /analise BTC/USDT
             # Configure trading bot
             self.trading_bot.update_config(symbol=symbol)
             
-            # Get market data
-            data = self.trading_bot.get_market_data()
+            # Get market data with retry logic
+            data = None
+            for attempt in range(3):
+                try:
+                    data = self.trading_bot.get_market_data()
+                    if data is not None and not data.empty:
+                        break
+                except Exception as e:
+                    logger.warning(f"Attempt {attempt + 1} failed: {e}")
+                    if attempt < 2:
+                        await asyncio.sleep(1)
             
             if data is None or data.empty:
-                await loading_msg.edit_text("❌ **Erro:** Não foi possível obter dados do mercado")
+                await loading_msg.edit_text("❌ **Erro:** Não foi possível obter dados do mercado após 3 tentativas")
                 return
             
             # Get analysis
@@ -220,9 +242,25 @@ Exemplo: /analise BTC/USDT
             # Record analysis
             self.user_manager.record_analysis(user_id)
             
+        except RetryAfter as e:
+            logger.warning(f"Rate limited by Telegram: {e.retry_after}s")
+            await loading_msg.edit_text(f"⏱️ **Rate limit:** Aguarde {e.retry_after} segundos")
+        except NetworkError as e:
+            logger.error(f"Network error: {e}")
+            await loading_msg.edit_text("🌐 **Erro de rede:** Tente novamente em alguns minutos")
         except Exception as e:
             logger.error(f"Error in analyze command: {e}")
-            await loading_msg.edit_text(f"❌ **Erro:** {str(e)}")
+            self.error_count += 1
+            self.last_error_time = time.time()
+            
+            # Rate limiting mais inteligente
+            if self.error_count > 5 and time.time() - self.last_error_time < 300:  # 5 erros em 5 min
+                await loading_msg.edit_text("🛑 **Sistema temporariamente indisponível**\nTente novamente em alguns minutos.")
+            elif "Network" in str(e) or "timeout" in str(e).lower():
+                await loading_msg.edit_text("🌐 **Erro de conexão**\nVerifique sua internet e tente novamente.")
+            else:
+                error_msg = str(e)[:100] + "..." if len(str(e)) > 100 else str(e)
+                await loading_msg.edit_text(f"❌ **Erro:** {error_msg}")
     
     async def status_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /status command"""
