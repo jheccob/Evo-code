@@ -11,6 +11,9 @@ import threading
 
 # Importar funções de fuso horário brasileiro
 from utils.timezone_utils import now_brazil, format_brazil_time, get_brazil_datetime_naive
+
+# Importar banco de dados
+from database.database import db
 from trading_bot import TradingBot
 from indicators import TechnicalIndicators
 TELEGRAM_AVAILABLE = False
@@ -502,15 +505,29 @@ if st.session_state.current_data is not None:
             except Exception as e:
                 st.sidebar.warning(f"⚠️ Erro ao enviar alerta: {str(e)}")
         
-        st.session_state.signals_history.append({
+        # Criar dados do sinal para salvar
+        signal_data = {
             'timestamp': get_brazil_datetime_naive(),
             'symbol': symbol,
             'price': last_candle['close'],
             'rsi': last_candle['rsi'],
             'macd': last_candle['macd'],
             'macd_signal': last_candle['macd_signal'],
-            'signal': signal
-        })
+            'signal': signal,
+            'timeframe': timeframe,
+            'macd_value': last_candle['macd'],
+            'signal_strength': abs(last_candle['rsi'] - 50) / 50  # Força do sinal baseada no RSI
+        }
+        
+        # Salvar no banco de dados
+        try:
+            db.save_trading_signal(signal_data)
+        except Exception as e:
+            st.error(f"Erro ao salvar sinal no banco: {str(e)}")
+        
+        # Manter no histórico da sessão também
+        st.session_state.signals_history.append(signal_data)
+        
         # Keep only last 50 signals
         if len(st.session_state.signals_history) > 50:
             st.session_state.signals_history = st.session_state.signals_history[-50:]
@@ -802,11 +819,55 @@ if st.session_state.current_data is not None:
 # Signals History
 st.subheader("📋 Histórico de Sinais")
 
-if st.session_state.signals_history:
-    # Convert to DataFrame
-    signals_df = pd.DataFrame(st.session_state.signals_history)
-    signals_df['timestamp'] = pd.to_datetime(signals_df['timestamp'])
-    signals_df = signals_df.sort_values('timestamp', ascending=False)
+# Opções de exibição do histórico
+col1, col2 = st.columns(2)
+with col1:
+    show_source = st.radio(
+        "Fonte dos dados:",
+        ["Sessão Atual", "Banco de Dados (Persistente)"],
+        help="Escolha se quer ver apenas sinais da sessão atual ou todo o histórico salvo"
+    )
+
+with col2:
+    if show_source == "Banco de Dados (Persistente)":
+        limit_signals = st.number_input("Quantidade de sinais:", min_value=10, max_value=1000, value=100)
+    else:
+        limit_signals = len(st.session_state.signals_history) if st.session_state.signals_history else 0
+
+# Carregar dados conforme seleção
+if show_source == "Banco de Dados (Persistente)":
+    try:
+        # Carregar sinais do banco de dados
+        db_signals = db.get_recent_signals(limit=limit_signals)
+        if db_signals:
+            signals_df = pd.DataFrame(db_signals)
+            # Converter timestamp para datetime se necessário
+            if 'created_at_br' in signals_df.columns:
+                signals_df['timestamp'] = pd.to_datetime(signals_df['created_at_br'], format='%d/%m/%Y %H:%M:%S', errors='coerce')
+            signals_df = signals_df.sort_values('timestamp', ascending=False)
+            
+            # Renomear colunas do banco para compatibilidade
+            column_mapping = {
+                'signal_type': 'signal',
+                'created_at_br': 'timestamp'
+            }
+            signals_df = signals_df.rename(columns=column_mapping)
+        else:
+            signals_df = None
+            st.info("📋 Nenhum sinal encontrado no banco de dados.")
+    except Exception as e:
+        st.error(f"❌ Erro ao carregar dados do banco: {str(e)}")
+        signals_df = None
+else:
+    # Usar dados da sessão atual
+    if st.session_state.signals_history:
+        signals_df = pd.DataFrame(st.session_state.signals_history)
+        signals_df['timestamp'] = pd.to_datetime(signals_df['timestamp'])
+        signals_df = signals_df.sort_values('timestamp', ascending=False)
+    else:
+        signals_df = None
+
+if signals_df is not None and len(signals_df) > 0:
     
     # Format for display
     display_df = signals_df.copy()
@@ -833,11 +894,26 @@ if st.session_state.signals_history:
     )
     
     # Clear history button
-    if st.button("🗑️ Limpar Histórico"):
-        st.session_state.signals_history = []
-        st.rerun()
+    col1, col2 = st.columns(2)
+    with col1:
+        if show_source == "Sessão Atual" and st.button("🗑️ Limpar Histórico"):
+            st.session_state.signals_history = []
+            st.rerun()
+    
+    with col2:
+        if show_source == "Banco de Dados (Persistente)":
+            # Exibir estatísticas do banco
+            try:
+                stats = db.get_statistics()
+                st.info(f"📊 Estatísticas: {stats['total_signals']} sinais total | {stats['signals_24h']} últimas 24h")
+            except Exception as e:
+                st.warning(f"⚠️ Erro ao carregar estatísticas: {str(e)}")
+
 else:
-    st.info("Nenhum sinal gerado ainda. Os sinais aparecerão aqui quando as condições forem atendidas.")
+    if show_source == "Sessão Atual":
+        st.info("Nenhum sinal gerado ainda na sessão atual. Os sinais aparecerão aqui quando as condições forem atendidas.")
+    else:
+        st.info("📋 Nenhum sinal encontrado no banco de dados.")
 
     # Auto-refresh mechanism - throttled for performance  
     if auto_refresh:
