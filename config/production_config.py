@@ -36,7 +36,7 @@ class ProductionConfig:
             errors.append("❌ TELEGRAM_BOT_TOKEN não configurado")
 
         if not cls.TELEGRAM_BOT_TOKEN.startswith(("1", "2", "5", "6", "7")):
-            errors.append("❌ TELEGRAM_BOT_TOKEN formato inválido")_BOT_TOKEN inválido")
+            errors.append("❌ TELEGRAM_BOT_TOKEN formato inválido")
 
         if errors:
             for error in errors:

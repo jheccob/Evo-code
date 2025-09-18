@@ -10,20 +10,16 @@ import asyncio
 import threading
 from trading_bot import TradingBot
 from indicators import TechnicalIndicators
-try:
-    from telegram_bot import TelegramNotifier
-    TELEGRAM_AVAILABLE = True
-except ImportError:
-    TELEGRAM_AVAILABLE = False
-    # Create a dummy class for compatibility
-    class TelegramNotifier:
-        def __init__(self):
-            self.enabled = False
-        def configure(self, *args): return False
-        def is_configured(self): return False
-        async def test_connection(self): return False, "Not available"
-        async def send_signal_alert(self, *args): return False, "Not available"
-        async def send_custom_message(self, *args): return False, "Not available"
+TELEGRAM_AVAILABLE = False
+# Create a dummy class for compatibility  
+class TelegramNotifier:
+    def __init__(self):
+        self.enabled = False
+    def configure(self, *args): return False
+    def is_configured(self): return False
+    async def test_connection(self): return False, "Not available"
+    async def send_signal_alert(self, *args): return False, "Not available"
+    async def send_custom_message(self, *args): return False, "Not available"
 
 from backtest import BacktestEngine
 
@@ -219,16 +215,17 @@ st.session_state.trading_bot.update_config(
 # Main dashboard
 st.title("📈 Trading Signals Dashboard")
 
-# Import user manager for admin features
+# Import user manager for admin features  
 from user_manager import UserManager
-from telegram_bot import TelegramTradingBot
+# TelegramTradingBot disabled for now due to import issues
 
 # Initialize user manager
 if 'user_manager' not in st.session_state:
     st.session_state.user_manager = UserManager()
 
-if 'telegram_trading_bot' not in st.session_state:
-    st.session_state.telegram_trading_bot = TelegramTradingBot()
+# Telegram trading bot disabled for now due to import issues
+# if 'telegram_trading_bot' not in st.session_state:
+#     st.session_state.telegram_trading_bot = TelegramTradingBot()
 
 # Create tabs for different sections
 tab1, tab2, tab3, tab4 = st.tabs(["📊 Análise em Tempo Real", "🔬 Backtesting", "⚙️ Exportar Dados", "👑 Admin Panel"])

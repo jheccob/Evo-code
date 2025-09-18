@@ -2,15 +2,15 @@ modules = ["python-3.11"]
 
 [nix]
 channel = "stable-25_05"
-packages = ["glibcLocales"]
+packages = ["cargo", "glibcLocales", "libiconv", "libxcrypt", "openssl", "pkg-config", "postgresql", "rustc"]
 
 [deployment]
 deploymentTarget = "autoscale"
-run = ["sh", "-c", "python main_production.py"]
+run = ["streamlit", "run", "app.py", "--server.port", "5000"]
 build = ["sh", "-c", "pip install -r requirements_production.txt"]
 
 [workflows]
-runButton = "Production Bot"
+runButton = "Project"
 
 [[workflows.workflow]]
 name = "Project"
@@ -29,13 +29,13 @@ args = "install_dependencies"
 name = "Streamlit Trading Dashboard"
 author = "agent"
 
-[[workflows.workflow.tasks]]
-task = "shell.exec"
-args = "streamlit run app.py --server.port 5000"
-waitForPort = 5000
-
 [workflows.workflow.metadata]
 outputType = "webview"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "streamlit run app.py --server.port=5000 --server.address=0.0.0.0"
+waitForPort = 5000
 
 [[workflows.workflow]]
 name = "install_dependencies"
@@ -84,3 +84,7 @@ args = "python start_telegram_bot.py"
 [[ports]]
 localPort = 5000
 externalPort = 80
+
+[[ports]]
+localPort = 46311
+externalPort = 3000
