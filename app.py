@@ -8,6 +8,9 @@ import json
 from datetime import datetime, timedelta
 import asyncio
 import threading
+
+# Importar funções de fuso horário brasileiro
+from utils.timezone_utils import now_brazil, format_brazil_time, get_brazil_datetime_naive
 from trading_bot import TradingBot
 from indicators import TechnicalIndicators
 TELEGRAM_AVAILABLE = False
@@ -241,7 +244,7 @@ with tab1:
     
     # Create overview table for all selected symbols
     overview_data = []
-    current_time = datetime.now()
+    current_time = now_brazil()
     
     for sym in selected_symbols:
         try:
@@ -443,7 +446,7 @@ col1, col2, col3, col4, col5 = st.columns(5)
 # Check if we need to update data
 should_update = (
     st.session_state.last_update is None or 
-    (datetime.now() - st.session_state.last_update).total_seconds() > 60
+    (get_brazil_datetime_naive() - st.session_state.last_update).total_seconds() > 60
 )
 
 if should_update:
@@ -452,7 +455,7 @@ if should_update:
             data = st.session_state.trading_bot.get_market_data()
             if data is not None:
                 st.session_state.current_data = data
-                st.session_state.last_update = datetime.now()
+                st.session_state.last_update = get_brazil_datetime_naive()
     except Exception as e:
         st.error(f"Erro ao carregar dados: {str(e)}")
 
@@ -479,7 +482,7 @@ if st.session_state.current_data is not None:
     if signal not in ["NEUTRO"] and (
         not st.session_state.signals_history or 
         st.session_state.signals_history[-1]['signal'] != signal or
-        st.session_state.signals_history[-1]['timestamp'] < datetime.now() - timedelta(minutes=5)
+        st.session_state.signals_history[-1]['timestamp'] < get_brazil_datetime_naive() - timedelta(minutes=5)
     ):
         # Send Telegram notification if enabled
         if st.session_state.telegram_notifications and st.session_state.telegram_bot.is_configured():
@@ -500,7 +503,7 @@ if st.session_state.current_data is not None:
                 st.sidebar.warning(f"⚠️ Erro ao enviar alerta: {str(e)}")
         
         st.session_state.signals_history.append({
-            'timestamp': datetime.now(),
+            'timestamp': get_brazil_datetime_naive(),
             'symbol': symbol,
             'price': last_candle['close'],
             'rsi': last_candle['rsi'],
@@ -569,7 +572,7 @@ if st.session_state.current_data is not None:
         else:
             st.metric(
                 label="🕒 Última Atualização",
-                value=st.session_state.last_update.strftime("%H:%M:%S") if st.session_state.last_update else "---",
+                value=format_brazil_time(st.session_state.last_update, "%H:%M:%S") if st.session_state.last_update else "---",
                 delta=None
             )
 
@@ -839,7 +842,7 @@ else:
     # Auto-refresh mechanism - throttled for performance  
     if auto_refresh:
         # Only refresh every 30 seconds to reduce API calls
-        if st.session_state.last_update is None or (datetime.now() - st.session_state.last_update).total_seconds() > 30:
+        if st.session_state.last_update is None or (get_brazil_datetime_naive() - st.session_state.last_update).total_seconds() > 30:
             time.sleep(1)
             st.rerun()
         else:
@@ -974,7 +977,7 @@ with tab3:
                 st.download_button(
                     label="⬇️ Download CSV",
                     data=csv_data,
-                    file_name=f"{symbol}_{timeframe}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                    file_name=f"{symbol}_{timeframe}_{format_brazil_time(fmt='%Y%m%d_%H%M%S')}.csv",
                     mime="text/csv"
                 )
         else:
@@ -989,7 +992,7 @@ with tab3:
                 st.download_button(
                     label="⬇️ Download CSV",
                     data=csv_data,
-                    file_name=f"sinais_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                    file_name=f"sinais_{format_brazil_time(fmt='%Y%m%d_%H%M%S')}.csv",
                     mime="text/csv"
                 )
         else:
@@ -1009,7 +1012,7 @@ with tab3:
                     st.download_button(
                         label="⬇️ Download Trades CSV",
                         data=csv_data,
-                        file_name=f"backtest_trades_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                        file_name=f"backtest_trades_{format_brazil_time(fmt='%Y%m%d_%H%M%S')}.csv",
                         mime="text/csv"
                     )
         
@@ -1020,7 +1023,7 @@ with tab3:
                 st.download_button(
                     label="⬇️ Download Portfolio CSV",
                     data=csv_data,
-                    file_name=f"backtest_portfolio_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                    file_name=f"backtest_portfolio_{format_brazil_time(fmt='%Y%m%d_%H%M%S')}.csv",
                     mime="text/csv"
                 )
 
