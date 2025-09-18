@@ -115,6 +115,77 @@ class UserManager:
                               if u.get('last_reset') == datetime.now().date().isoformat())
         }
     
+    def get_stats(self) -> Dict:
+        """Compatibilidade com telegram_bot.py"""
+        stats = self.get_user_stats()
+        stats.update({
+            'analyses_today': sum(u.get('analysis_count_today', 0) for u in self.users.values()),
+            'total_analyses': sum(u.get('analysis_count_today', 0) for u in self.users.values())
+        })
+        return stats
+    
+    def get_detailed_stats(self) -> Dict:
+        """Estatísticas detalhadas para admin"""
+        basic_stats = self.get_stats()
+        
+        # Calcular usuários ativos e novos
+        today = datetime.now().date()
+        week_ago = today - timedelta(days=7)
+        
+        new_this_week = sum(1 for u in self.users.values() 
+                           if datetime.fromisoformat(u.get('joined_date', '2020-01-01')).date() >= week_ago)
+        
+        basic_stats.update({
+            'active_today': basic_stats['active_today'],
+            'new_this_week': new_this_week,
+            'signals_24h': basic_stats['analyses_today'],
+            'analyses_this_week': basic_stats['total_analyses'],
+            'premium_conversion': (basic_stats['premium_users'] / max(basic_stats['total_users'], 1)) * 100,
+            'monthly_revenue': basic_stats['premium_users'] * 19.90
+        })
+        
+        return basic_stats
+    
+    def get_recent_users(self, limit=10) -> List[Dict]:
+        """Usuários recentes para admin"""
+        users_list = sorted(
+            self.users.values(), 
+            key=lambda x: x.get('joined_date', '2020-01-01'), 
+            reverse=True
+        )[:limit]
+        
+        return [{
+            'user_id': u.get('id'),
+            'username': u.get('username'),
+            'first_name': u.get('first_name'),
+            'is_premium': u.get('plan') == 'premium',
+            'created_at': datetime.fromisoformat(u.get('joined_date', '2020-01-01'))
+        } for u in users_list]
+    
+    def get_all_user_ids(self) -> List[int]:
+        """Lista de todos os IDs de usuário para broadcast"""
+        return [int(user_id) for user_id in self.users.keys()]
+    
+    def get_analyses_today(self, user_id: int) -> int:
+        """Número de análises hoje"""
+        user = self.get_user(user_id)
+        if not user:
+            return 0
+        
+        # Reset counter se for um novo dia
+        today = datetime.now().date().isoformat()
+        if user.get('last_reset') != today:
+            user['analysis_count_today'] = 0
+            user['last_reset'] = today
+            self.save_users()
+        
+        return user.get('analysis_count_today', 0)
+    
+    @property
+    def max_analyses_per_day(self):
+        """Máximo de análises por dia para usuários free"""
+        return 1
+    
     def add_admin(self, user_id: int):
         """Add user as admin"""
         if user_id not in self.admin_ids:

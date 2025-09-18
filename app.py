@@ -879,7 +879,10 @@ if signals_df is not None and len(signals_df) > 0:
     
     # Format for display
     display_df = signals_df.copy()
-    display_df['timestamp'] = pd.to_datetime(display_df['timestamp']).dt.strftime('%Y-%m-%d %H:%M:%S')
+    # Converter para datetime se necessário, depois formatar
+    if not pd.api.types.is_datetime64_any_dtype(display_df['timestamp']):
+        display_df['timestamp'] = pd.to_datetime(display_df['timestamp'], errors='coerce')
+    display_df['timestamp'] = display_df['timestamp'].dt.strftime('%Y-%m-%d %H:%M:%S')
     display_df['price'] = display_df['price'].apply(lambda x: f"${x:.6f}")
     display_df['rsi'] = display_df['rsi'].apply(lambda x: f"{x:.2f}")
     

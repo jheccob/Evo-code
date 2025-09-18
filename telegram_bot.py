@@ -170,9 +170,9 @@ Exemplo: /analise BTC/USDT
         
         symbol = context.args[0].upper()
         
-        # Validate symbol
-        valid_symbols = ["BTC/USDT", "ETH/USDT", "XLM/USDT", "ADA/USDT", "DOT/USDT", "MATIC/USDT", "LINK/USDT", "UNI/USDT", "SOL/USDT"]
-        if symbol not in valid_symbols:
+        # Validate symbol - usar configuração centralizada
+        from config.telegram_bot_config import TelegramBotConfig
+        if not TelegramBotConfig.is_valid_pair(symbol):
             await update.message.reply_text(
                 f"❌ **Par não suportado:** `{symbol}`\n\n"
                 "💡 **Pares disponíveis:**\n"
@@ -253,10 +253,14 @@ Exemplo: /analise BTC/USDT
             self.error_count += 1
             self.last_error_time = time.time()
             
+            # Rate limiting mais inteligente
             if self.error_count > 5 and time.time() - self.last_error_time < 300:  # 5 erros em 5 min
-                await loading_msg.edit_text("🛑 **Sistema temporariamente indisponível**")
+                await loading_msg.edit_text("🛑 **Sistema temporariamente indisponível**\nTente novamente em alguns minutos.")
+            elif "Network" in str(e) or "timeout" in str(e).lower():
+                await loading_msg.edit_text("🌐 **Erro de conexão**\nVerifique sua internet e tente novamente.")
             else:
-                await loading_msg.edit_text(f"❌ **Erro:** {str(e)[:100]}...")
+                error_msg = str(e)[:100] + "..." if len(str(e)) > 100 else str(e)
+                await loading_msg.edit_text(f"❌ **Erro:** {error_msg}")
     
     async def status_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /status command"""
