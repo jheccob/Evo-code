@@ -63,32 +63,7 @@ mode = "sequential"
 task = "shell.exec"
 args = "python main_production.py"
 
-[[workflows.workflow]]
-name = "Test Telegram Bot"
-author = 47714575
-mode = "sequential"
 
-[[workflows.workflow.tasks]]
-task = "shell.exec"
-args = "python test_telegram_simple.py"
-
-[[workflows.workflow]]
-name = "Simple Telegram Bot"
-author = 47714575
-mode = "sequential"
-
-[[workflows.workflow.tasks]]
-task = "shell.exec"
-args = "python start_telegram_bot.py"
-
-[[workflows.workflow]]
-name = "Test Telegram Now"
-author = 47741344
-mode = "sequential"
-
-[[workflows.workflow.tasks]]
-task = "shell.exec"
-args = "python test_telegram_now.py"
 
 [[ports]]
 localPort = 5000
