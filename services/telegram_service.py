@@ -111,11 +111,17 @@ class SecureTelegramService:
             enabled = db.get_setting("telegram_enabled", False)
             
             if token and chat_id and enabled:
-                self.bot_token = token
-                self.chat_id = chat_id
-                self.bot = Bot(token=self.bot_token)
-                self.enabled = True
-                return True
+                # Validar se não são strings vazias
+                token = str(token).strip()
+                chat_id = str(chat_id).strip()
+                
+                if token and chat_id and token != 'None' and chat_id != 'None':
+                    self.bot_token = token
+                    self.chat_id = chat_id
+                    self.bot = Bot(token=self.bot_token)
+                    self.enabled = True
+                    logger.info("✅ Configuração Telegram carregada do banco de dados")
+                    return True
                 
         except Exception as e:
             logger.error(f"Erro ao carregar configuração do Telegram: {e}")
@@ -160,12 +166,20 @@ class SecureTelegramService:
             logger.error(error_msg)
             return False, error_msg
     
-    async def send_signal_alert(self, signal_data: Dict[str, Any]) -> Tuple[bool, str]:
+    async def send_signal_alert(self, symbol: str = None, signal: str = None, price: float = None, 
+                              rsi: float = None, macd: float = None, macd_signal: float = None, 
+                              timeframe: str = '1h', **kwargs) -> Tuple[bool, str]:
         """
         Enviar alerta de sinal de trading
         
         Args:
-            signal_data: Dados do sinal
+            symbol: Par de trading
+            signal: Tipo do sinal
+            price: Preço atual
+            rsi: Valor do RSI
+            macd: Valor do MACD
+            macd_signal: Valor do MACD Signal
+            timeframe: Timeframe
             
         Returns:
             Tuple[bool, str]: (sucesso, mensagem)
@@ -174,12 +188,14 @@ class SecureTelegramService:
             return False, "❌ Telegram não configurado"
             
         try:
-            # Construir mensagem do sinal
-            symbol = signal_data.get('symbol', 'N/A')
-            signal = signal_data.get('signal', 'NEUTRO')
-            price = signal_data.get('price', 0)
-            rsi = signal_data.get('rsi', 0)
-            timeframe = signal_data.get('timeframe', '1h')
+            # Se foi passado um dict como primeiro parâmetro
+            if isinstance(symbol, dict):
+                signal_data = symbol
+                symbol = signal_data.get('symbol', 'N/A')
+                signal = signal_data.get('signal', 'NEUTRO')
+                price = signal_data.get('price', 0)
+                rsi = signal_data.get('rsi', 0)
+                timeframe = signal_data.get('timeframe', '1h')
             
             # Emoji baseado no sinal
             emoji_map = {

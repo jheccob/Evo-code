@@ -50,6 +50,8 @@ if 'trading_bot' not in st.session_state:
 
 if 'telegram_bot' not in st.session_state:
     st.session_state.telegram_bot = SecureTelegramService()
+    # Tentar carregar configuração existente
+    st.session_state.telegram_bot.load_config()
 
 if 'signals_history' not in st.session_state:
     st.session_state.signals_history = []
