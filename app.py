@@ -16,16 +16,23 @@ from utils.timezone_utils import now_brazil, format_brazil_time, get_brazil_date
 from database.database import db
 from trading_bot import TradingBot
 from indicators import TechnicalIndicators
-TELEGRAM_AVAILABLE = False
-# Create a dummy class for compatibility  
-class TelegramNotifier:
-    def __init__(self):
-        self.enabled = False
-    def configure(self, *args): return False
-    def is_configured(self): return False
-    async def test_connection(self): return False, "Not available"
-    async def send_signal_alert(self, *args): return False, "Not available"
-    async def send_custom_message(self, *args): return False, "Not available"
+
+# Importar serviço seguro do Telegram
+try:
+    from services.telegram_service import SecureTelegramService, TELEGRAM_AVAILABLE
+except ImportError:
+    TELEGRAM_AVAILABLE = False
+    
+    # Classe dummy para compatibilidade
+    class SecureTelegramService:
+        def __init__(self):
+            self.enabled = False
+        def configure(self, *args): return False, "Telegram não disponível"
+        def is_configured(self): return False
+        async def test_connection(self): return False, "Not available"
+        async def send_signal_alert(self, *args): return False, "Not available"
+        async def send_custom_message(self, *args): return False, "Not available"
+        def get_config_status(self): return {'available': False, 'configured': False}
 
 from backtest import BacktestEngine
 
@@ -42,7 +49,7 @@ if 'trading_bot' not in st.session_state:
     st.session_state.trading_bot = TradingBot()
 
 if 'telegram_bot' not in st.session_state:
-    st.session_state.telegram_bot = TelegramNotifier()
+    st.session_state.telegram_bot = SecureTelegramService()
 
 if 'signals_history' not in st.session_state:
     st.session_state.signals_history = []
@@ -122,92 +129,92 @@ if st.sidebar.button("🔄 Atualizar Agora"):
 
 # Telegram Configuration Section
 st.sidebar.markdown("---")
-st.sidebar.subheader("📱 Telegram Alerts")
+# Interface segura de configuração do Telegram
+st.sidebar.subheader("📱 Configuração Telegram")
 
-# Try to load config from file
-try:
-    from config.telegram_config import TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
-    has_config_file = True
-    default_token = TELEGRAM_BOT_TOKEN if TELEGRAM_BOT_TOKEN != "SEU_BOT_TOKEN_AQUI" else ""
-    default_chat_id = TELEGRAM_CHAT_ID if TELEGRAM_CHAT_ID != "SEU_CHAT_ID_AQUI" else ""
-except ImportError:
-    has_config_file = False
-    default_token = ""
-    default_chat_id = ""
-
-if has_config_file and default_token and default_chat_id:
-    st.sidebar.success("✅ Configuração carregada do arquivo config/")
-    use_file_config = st.sidebar.checkbox("🔧 Usar configuração do arquivo", value=True)
-else:
-    use_file_config = False
-    if has_config_file:
-        st.sidebar.info("💡 Configure o arquivo config/telegram_config.py")
-
-telegram_enabled = st.sidebar.checkbox(
-    "🔔 Ativar notificações Telegram", 
-    value=st.session_state.telegram_notifications
-)
-
-if telegram_enabled:
-    if use_file_config and default_token and default_chat_id:
-        telegram_token = default_token
-        telegram_chat_id = default_chat_id
-        st.sidebar.info(f"🤖 Token: {telegram_token[:10]}...")
-        st.sidebar.info(f"💬 Chat ID: {telegram_chat_id}")
-    else:
-        telegram_token = st.sidebar.text_input(
-            "🤖 Bot Token", 
-            type="password",
-            placeholder="123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11",
-            help="Obtenha um token criando um bot via @BotFather",
-            value=default_token
-        )
-        
-        telegram_chat_id = st.sidebar.text_input(
-            "💬 Chat ID",
-            placeholder="-1001234567890 ou 123456789",
-            help="ID do chat onde receber alertas",
-            value=default_chat_id
-        )
+if TELEGRAM_AVAILABLE:
+    # Status da configuração
+    config_status = st.session_state.telegram_bot.get_config_status()
     
-    if telegram_token and telegram_chat_id:
-        if st.sidebar.button("✅ Configurar Telegram"):
-            success = st.session_state.telegram_bot.configure(telegram_token, telegram_chat_id)
-            if success:
-                st.session_state.telegram_notifications = True
-                # Test connection
+    if config_status['configured']:
+        st.sidebar.success("✅ Telegram configurado!")
+        
+        # Opções para usuário configurado
+        col1, col2 = st.sidebar.columns(2)
+        with col1:
+            if st.sidebar.button("🧪 Testar"):
                 try:
                     loop = asyncio.new_event_loop()
                     asyncio.set_event_loop(loop)
-                    success, message = loop.run_until_complete(
+                    success, msg = loop.run_until_complete(
                         st.session_state.telegram_bot.test_connection()
                     )
                     if success:
-                        st.sidebar.success("✅ Telegram configurado com sucesso!")
+                        st.sidebar.success(msg)
                     else:
-                        st.sidebar.error(f"❌ Erro: {message}")
+                        st.sidebar.error(msg)
                 except Exception as e:
-                    st.sidebar.error(f"❌ Erro ao testar conexão: {str(e)}")
-            else:
-                st.sidebar.error("❌ Erro na configuração do Telegram")
-    
-    if st.session_state.telegram_bot.is_configured():
-        st.sidebar.success("🟢 Telegram ativo")
-        if st.sidebar.button("📤 Teste de Mensagem"):
-            try:
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-                success, message = loop.run_until_complete(
-                    st.session_state.telegram_bot.send_custom_message("📊 Teste do bot de trading!")
-                )
-                if success:
-                    st.sidebar.success("✅ Mensagem enviada!")
+                    st.sidebar.error(f"❌ Erro no teste: {str(e)}")
+        
+        with col2:
+            if st.sidebar.button("🗑️ Remover"):
+                st.session_state.telegram_bot.disable()
+                st.rerun()
+        
+        # Checkbox para ativar notificações
+        telegram_enabled = st.sidebar.checkbox(
+            "Ativar notificações automáticas",
+            value=True,
+            help="Enviar sinais automaticamente via Telegram"
+        )
+        st.session_state.telegram_notifications = telegram_enabled
+        
+    else:
+        # Interface de configuração
+        st.sidebar.info("🔧 Configure seu bot do Telegram:")
+        
+        with st.sidebar.form("telegram_config"):
+            st.markdown("""
+            **Como obter suas credenciais:**
+            1. **Token do Bot:** Fale com @BotFather no Telegram
+            2. **Chat ID:** Envie /start para @userinfobot
+            """)
+            
+            bot_token = st.text_input(
+                "🤖 Token do Bot:",
+                type="password",
+                help="Obtido do @BotFather",
+                placeholder="123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11"
+            )
+            
+            chat_id = st.text_input(
+                "💬 Chat ID:",
+                help="Seu ID de chat pessoal",
+                placeholder="123456789"
+            )
+            
+            submitted = st.form_submit_button("💾 Salvar Configuração")
+            
+            if submitted:
+                if bot_token and chat_id:
+                    success, message = st.session_state.telegram_bot.configure(bot_token, chat_id)
+                    if success:
+                        st.sidebar.success(message)
+                        st.rerun()
+                    else:
+                        st.sidebar.error(message)
                 else:
-                    st.sidebar.error(f"❌ {message}")
-            except Exception as e:
-                st.sidebar.error(f"❌ Erro: {str(e)}")
+                    st.sidebar.warning("⚠️ Preencha todos os campos!")
+        
+        telegram_enabled = False
+        st.session_state.telegram_notifications = False
 else:
+    st.sidebar.error("⚠️ Biblioteca Telegram não disponível")
+    st.sidebar.info("Execute: pip install python-telegram-bot")
+    telegram_enabled = False
     st.session_state.telegram_notifications = False
+
+# Telegram configuration completed - previous duplicate code removed
 
 # Update bot configuration
 st.session_state.trading_bot.update_config(
