@@ -1,21 +1,24 @@
 """
-Configuração do Telegram Bot
+Configuração do Telegram Bot - VERSÃO SEGURA
 """
 
-# Configure aqui suas credenciais do Telegram
-TELEGRAM_BOT_TOKEN = "8454268048:AAFSiHU963ch55L5EhLSrpwdRtKBtPSO_0A"  # Token do @BotFather
-TELEGRAM_CHAT_ID = "2081890738"    # ID do chat para receber alertas
+# CONFIGURAÇÃO SEGURA:
+# Não há mais tokens hardcoded neste arquivo!
+# Configure seu bot através da interface do Streamlit dashboard:
+# 1. Vá para a seção "Telegram"
+# 2. Insira seu token do bot e chat ID
+# 3. Os dados serão armazenados de forma segura
 
-# INSTRUÇÕES:
-# 1. Obtenha o token do bot:
+# Para obter suas credenciais:
+# 1. Token do Bot:
 #    - Acesse @BotFather no Telegram
 #    - Digite /newbot
 #    - Siga as instruções
-#    - Copie o token e cole acima
+#    - Copie o token gerado
 #
-# 2. Obtenha seu Chat ID:
-#    - Envie uma mensagem para @userinfobot
+# 2. Chat ID:
+#    - Envie uma mensagem para @userinfobot  
 #    - Digite /start
-#    - Copie o ID e cole acima
+#    - Copie seu ID do chat
 #
-# 3. NUNCA compartilhe este arquivo com os tokens reais!
+# 3. Configure tudo na interface do dashboard - sem expor tokens no código!

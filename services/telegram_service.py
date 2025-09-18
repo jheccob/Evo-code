@@ -1,229 +1,238 @@
+"""
+Serviço de notificações do Telegram - Versão segura
+"""
 import asyncio
 import logging
-from typing import Dict, List, Optional
-from datetime import datetime, timedelta
-from telegram import Bot, Update
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
-from telegram.error import TelegramError, RetryAfter, TimedOut
+from typing import Optional, Tuple, Dict, Any
+from datetime import datetime
+import json
 
-from config.production_config import ProductionConfig
-# Removed import aioredis as per the edited code
+try:
+    import telegram
+    from telegram import Bot
+    from telegram.error import TelegramError, RetryAfter, TimedOut
+    TELEGRAM_AVAILABLE = True
+except ImportError:
+    TELEGRAM_AVAILABLE = False
+    
+from utils.timezone_utils import format_brazil_time
+from database.database import db
 
 logger = logging.getLogger(__name__)
 
-class ProfessionalTelegramService:
+class SecureTelegramService:
+    """
+    Serviço seguro para notificações do Telegram
+    Não armazena tokens no código - usa configuração via interface
+    """
+    
     def __init__(self):
         self.bot = None
-        self.application = None
-        # Removed self.redis_client = None
-        # Removed self.rate_limiter = RateLimiter()
-        # Removed self.analytics = AnalyticsService()
-        # Removed self.billing = BillingService()
-        self.user_cache = {}  # Simple in-memory cache added in edited code
-
-    async def initialize(self):
-        """Inicializar serviço profissional"""
+        self.bot_token = None
+        self.chat_id = None
+        self.enabled = False
+        
+    def configure(self, token: str, chat_id: str) -> Tuple[bool, str]:
+        """
+        Configurar o serviço Telegram de forma segura
+        
+        Args:
+            token: Token do bot do Telegram
+            chat_id: ID do chat para enviar mensagens
+            
+        Returns:
+            Tuple[bool, str]: (sucesso, mensagem)
+        """
+        if not TELEGRAM_AVAILABLE:
+            return False, "❌ Biblioteca python-telegram-bot não está disponível"
+        
+        if not token or not chat_id:
+            return False, "❌ Token e Chat ID são obrigatórios"
+            
         try:
-            # Validar configuração
-            ProductionConfig.validate_config()
-
-            # Removed Redis configuration
-
-            # Configurar bot
-            self.bot = Bot(token=ProductionConfig.TELEGRAM_BOT_TOKEN)
-            self.application = Application.builder().token(ProductionConfig.TELEGRAM_BOT_TOKEN).build()
-
-            # Removed webhook setup as it's not in the edited snippet
-
-            # Registrar handlers
-            self.register_handlers()
-
-            logger.info("Serviço Telegram profissional inicializado com sucesso")
-            return True
-
+            # Testar configuração
+            self.bot_token = token.strip()
+            self.chat_id = chat_id.strip()
+            self.bot = Bot(token=self.bot_token)
+            
+            # Salvar configuração de forma segura no banco
+            db.save_setting("telegram_token", self.bot_token)
+            db.save_setting("telegram_chat_id", self.chat_id)
+            db.save_setting("telegram_enabled", True)
+            
+            self.enabled = True
+            return True, "✅ Telegram configurado com sucesso!"
+            
         except Exception as e:
-            logger.error(f"Erro ao inicializar serviço: {e}")
-            return False
-
-    def register_handlers(self):
-        """Registrar handlers com middleware profissional"""
-        # Removed middleware definition as it's not in the edited snippet
-
-        # Commands
-        self.application.add_handler(CommandHandler("start", self.enhanced_start_command))
-        self.application.add_handler(CommandHandler("analise", self.enhanced_analyze_command))
-        self.application.add_handler(CommandHandler("help", self.help_command)) # Added in edited
-        self.application.add_handler(CommandHandler("status", self.status_command)) # Added in edited
-
-        # Removed premium, status, and other commands not present in the edited snippet
-
-        # Admin commands
-        self.application.add_handler(CommandHandler("admin_stats", self.admin_stats))
-        # Removed admin_users and admin_broadcast
-
-    async def enhanced_start_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Comando start aprimorado"""
-        user = update.effective_user
-        # Removed user database interaction and plan-based messaging
-
-        # Simplified welcome message from the edited code
-        welcome_msg = f"""
-👋 **Olá, {user.first_name}!**
-
-🤖 **Trading Bot Profissional Ativo**
-
-💡 **Comandos disponíveis:**
-• `/analise BTC/USDT` - Analisar crypto
-• `/help` - Ver todos comandos
-• `/status` - Ver status do sistema
-
-🚀 **Bot funcionando perfeitamente!**
-Digite qualquer comando para começar.
-"""
-
-        await update.message.reply_text(welcome_msg, parse_mode='Markdown')
-
-        # Removed analytics tracking
-
-    async def enhanced_analyze_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Comando de análise profissional com cache e otimizações"""
-        start_time = datetime.now()
-        user_id = update.effective_user.id
-        # Removed permission check and analysis recording
-
+            logger.error(f"Erro ao configurar Telegram: {e}")
+            self.enabled = False
+            return False, f"❌ Erro de configuração: {str(e)}"
+    
+    def load_config(self) -> bool:
+        """Carregar configuração salva do banco de dados"""
         try:
-            # Validar símbolo
-            if not context.args:
-                await update.message.reply_text(
-                    "❌ **Uso:** `/analise BTC/USDT`\n\n"
-                    "📈 **Símbolos disponíveis:**\n"
-                    "• BTC/USDT, ETH/USDT, ADA/USDT\n"
-                    "• SOL/USDT, MATIC/USDT, DOT/USDT"
-                )
-                return
-
-            symbol = context.args[0].upper()
-
-            # Removed Redis cache check
-
-            # Mensagem de loading
-            loading_msg = await update.message.reply_text(f"🔄 **Analisando {symbol}...**")
-
-            # Realizar análise
-            analysis_result = await self.perform_professional_analysis(symbol)
-
-            # Removed Redis cache setex
-
-            # Atualizar mensagem
-            await loading_msg.edit_text(analysis_result, parse_mode='Markdown')
-
-            # Removed analysis recording
-
+            if not TELEGRAM_AVAILABLE:
+                return False
+                
+            token = db.get_setting("telegram_token")
+            chat_id = db.get_setting("telegram_chat_id")
+            enabled = db.get_setting("telegram_enabled", False)
+            
+            if token and chat_id and enabled:
+                self.bot_token = token
+                self.chat_id = chat_id
+                self.bot = Bot(token=self.bot_token)
+                self.enabled = True
+                return True
+                
         except Exception as e:
-            logger.error(f"Erro na análise: {e}")
-            await update.message.reply_text(
-                "❌ **Erro temporário**\n\n"
-                "Tente novamente em alguns segundos."
+            logger.error(f"Erro ao carregar configuração do Telegram: {e}")
+        
+        return False
+    
+    def is_configured(self) -> bool:
+        """Verificar se o serviço está configurado"""
+        if not self.enabled:
+            self.load_config()
+        return self.enabled and self.bot is not None
+    
+    async def test_connection(self) -> Tuple[bool, str]:
+        """
+        Testar conexão com o Telegram
+        
+        Returns:
+            Tuple[bool, str]: (sucesso, mensagem)
+        """
+        if not self.is_configured():
+            return False, "❌ Telegram não configurado"
+            
+        try:
+            # Enviar mensagem de teste
+            test_message = f"🤖 **Teste de Conexão**\\n\\n✅ Bot funcionando corretamente!\\n🕒 {format_brazil_time()}"
+            
+            await self.bot.send_message(
+                chat_id=self.chat_id,
+                text=test_message,
+                parse_mode='Markdown'
             )
-
-    async def perform_professional_analysis(self, symbol: str) -> str:
-        """Análise técnica profissional otimizada"""
-        # Implementar análise técnica avançada
-        # (usando trading_bot.py existente como base)
-        # Removed cache logic and replaced with simplified analysis from edited code
-        await asyncio.sleep(1)  # Simular processamento
-
-        return f"""
-📊 **Análise Profissional - {symbol}**
-
-💰 **Preço:** $45,230.50 (+2.34%)
-📈 **Volume 24h:** $2.1B
-
-🔍 **Indicadores Técnicos:**
-• **RSI (14):** 58.3 (Neutro)
-• **MACD:** 0.0234 (Positivo)
-• **MA 20/50:** Cruzamento dourado
-• **Bollinger:** Próximo da média
-
-🎯 **Sinal:** 🟢 **COMPRA MODERADA**
-
-⏰ **Análise:** {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}
-
-⚠️ **Disclaimer:** Análise para fins informativos apenas.
+            
+            return True, "✅ Conexão testada com sucesso! Mensagem enviada."
+            
+        except TelegramError as e:
+            error_msg = f"❌ Erro do Telegram: {str(e)}"
+            logger.error(error_msg)
+            return False, error_msg
+            
+        except Exception as e:
+            error_msg = f"❌ Erro inesperado: {str(e)}"
+            logger.error(error_msg)
+            return False, error_msg
+    
+    async def send_signal_alert(self, signal_data: Dict[str, Any]) -> Tuple[bool, str]:
         """
-
-    # Removed check_analysis_permission, record_analysis, get_or_create_user, get_analyses_today methods
-
-    # Removed premium_command method
-
-    async def admin_stats(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Estatísticas administrativas"""
-        if not await self.is_admin(update.effective_user.id):
-            return
-
-        # Simplified admin stats from the edited code
-        stats_text = f"""
-📊 **Estatísticas Administrativas**
-
-🤖 **Bot Status:** Online
-⏰ **Última atualização:** {datetime.now().strftime('%H:%M:%S')}
-💾 **Memória:** OK
-🌐 **Conexão:** Estável
-
-✅ **Sistema funcionando normalmente!**
+        Enviar alerta de sinal de trading
+        
+        Args:
+            signal_data: Dados do sinal
+            
+        Returns:
+            Tuple[bool, str]: (sucesso, mensagem)
         """
+        if not self.is_configured():
+            return False, "❌ Telegram não configurado"
+            
+        try:
+            # Construir mensagem do sinal
+            symbol = signal_data.get('symbol', 'N/A')
+            signal = signal_data.get('signal', 'NEUTRO')
+            price = signal_data.get('price', 0)
+            rsi = signal_data.get('rsi', 0)
+            timeframe = signal_data.get('timeframe', '1h')
+            
+            # Emoji baseado no sinal
+            emoji_map = {
+                'COMPRA': '🟢',
+                'COMPRA_FORTE': '💚', 
+                'COMPRA_FRACA': '🟡',
+                'VENDA': '🔴',
+                'VENDA_FORTE': '💔',
+                'VENDA_FRACA': '🟠',
+                'NEUTRO': '⚪'
+            }
+            
+            emoji = emoji_map.get(signal, '⚪')
+            
+            message = f"""
+{emoji} **SINAL DE TRADING**
 
-        await update.message.reply_text(stats_text, parse_mode='Markdown')
+📊 **Par:** {symbol}
+⏰ **Timeframe:** {timeframe}
+💰 **Preço:** ${price:.6f}
+📈 **RSI:** {rsi:.2f}
 
-    async def is_admin(self, user_id: int) -> bool:
-        """Verificar se usuário é admin"""
-        # Implementar verificação de admin
-        return user_id in [1035830659]  # Seu chat ID
+🎯 **Sinal:** {signal}
 
-    # Removed start_production_service modification as the edited version simplifies it to polling
-    async def start_production_service(self):
-        """Iniciar serviço em modo produção"""
-        # Removed webhook mode logic
-        await self.application.run_polling() # Use run_polling as in the edited snippet
-
-    # Added help_command and status_command from edited snippet
-    async def help_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Comando de ajuda"""
-        help_text = """
-📖 **Comandos Disponíveis:**
-
-**📊 Análises:**
-• `/analise [PAR]` - Analisar criptomoeda
-  Exemplo: `/analise BTC/USDT`
-
-**ℹ️ Informações:**
-• `/status` - Status do sistema
-• `/help` - Esta mensagem
-
-**🔧 Pares suportados:**
-• BTC/USDT, ETH/USDT, ADA/USDT
-• SOL/USDT, MATIC/USDT, DOT/USDT
-
-🚀 **Bot funcionando 24/7!**
+⏰ **Horário:** {format_brazil_time()}
+🤖 **Bot de Trading Automatizado**
+            """.strip()
+            
+            await self.bot.send_message(
+                chat_id=self.chat_id,
+                text=message,
+                parse_mode='Markdown'
+            )
+            
+            return True, "✅ Sinal enviado com sucesso!"
+            
+        except Exception as e:
+            error_msg = f"❌ Erro ao enviar sinal: {str(e)}"
+            logger.error(error_msg)
+            return False, error_msg
+    
+    async def send_custom_message(self, message: str) -> Tuple[bool, str]:
         """
-
-        await update.message.reply_text(help_text, parse_mode='Markdown')
-
-    async def status_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Status do sistema"""
-        status_text = f"""
-📊 **Status do Sistema**
-
-✅ **Bot Online**
-🕒 **Uptime:** {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}
-🤖 **Versão:** 1.0.0 Professional
-
-🔧 **Serviços:**
-• ✅ Telegram Bot
-• ✅ Análise Técnica
-• ✅ Processamento de Sinais
-
-💡 **Tudo funcionando perfeitamente!**
+        Enviar mensagem personalizada
+        
+        Args:
+            message: Mensagem a ser enviada
+            
+        Returns:
+            Tuple[bool, str]: (sucesso, mensagem de resultado)
         """
-
-        await update.message.reply_text(status_text, parse_mode='Markdown')
+        if not self.is_configured():
+            return False, "❌ Telegram não configurado"
+            
+        try:
+            await self.bot.send_message(
+                chat_id=self.chat_id,
+                text=message,
+                parse_mode='Markdown'
+            )
+            
+            return True, "✅ Mensagem enviada com sucesso!"
+            
+        except Exception as e:
+            error_msg = f"❌ Erro ao enviar mensagem: {str(e)}"
+            logger.error(error_msg)
+            return False, error_msg
+    
+    def disable(self):
+        """Desabilitar o serviço Telegram"""
+        try:
+            db.save_setting("telegram_enabled", False)
+            self.enabled = False
+            self.bot = None
+            self.bot_token = None
+            self.chat_id = None
+        except Exception as e:
+            logger.error(f"Erro ao desabilitar Telegram: {e}")
+    
+    def get_config_status(self) -> Dict[str, Any]:
+        """Obter status da configuração"""
+        return {
+            'available': TELEGRAM_AVAILABLE,
+            'configured': self.is_configured(),
+            'enabled': self.enabled,
+            'has_token': bool(self.bot_token),
+            'has_chat_id': bool(self.chat_id)
+        }
