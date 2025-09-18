@@ -24,6 +24,7 @@ class SecureTelegramService:
         self.bot_token = None
         self.chat_id = None
         self.enabled = False
+        # Carregar configuração existente
         self._load_config()
 
     def _load_config(self):
@@ -41,6 +42,7 @@ class SecureTelegramService:
                 self.chat_id = chat_id
                 self.bot = Bot(token=self.bot_token)
                 self.enabled = True
+                logger.info("✅ Telegram configurado automaticamente")
         except Exception as e:
             logger.error(f"Erro ao carregar config Telegram: {e}")
 
