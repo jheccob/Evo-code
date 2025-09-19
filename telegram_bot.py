@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import os
 from datetime import datetime
 from typing import Optional, Dict, Any
 import time
@@ -32,6 +33,21 @@ class TelegramTradingBot:
         self.trading_bot = TradingBot()
         self.last_error_time = 0
         self.error_count = 0
+        
+        # Automatically configure from environment variables
+        self._auto_configure()
+        
+    def _auto_configure(self):
+        """Auto configure from Replit Secrets"""
+        try:
+            token = os.getenv("TELEGRAM_BOT_TOKEN")
+            if token:
+                self.configure(token)
+                logger.info("✅ Telegram bot configurado automaticamente via Replit Secrets")
+            else:
+                logger.info("⚠️ TELEGRAM_BOT_TOKEN não encontrado nos secrets")
+        except Exception as e:
+            logger.error(f"Erro na configuração automática: {e}")
         
     def configure(self, bot_token):
         """Configure the Telegram bot"""
@@ -176,7 +192,7 @@ Exemplo: /analise BTC/USDT
             await update.message.reply_text(
                 f"❌ **Par não suportado:** `{symbol}`\n\n"
                 "💡 **Pares disponíveis:**\n"
-                "• " + "\n• ".join(valid_symbols),
+                "• " + "\n• ".join(TelegramBotConfig.SUPPORTED_PAIRS),
                 parse_mode='Markdown'
             )
             return
