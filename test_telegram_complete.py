@@ -61,19 +61,7 @@ async def main():
     # 4. Enviar mensagem de teste
     print("\n4️⃣ Enviando mensagem de teste...")
     try:
-        test_message = f"""🧪 Teste do Bot - {datetime.now().strftime('%H:%M:%S')}
-
-✅ Status: Bot funcionando perfeitamente!
-🤖 Bot: @{me.username}
-💬 Chat: {chat_id}
-📅 Data: {datetime.now().strftime('%d/%m/%Y')}
-
-🎯 Próximos passos:
-• Use /start para começar
-• Use /help para ver comandos
-• Use /analise BTC/USDT para análise
-
-🚀 Bot está pronto para uso!"""
+        test_message = f"Teste do Bot - {datetime.now().strftime('%H:%M:%S')}\n\nStatus: Bot funcionando perfeitamente!\nBot: @{me.username}\nChat: {chat_id}\nData: {datetime.now().strftime('%d/%m/%Y')}\n\nProximos passos:\n- Use /start para comecar\n- Use /help para ver comandos\n- Use /analise BTC/USDT para analise\n\nBot esta pronto para uso!"
         
         await bot.send_message(
             chat_id=chat_id,

@@ -163,32 +163,7 @@ class TelegramTradingBot:
             # Add user to database
             self.user_manager.add_user(user_id, username, first_name)
             
-            welcome_message = f"""🎯 Bem-vindo ao Trading Bot!
-
-Olá {first_name}! 👋
-
-🤖 Sobre o bot:
-• Análises técnicas de criptomoedas em tempo real
-• Sinais baseados em RSI e MACD
-• Suporte a múltiplos pares de trading
-
-📖 Comandos principais:
-• /analise BTC/USDT - Analisar criptomoeda
-• /status - Ver seu status e limites
-• /help - Ver todos os comandos
-• /premium - Informações sobre Premium
-
-💎 Pares suportados:
-{', '.join(TelegramBotConfig.SUPPORTED_PAIRS[:6])}
-
-💎 Tipos de Usuário:
-• 🆓 Free: 1 análise por dia
-• 💎 Premium: Análises ilimitadas
-
-💡 Exemplo de uso:
-/analise BTC/USDT
-
-✨ Vamos começar a analisar o mercado!"""
+            welcome_message = f"Bem-vindo ao Trading Bot!\n\nOla {first_name}!\n\nSobre o bot:\n- Analises tecnicas de criptomoedas em tempo real\n- Sinais baseados em RSI e MACD\n- Suporte a multiplos pares de trading\n\nComandos principais:\n- /analise BTC/USDT - Analisar criptomoeda\n- /status - Ver seu status e limites\n- /help - Ver todos os comandos\n- /premium - Informacoes sobre Premium\n\nPares suportados:\n{', '.join(TelegramBotConfig.SUPPORTED_PAIRS[:6])}\n\nTipos de Usuario:\n- Free: 1 analise por dia\n- Premium: Analises ilimitadas\n\nExemplo de uso:\n/analise BTC/USDT\n\nVamos comecar a analisar o mercado!"
             
             await update.message.reply_text(welcome_message)
             self.logger.info(f"✅ Usuário {user_id} executou /start")
@@ -204,33 +179,12 @@ Olá {first_name}! 👋
             is_admin = self.user_manager.is_admin(user_id)
             is_premium = self.user_manager.is_premium(user_id)
             
-            help_text = f"""
-📖 **Comandos Disponíveis:**
-
-📊 **Análises:**
-• `/analise BTC/USDT` - Analisar criptomoeda
-• `/status` - Ver seu status e limites
-
-💎 **Premium:**
-• `/premium` - Informações sobre Premium
-{'• ✅ Você é Premium!' if is_premium else '• 🆓 Plano Free (1 análise/dia)'}
-
-🔧 **Pares suportados:**
-{', '.join(TelegramBotConfig.SUPPORTED_PAIRS)}
-"""
+            help_text = f"Comandos Disponiveis:\n\nAnalises:\n- /analise BTC/USDT - Analisar criptomoeda\n- /status - Ver seu status e limites\n\nPremium:\n- /premium - Informacoes sobre Premium\n{'- Voce e Premium!' if is_premium else '- Plano Free (1 analise/dia)'}\n\nPares suportados:\n{', '.join(TelegramBotConfig.SUPPORTED_PAIRS)}"
             
             if is_admin:
-                help_text += """
-
-👑 **Comandos de Admin:**
-• `/admin` - Painel administrativo
-• `/stats` - Estatísticas do bot
-• `/users` - Listar usuários
-• `/upgrade [ID]` - Fazer upgrade de usuário
-• `/broadcast [MSG]` - Enviar mensagem para todos
-"""
+                help_text += "\n\nComandos de Admin:\n- /admin - Painel administrativo\n- /stats - Estatisticas do bot\n- /users - Listar usuarios\n- /upgrade [ID] - Fazer upgrade de usuario\n- /broadcast [MSG] - Enviar mensagem para todos"
             
-            await update.message.reply_text(help_text, parse_mode='Markdown')
+            await update.message.reply_text(help_text)
             
         except Exception as e:
             self.logger.error(f"❌ Erro no comando /help: {e}")
@@ -250,26 +204,14 @@ Olá {first_name}! 👋
             # Check if user can perform analysis
             if not self.user_manager.can_analyze(user_id):
                 await update.message.reply_text(
-                    "⚠️ **Limite atingido!**\n\n"
-                    "Usuários **Free** têm direito a **1 análise por dia**.\n\n"
-                    "💎 Upgrade para **Premium** e tenha:\n"
-                    "• ✅ Análises ilimitadas\n"
-                    "• 🚀 Alerts em tempo real\n"
-                    "• 📊 Análises mais detalhadas\n\n"
-                    "Use `/premium` para mais informações!",
-                    parse_mode='Markdown'
+                    "Limite atingido!\n\nUsuarios Free tem direito a 1 analise por dia.\n\nUpgrade para Premium e tenha:\n- Analises ilimitadas\n- Alerts em tempo real\n- Analises mais detalhadas\n\nUse /premium para mais informacoes!"
                 )
                 return
             
             # Get symbol from command
             if not context.args:
                 await update.message.reply_text(
-                    "❌ **Formato incorreto!**\n\n"
-                    "📖 **Uso correto:**\n"
-                    "`/analise BTC/USDT`\n\n"
-                    "💡 **Pares disponíveis:**\n"
-                    f"{', '.join(TelegramBotConfig.SUPPORTED_PAIRS[:6])}...",
-                    parse_mode='Markdown'
+                    "Formato incorreto!\n\nUso correto:\n/analise BTC/USDT\n\nPares disponiveis:\n" + ', '.join(TelegramBotConfig.SUPPORTED_PAIRS[:6]) + "..."
                 )
                 return
             
@@ -278,15 +220,12 @@ Olá {first_name}! 👋
             # Validate symbol
             if not TelegramBotConfig.is_valid_pair(symbol):
                 await update.message.reply_text(
-                    f"❌ **Par não suportado:** `{symbol}`\n\n"
-                    "💡 **Pares disponíveis:**\n"
-                    f"{', '.join(TelegramBotConfig.SUPPORTED_PAIRS)}",
-                    parse_mode='Markdown'
+                    f"Par nao suportado: {symbol}\n\nPares disponiveis:\n{', '.join(TelegramBotConfig.SUPPORTED_PAIRS)}"
                 )
                 return
             
             # Send loading message
-            loading_msg = await update.message.reply_text("🔄 **Analisando...**\nPor favor aguarde...")
+            loading_msg = await update.message.reply_text("Analisando...\nPor favor aguarde...")
             
             # Configure trading bot
             self.trading_bot.update_config(symbol=symbol)
@@ -304,7 +243,7 @@ Olá {first_name}! 👋
                         await asyncio.sleep(1)
             
             if data is None or data.empty:
-                await loading_msg.edit_text("❌ **Erro:** Não foi possível obter dados do mercado")
+                await loading_msg.edit_text("Erro: Nao foi possivel obter dados do mercado")
                 return
             
             # Get analysis
@@ -312,21 +251,7 @@ Olá {first_name}! 👋
             signal = self.trading_bot.check_signal(data)
             emoji = TelegramBotConfig.get_signal_emoji(signal)
             
-            analysis_message = f"""📊 Análise Técnica - {symbol}
-
-{emoji} Sinal: {signal.replace('_', ' ')}
-
-💰 Preço Atual: ${last_candle['close']:.6f}
-📈 Variação: {((last_candle['close'] - last_candle['open']) / last_candle['open'] * 100):+.2f}%
-
-📊 Indicadores:
-• RSI: {last_candle['rsi']:.2f}
-• MACD: {last_candle['macd']:.4f}
-• MACD Signal: {last_candle['macd_signal']:.4f}
-
-⏰ Atualizado: {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}
-
-💡 Lembre-se: Esta é uma análise técnica automatizada. Sempre faça sua própria pesquisa!"""
+            analysis_message = f"Analise Tecnica - {symbol}\n\n{emoji} Sinal: {signal.replace('_', ' ')}\n\nPreco Atual: ${last_candle['close']:.6f}\nVariacao: {((last_candle['close'] - last_candle['open']) / last_candle['open'] * 100):+.2f}%\n\nIndicadores:\n- RSI: {last_candle['rsi']:.2f}\n- MACD: {last_candle['macd']:.4f}\n- MACD Signal: {last_candle['macd_signal']:.4f}\n\nAtualizado: {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}\n\nLembre-se: Esta e uma analise tecnica automatizada. Sempre faca sua propria pesquisa!"
             
             await loading_msg.edit_text(analysis_message)
             
