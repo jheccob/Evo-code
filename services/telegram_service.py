@@ -165,8 +165,13 @@ class SecureTelegramService:
         self.bot = None
 
     def get_config_status(self) -> Dict[str, Any]:
+        # Forçar reload da configuração para garantir que os secrets sejam lidos
+        if not self.is_configured():
+            self._load_config()
+        
         return {
             'available': TELEGRAM_AVAILABLE,
             'configured': self.is_configured(),
-            'enabled': self.enabled
+            'enabled': self.enabled,
+            'auto_configured': bool(os.getenv("TELEGRAM_BOT_TOKEN") and os.getenv("TELEGRAM_CHAT_ID"))
         }
