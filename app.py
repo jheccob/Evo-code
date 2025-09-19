@@ -1048,112 +1048,298 @@ with tab2:
     st.subheader("🔬 Sistema de Backtesting")
     st.markdown("Teste suas estratégias com dados históricos")
     
+    # Add info box about backtest functionality
+    st.info("💡 **Como funciona:** O sistema simula trades baseado nos sinais gerados pelos indicadores técnicos configurados. Use dados históricos para validar a estratégia antes de usar em tempo real.")
+    
     col1, col2 = st.columns(2)
     
     with col1:
         bt_symbol = st.selectbox(
             "Par para Backtest:",
-            ["XLM/USDT", "BTC/USDT", "ETH/USDT", "ADA/USDT", "DOT/USDT", "MATIC/USDT"]
+            ["XLM-USD", "BTC-USD", "ETH-USD", "ADA-USD", "DOT-USD", "MATIC-USD"],
+            help="Selecione o par de moedas para o backtest"
         )
         
         bt_timeframe = st.selectbox(
             "Timeframe:",
             ["5m", "15m", "30m", "1h", "4h"],
-            index=0
+            index=1,  # Default to 15m
+            help="Intervalo de tempo dos candles"
         )
         
         # Date selection
         from datetime import date
-        end_date = st.date_input("Data Final", value=date.today())
-        start_date = st.date_input("Data Inicial", value=date.today() - timedelta(days=30))
+        end_date = st.date_input(
+            "Data Final", 
+            value=date.today(),
+            help="Data final do período de teste"
+        )
+        start_date = st.date_input(
+            "Data Inicial", 
+            value=date.today() - timedelta(days=30),
+            help="Data inicial do período de teste"
+        )
     
     with col2:
-        bt_initial_balance = st.number_input("Saldo Inicial ($)", min_value=100, max_value=100000, value=10000)
-        bt_rsi_period = st.slider("RSI Período", 5, 50, rsi_period)
-        bt_rsi_min = st.slider("RSI Mín (Compra)", 10, 40, rsi_min)
-        bt_rsi_max = st.slider("RSI Máx (Venda)", 60, 90, rsi_max)
+        bt_initial_balance = st.number_input(
+            "Saldo Inicial ($)", 
+            min_value=100, 
+            max_value=100000, 
+            value=10000,
+            help="Capital inicial para simulação"
+        )
+        bt_rsi_period = st.slider(
+            "RSI Período", 
+            5, 50, rsi_period,
+            help="Período de cálculo do RSI"
+        )
+        bt_rsi_min = st.slider(
+            "RSI Mín (Compra)", 
+            10, 40, rsi_min,
+            help="Limite inferior do RSI para sinal de compra"
+        )
+        bt_rsi_max = st.slider(
+            "RSI Máx (Venda)", 
+            60, 90, rsi_max,
+            help="Limite superior do RSI para sinal de venda"
+        )
     
-    if st.button("🚀 Executar Backtest"):
+    # Enhanced backtest button with validation
+    col1, col2, col3 = st.columns([1, 2, 1])
+    with col2:
+        backtest_button = st.button(
+            "🚀 Executar Backtest", 
+            use_container_width=True,
+            type="primary"
+        )
+    
+    # Show validation warnings
+    if start_date >= end_date:
+        st.error("❌ Data inicial deve ser anterior à data final")
+    elif (end_date - start_date).days < 7:
+        st.warning("⚠️ Período muito curto - recomendamos pelo menos 7 dias")
+    elif (end_date - start_date).days > 90:
+        st.warning("⚠️ Período muito longo - pode afetar a performance")
+    
+    if backtest_button:
         if start_date >= end_date:
-            st.error("❌ Data inicial deve ser anterior à data final")
+            st.error("❌ Corrija as datas antes de continuar")
         else:
-            with st.spinner("Executando backtest..."):
+            progress_bar = st.progress(0)
+            status_text = st.empty()
+            
+            try:
+                # Convert dates to datetime
+                start_dt = datetime.combine(start_date, datetime.min.time())
+                end_dt = datetime.combine(end_date, datetime.max.time())
+                
+                status_text.text("🔄 Configurando parâmetros...")
+                progress_bar.progress(20)
+                
+                status_text.text("📊 Carregando dados históricos...")
+                progress_bar.progress(40)
+                
+                status_text.text("🧮 Calculando indicadores...")
+                progress_bar.progress(60)
+                
+                status_text.text("💱 Simulando trades...")
+                progress_bar.progress(80)
+                
+                results = st.session_state.backtest_engine.run_backtest(
+                    symbol=bt_symbol,
+                    timeframe=bt_timeframe,
+                    start_date=start_dt,
+                    end_date=end_dt,
+                    initial_balance=bt_initial_balance,
+                    rsi_period=bt_rsi_period,
+                    rsi_min=bt_rsi_min,
+                    rsi_max=bt_rsi_max
+                )
+                
+                progress_bar.progress(100)
+                status_text.text("✅ Backtest concluído!")
+                
+                st.session_state.backtest_results = results
+                st.success("🎉 Backtest executado com sucesso!")
+                
+                # Auto scroll to results
+                st.markdown("---")
+                
+            except Exception as e:
+                progress_bar.empty()
+                status_text.empty()
+                st.error(f"❌ Erro no backtest: {str(e)}")
+                st.info("💡 Usando dados simulados para demonstração...")
+                
+                # Fallback with simulated data
                 try:
-                    # Convert dates to datetime
                     start_dt = datetime.combine(start_date, datetime.min.time())
                     end_dt = datetime.combine(end_date, datetime.max.time())
                     
-                    results = st.session_state.backtest_engine.run_backtest(
-                        symbol=bt_symbol,
-                        timeframe=bt_timeframe,
-                        start_date=start_dt,
-                        end_date=end_dt,
-                        initial_balance=bt_initial_balance,
-                        rsi_period=bt_rsi_period,
-                        rsi_min=bt_rsi_min,
-                        rsi_max=bt_rsi_max
+                    results = st.session_state.backtest_engine._simulate_demo_backtest(
+                        bt_symbol, start_dt, end_dt, bt_initial_balance
                     )
                     st.session_state.backtest_results = results
-                    st.success("✅ Backtest concluído!")
-                    
-                except Exception as e:
-                    st.error(f"❌ Erro no backtest: {str(e)}")
+                    st.success("✅ Backtest simulado concluído!")
+                except Exception as demo_error:
+                    st.error(f"❌ Erro na simulação: {str(demo_error)}")
     
     # Display results if available
     if st.session_state.backtest_results:
         results = st.session_state.backtest_results
-        stats = results['stats']
+        stats = results.get('stats', {})
         
-        st.markdown("---")
-        st.subheader("📊 Resultados do Backtest")
-        
-        # Display key metrics
-        col1, col2, col3, col4 = st.columns(4)
-        
-        with col1:
-            st.metric("Retorno Total", f"{stats['total_return_pct']:.2f}%")
-        with col2:
-            st.metric("Total de Trades", stats['total_trades'])
-        with col3:
-            st.metric("Taxa de Acerto", f"{stats['win_rate']:.1f}%")
-        with col4:
-            st.metric("Max Drawdown", f"{stats['max_drawdown']:.2f}%")
-        
-        # Detailed stats
-        st.subheader("📈 Estatísticas Detalhadas")
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            st.info(f"""
-            **Saldo Inicial:** ${stats['initial_balance']:,.2f}  
-            **Saldo Final:** ${stats['final_balance']:,.2f}  
-            **Retorno Total:** {stats['total_return_pct']:.2f}%  
-            **Sharpe Ratio:** {stats['sharpe_ratio']:.2f}  
-            """)
-        
-        with col2:
-            st.info(f"""
-            **Trades Vencedores:** {stats['winning_trades']}  
-            **Trades Perdedores:** {stats['losing_trades']}  
-            **Lucro Médio:** {stats['avg_profit']:.2f}%  
-            **Perda Média:** {stats['avg_loss']:.2f}%  
-            """)
-        
-        # Trade history
-        if results['trades']:
-            st.subheader("📋 Histórico de Trades")
-            trade_df = st.session_state.backtest_engine.get_trade_summary_df()
-            if not trade_df.empty:
-                trade_df_display = trade_df.copy()
-                trade_df_display['timestamp'] = trade_df_display['timestamp'].dt.strftime('%Y-%m-%d %H:%M')
-                trade_df_display['entry_price'] = trade_df_display['entry_price'].apply(lambda x: f"${x:.6f}")
-                trade_df_display['price'] = trade_df_display['price'].apply(lambda x: f"${x:.6f}")
-                trade_df_display['profit_loss_pct'] = trade_df_display['profit_loss_pct'].apply(lambda x: f"{x:.2f}%")
-                trade_df_display['profit_loss'] = trade_df_display['profit_loss'].apply(lambda x: f"${x:.2f}")
+        # Check for errors in stats
+        if 'error' in stats:
+            st.error(f"❌ Erro nos resultados: {stats['error']}")
+        else:
+            st.markdown("---")
+            st.subheader("📊 Resultados do Backtest")
+            
+            # Performance overview with color coding
+            total_return = stats.get('total_return_pct', 0)
+            if total_return > 0:
+                return_color = "🟢"
+            elif total_return < 0:
+                return_color = "🔴"
+            else:
+                return_color = "⚪"
+            
+            # Display key metrics
+            col1, col2, col3, col4 = st.columns(4)
+            
+            with col1:
+                st.metric(
+                    "Retorno Total", 
+                    f"{return_color} {total_return:.2f}%",
+                    delta=f"${stats.get('final_balance', 0) - stats.get('initial_balance', 0):,.2f}"
+                )
+            with col2:
+                st.metric("Total de Trades", stats.get('total_trades', 0))
+            with col3:
+                win_rate = stats.get('win_rate', 0)
+                st.metric("Taxa de Acerto", f"{win_rate:.1f}%")
+            with col4:
+                st.metric("Max Drawdown", f"{stats.get('max_drawdown', 0):.2f}%")
+            
+            # Detailed stats
+            st.subheader("📈 Estatísticas Detalhadas")
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                st.info(f"""
+                **💰 Resultados Financeiros**  
+                Saldo Inicial: ${stats.get('initial_balance', 0):,.2f}  
+                Saldo Final: ${stats.get('final_balance', 0):,.2f}  
+                Retorno Total: {stats.get('total_return_pct', 0):.2f}%  
+                Sharpe Ratio: {stats.get('sharpe_ratio', 0):.2f}  
+                """)
+            
+            with col2:
+                st.info(f"""
+                **📊 Performance dos Trades**  
+                Trades Vencedores: {stats.get('winning_trades', 0)}  
+                Trades Perdedores: {stats.get('losing_trades', 0)}  
+                Lucro Médio: {stats.get('avg_profit', 0):.2f}%  
+                Perda Média: {stats.get('avg_loss', 0):.2f}%  
+                """)
+            
+            # Risk analysis
+            if stats.get('max_drawdown', 0) > 20:
+                st.warning("⚠️ **Alto Risco:** Drawdown superior a 20% - considere ajustar os parâmetros")
+            elif stats.get('max_drawdown', 0) > 10:
+                st.info("💡 **Risco Moderado:** Drawdown entre 10-20% - resultado aceitável")
+            else:
+                st.success("✅ **Baixo Risco:** Drawdown inferior a 10% - estratégia conservadora")
+            
+            # Trade history
+            if results.get('trades'):
+                st.subheader("📋 Histórico de Trades")
                 
-                trade_df_display.columns = ['Data/Hora', 'Preço Entrada', 'Preço Saída', 'Retorno %', 'Lucro/Perda $', 'Sinal']
+                # Summary stats for trades
+                trades_df = st.session_state.backtest_engine.get_trade_summary_df()
                 
-                st.dataframe(trade_df_display, width='stretch', hide_index=True)
+                if not trades_df.empty:
+                    # Format for display
+                    display_df = trades_df.copy()
+                    
+                    # Format columns
+                    if 'timestamp' in display_df.columns:
+                        display_df['timestamp'] = pd.to_datetime(display_df['timestamp']).dt.strftime('%d/%m/%Y %H:%M')
+                    
+                    for price_col in ['entry_price', 'price']:
+                        if price_col in display_df.columns:
+                            display_df[price_col] = display_df[price_col].apply(lambda x: f"${x:.4f}")
+                    
+                    if 'profit_loss_pct' in display_df.columns:
+                        display_df['profit_loss_pct'] = display_df['profit_loss_pct'].apply(lambda x: f"{x:+.2f}%")
+                    
+                    if 'profit_loss' in display_df.columns:
+                        display_df['profit_loss'] = display_df['profit_loss'].apply(lambda x: f"${x:+.2f}")
+                    
+                    # Rename columns for Portuguese
+                    column_names = {
+                        'timestamp': 'Data/Hora',
+                        'entry_price': 'Preço Entrada', 
+                        'price': 'Preço Saída',
+                        'profit_loss_pct': 'Retorno %',
+                        'profit_loss': 'Lucro/Perda $',
+                        'signal': 'Sinal'
+                    }
+                    
+                    display_df = display_df.rename(columns=column_names)
+                    
+                    # Style the dataframe
+                    def highlight_profit_loss(val):
+                        if isinstance(val, str) and '%' in val:
+                            if val.startswith('+'):
+                                return 'color: green'
+                            elif val.startswith('-'):
+                                return 'color: red'
+                        elif isinstance(val, str) and '$' in val:
+                            if val.startswith('+'):
+                                return 'color: green; font-weight: bold'
+                            elif val.startswith('-'):
+                                return 'color: red; font-weight: bold'
+                        return ''
+                    
+                    # Apply styling if columns exist
+                    styled_df = display_df.style
+                    if 'Retorno %' in display_df.columns:
+                        styled_df = styled_df.map(highlight_profit_loss, subset=['Retorno %'])
+                    if 'Lucro/Perda $' in display_df.columns:
+                        styled_df = styled_df.map(highlight_profit_loss, subset=['Lucro/Perda $'])
+                    
+                    st.dataframe(styled_df, use_container_width=True, hide_index=True)
+                    
+                    # Download option
+                    csv_data = trades_df.to_csv(index=False)
+                    st.download_button(
+                        label="📄 Download Trades (CSV)",
+                        data=csv_data,
+                        file_name=f"backtest_trades_{bt_symbol}_{start_date}_{end_date}.csv",
+                        mime="text/csv"
+                    )
+                else:
+                    st.info("📝 Nenhum trade foi executado no período selecionado")
+            else:
+                st.info("📝 Nenhum trade registrado")
+                
+            # Strategy recommendations
+            st.subheader("💡 Recomendações")
+            
+            if stats.get('total_trades', 0) < 5:
+                st.warning("⚠️ Poucos trades executados - considere um período maior ou parâmetros menos restritivos")
+            
+            if stats.get('win_rate', 0) < 50:
+                st.info("📉 Taxa de acerto baixa - considere ajustar os níveis de RSI")
+            elif stats.get('win_rate', 0) > 70:
+                st.success("📈 Excelente taxa de acerto!")
+            
+            if stats.get('sharpe_ratio', 0) > 1:
+                st.success("🎯 Ótimo Sharpe Ratio - estratégia bem equilibrada!")
+            elif stats.get('sharpe_ratio', 0) < 0:
+                st.warning("📊 Sharpe Ratio negativo - revise a estratégia")
 
 # Export Data Tab
 with tab3:
