@@ -1,7 +1,6 @@
-
 #!/usr/bin/env python3
 """
-Teste robusto do Bot Telegram
+Teste robusto do Bot Telegram - Versão Atualizada
 """
 
 import os
@@ -55,9 +54,10 @@ async def test_bot():
         try:
             await bot.bot.send_message(
                 chat_id=chat_id,
-                text="🧪 **Teste do Bot**\n\n"
+                text="🧪 **Teste do Bot - Versão Atualizada**\n\n"
                       "✅ Bot está funcionando corretamente!\n"
-                      "💡 Use /start para começar a usar o bot.",
+                      "💡 Use /start para começar a usar o bot.\n"
+                      "🔄 Versão python-telegram-bot v20+ ativa",
                 parse_mode='Markdown'
             )
             logger.info("✅ Mensagem de teste enviada com sucesso")
@@ -74,8 +74,8 @@ def main():
         if result:
             print("\n" + "="*50)
             print("✅ BOT ESTÁ PRONTO PARA USO!")
-            print("💡 Execute: python start_telegram_bot.py")
-            print("📱 Ou use o workflow 'Telegram Bot'")
+            print("💡 O bot agora usa python-telegram-bot v20+")
+            print("📱 Digite /start no Telegram para começar")
             print("="*50)
         else:
             print("\n" + "="*50)

@@ -14,12 +14,15 @@ runButton = "Project"
 
 [[workflows.workflow]]
 name = "Telegram Bot"
-author = 47714575
+author = "agent"
 mode = "sequential"
 
 [[workflows.workflow.tasks]]
 task = "shell.exec"
-args = "python start_telegram_bot.py"
+args = "python run_telegram_bot.py"
+
+[workflows.workflow.metadata]
+outputType = "console"
 
 [[workflows.workflow]]
 name = "Production Bot"
@@ -38,6 +41,10 @@ author = "agent"
 [[workflows.workflow.tasks]]
 task = "workflow.run"
 args = "Trading Dashboard"
+
+[[workflows.workflow.tasks]]
+task = "workflow.run"
+args = "Telegram Bot"
 
 [[workflows.workflow]]
 name = "Trading Dashboard"
