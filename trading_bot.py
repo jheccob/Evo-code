@@ -57,9 +57,15 @@ class TradingBot:
             
             return df
             
+        except ccxt.NetworkError as e:
+            print(f"Network error for {self.symbol}: {e}")
+            raise Exception(f"Erro de conectividade: {str(e)}")
+        except ccxt.ExchangeError as e:
+            print(f"Exchange error for {self.symbol}: {e}")
+            raise Exception(f"Erro da exchange: {str(e)}")
         except Exception as e:
             print(f"Error fetching market data for {self.symbol}: {e}")
-            raise e
+            raise Exception(f"Erro inesperado: {str(e)}")
     
     def calculate_indicators(self, df):
         """Calculate comprehensive technical indicators for the dataframe"""
