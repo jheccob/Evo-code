@@ -15,11 +15,14 @@ import logging
 try:
     from telegram import Bot
     from telegram.error import TelegramError
+    import telegram
     TELEGRAM_AVAILABLE = True
-except ImportError:
+    print(f"✅ Telegram service usando v{telegram.__version__}")
+except ImportError as e:
     TELEGRAM_AVAILABLE = False
     Bot = None
     TelegramError = None
+    print(f"❌ Telegram não disponível no service: {e}")
 
 logger = logging.getLogger(__name__)
 

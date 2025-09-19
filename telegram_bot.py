@@ -14,11 +14,13 @@ try:
     from telegram import Bot, Update
     from telegram.ext import Application, CommandHandler, ContextTypes
     from telegram.error import TelegramError
+    import telegram
     TELEGRAM_AVAILABLE = True
+    print(f"✅ python-telegram-bot v{telegram.__version__} importado com sucesso")
 except ImportError as e:
     TELEGRAM_AVAILABLE = False
     print(f"❌ Telegram library not available: {e}")
-    print("💡 Install with: pip install python-telegram-bot")
+    print("💡 Install with: pip install python-telegram-bot==20.7")
     
     # Create dummy classes for when telegram is not available
     class Update:
