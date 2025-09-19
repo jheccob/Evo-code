@@ -11,6 +11,9 @@ class UserManager:
         
         # Admin user IDs (configure with your Telegram ID)
         self.admin_ids = [123456789]  # Replace with actual admin Telegram IDs
+        
+        # Configuration
+        self.max_analyses_per_day = 1  # Free users limit
     
     def load_users(self) -> Dict:
         """Load users from JSON file"""

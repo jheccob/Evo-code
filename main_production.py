@@ -1,7 +1,7 @@
-
 #!/usr/bin/env python3
 """
 Trading Bot - Versão Profissional Simplificada
+Usando telegram_bot.py atualizado
 """
 
 import asyncio
@@ -33,7 +33,7 @@ except ImportError as e:
 
 # Imports dos serviços
 try:
-    from services.telegram_service import ProfessionalTelegramService
+    from telegram_bot import TelegramTradingBot
     from config.production_config import ProductionConfig
     logger.info("✅ Serviços importados com sucesso")
 except ImportError as e:
@@ -41,21 +41,11 @@ except ImportError as e:
     sys.exit(1)
 
 # Variável global
-telegram_service = None
-
-async def signal_handler(signum, frame):
-    """Handler para sinais do sistema"""
-    logger.info(f"Recebido sinal {signum}, encerrando...")
-
-    # Cleanup
-    if telegram_service and telegram_service.application:
-        await telegram_service.application.stop()
-
-    sys.exit(0)
+telegram_bot = None
 
 async def main():
     """Função principal"""
-    global telegram_service
+    global telegram_bot
     
     try:
         logger.info("🚀 Iniciando Trading Bot Professional")
@@ -63,30 +53,24 @@ async def main():
         # Validar configuração
         ProductionConfig.validate_config()
 
-        # Inicializar serviços
-        telegram_service = ProfessionalTelegramService()
+        # Inicializar bot Telegram
+        telegram_bot = TelegramTradingBot()
 
-        # Inicializar Telegram service
-        success = await telegram_service.initialize()
-        if not success:
-            raise Exception("Falha ao inicializar serviço Telegram")
+        # Verificar se bot está configurado
+        if not telegram_bot.is_configured():
+            raise Exception("Bot Telegram não está configurado corretamente")
 
         logger.info("✅ Bot Telegram inicializado com sucesso!")
         logger.info("🎯 Trading Bot Professional - Modo Produção")
         logger.info("📱 Bot pronto para receber comandos!")
         logger.info("💡 Digite /start no Telegram para começar")
 
-        # Configurar handlers de sinal
-        signal.signal(signal.SIGINT, signal_handler)
-        signal.signal(signal.SIGTERM, signal_handler)
-
-        # Iniciar bot em modo polling
-        await telegram_service.start_production_service()
+        # Iniciar bot em modo polling assíncrono
+        # run_polling handles SIGINT/SIGTERM gracefully by default
+        await telegram_bot.start_polling_async()
 
     except KeyboardInterrupt:
         logger.info("🛑 Bot interrompido pelo usuário")
-        if telegram_service and telegram_service.application:
-            await telegram_service.application.stop()
     except Exception as e:
         logger.error(f"❌ Erro fatal: {e}")
         sys.exit(1)

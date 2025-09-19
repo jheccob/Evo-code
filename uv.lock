@@ -1840,7 +1840,6 @@ dependencies = [
     { name = "streamlit" },
     { name = "stripe" },
     { name = "ta-lib" },
-    { name = "telegram" },
     { name = "uvicorn" },
 ]
 
@@ -1870,7 +1869,6 @@ requires-dist = [
     { name = "streamlit", specifier = ">=1.49.1" },
     { name = "stripe", specifier = ">=12.5.1" },
     { name = "ta-lib", specifier = ">=0.6.7" },
-    { name = "telegram", specifier = ">=0.0.1" },
     { name = "uvicorn", specifier = ">=0.35.0" },
 ]
 
@@ -2177,12 +2175,6 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/60/48/e2d807bb06266aca148b3f433e14ff573c57a8210afba13b48a78e3d04cc/ta_lib-0.6.7-cp313-cp313-win_amd64.whl", hash = "sha256:213423db3afddc9541ab54e8841bcf5f6a6b5a41625d70bd1544e58952a8fe2c", size = 887296 },
     { url = "https://files.pythonhosted.org/packages/41/2d/ab01b2a16efda706b2eadb43f987729133d410e3d8730e43eb2382e7aab9/ta_lib-0.6.7-cp313-cp313-win_arm64.whl", hash = "sha256:ffc54a335c0e7ea69a4217ab8e93cada8871e591badb95fd7f2a0430eaa59825", size = 753616 },
 ]
-
-[[package]]
-name = "telegram"
-version = "0.0.1"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/9d/ca/8bdf2deb93b9f6971dabf2ddc827c2a98ce23e13582a15b37e9bc169f226/telegram-0.0.1.tar.gz", hash = "sha256:d405a0af4c868a8dbeae6d03e297e21c7ee6269e11e2ed3810e15544aba02591", size = 879 }
 
 [[package]]
 name = "tenacity"
