@@ -19,21 +19,7 @@ from trading_bot import TradingBot
 from indicators import TechnicalIndicators
 
 # Importar serviço seguro do Telegram
-try:
-    from services.telegram_service import SecureTelegramService, TELEGRAM_AVAILABLE
-except ImportError:
-    TELEGRAM_AVAILABLE = False
-    
-    # Classe dummy para compatibilidade
-    class SecureTelegramService:
-        def __init__(self):
-            self.enabled = False
-        def configure(self, *args): return False, "Telegram não disponível"
-        def is_configured(self): return False
-        async def test_connection(self): return False, "Not available"
-        async def send_signal_alert(self, *args): return False, "Not available"
-        async def send_custom_message(self, *args): return False, "Not available"
-        def get_config_status(self): return {'available': False, 'configured': False}
+from services.telegram_service import SecureTelegramService, TELEGRAM_AVAILABLE
 
 from backtest import BacktestEngine
 
