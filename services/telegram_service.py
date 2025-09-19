@@ -135,20 +135,19 @@ class SecureTelegramService:
             
             emoji = signal_emojis.get(signal, "📊")
             
-            message = f"""{emoji} *SINAL DE {signal.replace('_', ' ')}*
+            message = f"""{emoji} SINAL DE {signal.replace('_', ' ')}
 
-💰 *Par:* {symbol}
-💵 *Preço:* ${price:.6f}
-📊 *RSI:* {rsi:.2f}
-📈 *MACD:* {macd:.4f}
-🎯 *Signal:* {macd_signal:.4f}
+💰 Par: {symbol}
+💵 Preço: ${price:.6f}
+📊 RSI: {rsi:.2f}
+📈 MACD: {macd:.4f}
+🎯 Signal: {macd_signal:.4f}
 
 🕒 {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}"""
             
             await self.bot.send_message(
                 chat_id=self.chat_id, 
-                text=message,
-                parse_mode='Markdown'
+                text=message
             )
             
             logger.info(f"📤 Sinal enviado: {signal} para {symbol}")

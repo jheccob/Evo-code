@@ -163,34 +163,34 @@ class TelegramTradingBot:
             # Add user to database
             self.user_manager.add_user(user_id, username, first_name)
             
-            welcome_message = f"""🎯 *Bem-vindo ao Trading Bot!*
+            welcome_message = f"""🎯 Bem-vindo ao Trading Bot!
 
 Olá {first_name}! 👋
 
-🤖 *Sobre o bot:*
+🤖 Sobre o bot:
 • Análises técnicas de criptomoedas em tempo real
 • Sinais baseados em RSI e MACD
 • Suporte a múltiplos pares de trading
 
-📖 *Comandos principais:*
+📖 Comandos principais:
 • /analise BTC/USDT - Analisar criptomoeda
 • /status - Ver seu status e limites
 • /help - Ver todos os comandos
 • /premium - Informações sobre Premium
 
-💎 *Pares suportados:*
+💎 Pares suportados:
 {', '.join(TelegramBotConfig.SUPPORTED_PAIRS[:6])}
 
-💎 *Tipos de Usuário:*
+💎 Tipos de Usuário:
 • 🆓 Free: 1 análise por dia
 • 💎 Premium: Análises ilimitadas
 
-💡 *Exemplo de uso:*
+💡 Exemplo de uso:
 /analise BTC/USDT
 
 ✨ Vamos começar a analisar o mercado!"""
             
-            await update.message.reply_text(welcome_message, parse_mode='Markdown')
+            await update.message.reply_text(welcome_message)
             self.logger.info(f"✅ Usuário {user_id} executou /start")
             
         except Exception as e:
@@ -312,23 +312,23 @@ Olá {first_name}! 👋
             signal = self.trading_bot.check_signal(data)
             emoji = TelegramBotConfig.get_signal_emoji(signal)
             
-            analysis_message = f"""📊 *Análise Técnica - {symbol}*
+            analysis_message = f"""📊 Análise Técnica - {symbol}
 
-{emoji} *Sinal: {signal.replace('_', ' ')}*
+{emoji} Sinal: {signal.replace('_', ' ')}
 
-💰 *Preço Atual:* ${last_candle['close']:.6f}
-📈 *Variação:* {((last_candle['close'] - last_candle['open']) / last_candle['open'] * 100):+.2f}%
+💰 Preço Atual: ${last_candle['close']:.6f}
+📈 Variação: {((last_candle['close'] - last_candle['open']) / last_candle['open'] * 100):+.2f}%
 
-📊 *Indicadores:*
+📊 Indicadores:
 • RSI: {last_candle['rsi']:.2f}
 • MACD: {last_candle['macd']:.4f}
 • MACD Signal: {last_candle['macd_signal']:.4f}
 
-⏰ *Atualizado:* {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}
+⏰ Atualizado: {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}
 
-💡 *Lembre-se:* Esta é uma análise técnica automatizada. Sempre faça sua própria pesquisa!"""
+💡 Lembre-se: Esta é uma análise técnica automatizada. Sempre faça sua própria pesquisa!"""
             
-            await loading_msg.edit_text(analysis_message, parse_mode='Markdown')
+            await loading_msg.edit_text(analysis_message)
             
             # Record analysis
             self.user_manager.record_analysis(user_id)
