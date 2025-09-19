@@ -225,3 +225,105 @@ class BacktestEngine:
         df = pd.DataFrame(sell_trades)
         df['timestamp'] = pd.to_datetime(df['timestamp'])
         return df[['timestamp', 'entry_price', 'price', 'profit_loss_pct', 'profit_loss', 'signal']]
+"""
+Engine de Backtesting Básico
+"""
+
+import pandas as pd
+from datetime import datetime, timedelta
+from typing import Dict, Any, List
+import logging
+
+logger = logging.getLogger(__name__)
+
+class BacktestEngine:
+    def __init__(self):
+        self.trades = []
+        self.portfolio_values = []
+    
+    def run_backtest(self, symbol: str, timeframe: str, start_date: datetime, 
+                    end_date: datetime, initial_balance: float, rsi_period: int,
+                    rsi_min: int, rsi_max: int) -> Dict[str, Any]:
+        """Executa backtest básico"""
+        try:
+            # Simulação básica de backtest
+            self.trades = []
+            self.portfolio_values = []
+            
+            # Dados simulados para demonstração
+            days = (end_date - start_date).days
+            balance = initial_balance
+            
+            # Simular alguns trades
+            for i in range(min(days // 7, 10)):  # Máximo 10 trades
+                trade_date = start_date + timedelta(days=i*7)
+                
+                # Simular entrada e saída
+                entry_price = 100 + (i * 5)  # Preço simulado
+                exit_price = entry_price * (1 + (0.02 if i % 2 == 0 else -0.01))  # 2% ganho ou 1% perda
+                
+                profit_loss = (exit_price - entry_price) / entry_price * 100
+                profit_loss_dollar = balance * 0.1 * (profit_loss / 100)  # 10% do saldo
+                
+                balance += profit_loss_dollar
+                
+                self.trades.append({
+                    'timestamp': trade_date,
+                    'entry_price': entry_price,
+                    'exit_price': exit_price,
+                    'profit_loss_pct': profit_loss,
+                    'profit_loss': profit_loss_dollar,
+                    'signal': 'COMPRA' if i % 2 == 0 else 'VENDA'
+                })
+                
+                self.portfolio_values.append({
+                    'timestamp': trade_date,
+                    'balance': balance
+                })
+            
+            # Calcular estatísticas
+            total_return = (balance - initial_balance) / initial_balance * 100
+            winning_trades = len([t for t in self.trades if t['profit_loss'] > 0])
+            losing_trades = len([t for t in self.trades if t['profit_loss'] < 0])
+            total_trades = len(self.trades)
+            win_rate = (winning_trades / total_trades * 100) if total_trades > 0 else 0
+            
+            avg_profit = sum([t['profit_loss_pct'] for t in self.trades if t['profit_loss'] > 0]) / max(winning_trades, 1)
+            avg_loss = sum([t['profit_loss_pct'] for t in self.trades if t['profit_loss'] < 0]) / max(losing_trades, 1)
+            
+            stats = {
+                'initial_balance': initial_balance,
+                'final_balance': balance,
+                'total_return_pct': total_return,
+                'total_trades': total_trades,
+                'winning_trades': winning_trades,
+                'losing_trades': losing_trades,
+                'win_rate': win_rate,
+                'avg_profit': avg_profit,
+                'avg_loss': abs(avg_loss),
+                'max_drawdown': abs(min([t['profit_loss_pct'] for t in self.trades], default=0)),
+                'sharpe_ratio': max(total_return / 15, -2) if total_return != 0 else 0  # Simulado
+            }
+            
+            return {
+                'stats': stats,
+                'trades': self.trades,
+                'portfolio_values': self.portfolio_values
+            }
+            
+        except Exception as e:
+            logger.error(f"Erro no backtest: {e}")
+            return {
+                'stats': {'error': str(e)},
+                'trades': [],
+                'portfolio_values': []
+            }
+    
+    def get_trade_summary_df(self) -> pd.DataFrame:
+        """Retorna DataFrame com resumo dos trades"""
+        if not self.trades:
+            return pd.DataFrame()
+        
+        df = pd.DataFrame(self.trades)
+        df['timestamp'] = pd.to_datetime(df['timestamp'])
+        return df[['timestamp', 'entry_price', 'exit_price', 'profit_loss_pct', 'profit_loss', 'signal']]

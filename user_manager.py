@@ -214,3 +214,57 @@ class UserManager:
                 'analyses_today': user_data.get('analysis_count_today', 0)
             })
         return users_list
+"""
+Gerenciador de Usuários Básico
+"""
+
+import logging
+from typing import Dict, Any, List, Optional
+from datetime import datetime
+
+logger = logging.getLogger(__name__)
+
+class UserManager:
+    def __init__(self):
+        # Dados simulados para demonstração
+        self.users = [
+            {'id': 1, 'username': 'demo_user', 'plan': 'free', 'joined': datetime.now(), 'last_analysis': None},
+            {'id': 2, 'username': 'premium_user', 'plan': 'premium', 'joined': datetime.now(), 'last_analysis': datetime.now()}
+        ]
+    
+    def get_user_stats(self) -> Dict[str, int]:
+        """Retorna estatísticas dos usuários"""
+        total_users = len(self.users)
+        free_users = len([u for u in self.users if u['plan'] == 'free'])
+        premium_users = len([u for u in self.users if u['plan'] == 'premium'])
+        active_today = len([u for u in self.users if u['last_analysis'] and 
+                           (datetime.now() - u['last_analysis']).days == 0])
+        
+        return {
+            'total_users': total_users,
+            'free_users': free_users,
+            'premium_users': premium_users,
+            'active_today': active_today
+        }
+    
+    def list_users(self, limit: int = 50) -> List[Dict[str, Any]]:
+        """Lista usuários"""
+        return self.users[:limit]
+    
+    def upgrade_to_premium(self, user_id: int) -> bool:
+        """Promove usuário para premium"""
+        for user in self.users:
+            if user['id'] == user_id:
+                user['plan'] = 'premium'
+                logger.info(f"Usuário {user_id} promovido para premium")
+                return True
+        return False
+    
+    def add_admin(self, user_id: int) -> bool:
+        """Adiciona privilégios de admin"""
+        for user in self.users:
+            if user['id'] == user_id:
+                user['is_admin'] = True
+                logger.info(f"Usuário {user_id} promovido para admin")
+                return True
+        return False

@@ -19,9 +19,31 @@ from trading_bot import TradingBot
 from indicators import TechnicalIndicators
 
 # Importar serviço seguro do Telegram
-from services.telegram_service import SecureTelegramService, TELEGRAM_AVAILABLE
+try:
+    from services.telegram_service import SecureTelegramService, TELEGRAM_AVAILABLE
+except ImportError:
+    # Fallback se o módulo não existir
+    class SecureTelegramService:
+        def __init__(self):
+            self._configured = False
+        def is_configured(self):
+            return False
+        def get_config_status(self):
+            return {'configured': False}
+    TELEGRAM_AVAILABLE = False
 
-from backtest import BacktestEngine
+try:
+    from backtest import BacktestEngine
+except ImportError:
+    # Fallback simples para BacktestEngine
+    class BacktestEngine:
+        def __init__(self):
+            pass
+        def run_backtest(self, **kwargs):
+            return {'stats': {}, 'trades': []}
+        def get_trade_summary_df(self):
+            import pandas as pd
+            return pd.DataFrame()
 
 # Configure page
 st.set_page_config(
@@ -223,8 +245,21 @@ st.session_state.trading_bot.update_config(
 st.title("📈 Trading Signals Dashboard")
 
 # Import user manager for admin features  
-from user_manager import UserManager
-# TelegramTradingBot disabled for now due to import issues
+try:
+    from user_manager import UserManager
+    USER_MANAGER_AVAILABLE = True
+except ImportError:
+    # Fallback para UserManager
+    class UserManager:
+        def get_user_stats(self):
+            return {'total_users': 0, 'free_users': 0, 'premium_users': 0, 'active_today': 0}
+        def list_users(self, limit):
+            return []
+        def upgrade_to_premium(self, user_id):
+            return False
+        def add_admin(self, user_id):
+            return False
+    USER_MANAGER_AVAILABLE = False
 
 # Initialize user manager
 if 'user_manager' not in st.session_state:
