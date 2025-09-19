@@ -359,7 +359,11 @@ class TradingBot:
             return False
 
     def format_symbol_for_coinbase(self, symbol):
-        """Convert symbol format for Coinbase Pro"""
-        if '/' in symbol:
-            return symbol.replace('/USDT', '-USD').replace('/BTC', '-BTC').replace('/', '-')
+        """Convert symbol format for Coinbase Pro to CCXT unified format"""
+        if '-' in symbol:
+            # Convert Coinbase dash format to CCXT unified format
+            return symbol.replace('-USD', '/USD').replace('-BTC', '/BTC').replace('-', '/')
+        elif '/' in symbol:
+            # Already in unified format
+            return symbol
         return symbol
