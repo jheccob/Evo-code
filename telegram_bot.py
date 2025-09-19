@@ -13,9 +13,22 @@ try:
 except ImportError:
     TELEGRAM_AVAILABLE = False
     # Dummy classes for when Telegram is not available
-    class Update: pass
+    class Update: 
+        class effective_user:
+            id = None
+            username = None
+            first_name = None
+        class message:
+            def reply_text(self, text, **kwargs): pass
+            def edit_text(self, text, **kwargs): pass
+    
     class ContextTypes: 
         DEFAULT_TYPE = None
+        
+    class Bot:
+        def __init__(self, token): pass
+        async def get_me(self): pass
+        async def send_message(self, chat_id, text, **kwargs): pass
 
 from user_manager import UserManager
 from trading_bot import TradingBot
