@@ -13,18 +13,6 @@ build = ["sh", "-c", "pip install -r requirements_production.txt"]
 runButton = "Project"
 
 [[workflows.workflow]]
-name = "Telegram Bot"
-author = "agent"
-mode = "sequential"
-
-[[workflows.workflow.tasks]]
-task = "shell.exec"
-args = "python run_telegram_bot.py"
-
-[workflows.workflow.metadata]
-outputType = "console"
-
-[[workflows.workflow]]
 name = "Production Bot"
 author = 47714575
 mode = "sequential"
@@ -41,10 +29,6 @@ author = "agent"
 [[workflows.workflow.tasks]]
 task = "workflow.run"
 args = "Trading Dashboard"
-
-[[workflows.workflow.tasks]]
-task = "workflow.run"
-args = "Telegram Bot"
 
 [[workflows.workflow]]
 name = "Trading Dashboard"
