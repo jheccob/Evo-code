@@ -109,6 +109,69 @@ class TechnicalIndicators:
             'signal': signal_line,
             'histogram': histogram
         }
+
+    def calculate_multiple_sma(self, prices, periods=[21, 50, 200]):
+        """
+        Calculate multiple Simple Moving Averages for trend analysis
+        
+        Args:
+            prices: Series of prices
+            periods: List of periods for SMAs
+        
+        Returns:
+            Dictionary with SMA values for each period
+        """
+        smas = {}
+        for period in periods:
+            smas[f'sma_{period}'] = self.calculate_sma(prices, period)
+        return smas
+
+    def analyze_trend_strength(self, prices, sma_21, sma_50, sma_200):
+        """
+        Analyze trend strength using multiple moving averages
+        
+        Args:
+            prices: Current price series
+            sma_21, sma_50, sma_200: Moving averages
+        
+        Returns:
+            Dictionary with trend analysis
+        """
+        current_price = prices.iloc[-1] if len(prices) > 0 else 0
+        
+        # Check trend direction
+        uptrend = (sma_21.iloc[-1] > sma_50.iloc[-1] > sma_200.iloc[-1])
+        downtrend = (sma_21.iloc[-1] < sma_50.iloc[-1] < sma_200.iloc[-1])
+        
+        # Price position relative to SMAs
+        above_all = current_price > sma_21.iloc[-1] > sma_50.iloc[-1] > sma_200.iloc[-1]
+        below_all = current_price < sma_21.iloc[-1] < sma_50.iloc[-1] < sma_200.iloc[-1]
+        
+        # Calculate trend strength (0-100)
+        if uptrend and above_all:
+            strength = 85
+            trend = "FORTE_ALTA"
+        elif uptrend and current_price > sma_21.iloc[-1]:
+            strength = 70
+            trend = "ALTA"
+        elif downtrend and below_all:
+            strength = 85
+            trend = "FORTE_BAIXA"
+        elif downtrend and current_price < sma_21.iloc[-1]:
+            strength = 70
+            trend = "BAIXA"
+        else:
+            strength = 30
+            trend = "LATERAL"
+        
+        return {
+            'trend': trend,
+            'strength': strength,
+            'uptrend': uptrend,
+            'downtrend': downtrend,
+            'above_all_sma': above_all,
+            'below_all_sma': below_all
+        }
     
     def calculate_stochastic(self, high, low, close, k_period=14, d_period=3):
         """

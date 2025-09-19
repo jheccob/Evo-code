@@ -3,6 +3,7 @@ Serviço de notificações do Telegram - Versão simplificada
 """
 import asyncio
 import logging
+import os
 from typing import Optional, Tuple, Dict, Any
 from datetime import datetime
 
@@ -24,55 +25,56 @@ class SecureTelegramService:
         self.bot_token = None
         self.chat_id = None
         self.enabled = False
-        # Carregar configuração existente
+        # Carregar configuração dos secrets do Replit
         self._load_config()
 
     def _load_config(self):
-        """Carregar configuração do banco"""
+        """Carregar configuração dos environment variables (Replit Secrets)"""
         if not TELEGRAM_AVAILABLE:
             return
 
         try:
-            token = db.get_setting("telegram_token")
-            chat_id = db.get_setting("telegram_chat_id")
-            enabled = db.get_setting("telegram_enabled", False)
+            # Usar os secrets do Replit
+            token = os.getenv("TELEGRAM_BOT_TOKEN")
+            chat_id = os.getenv("TELEGRAM_CHAT_ID")
 
-            if token and chat_id and enabled:
+            if token and chat_id:
                 self.bot_token = token
                 self.chat_id = chat_id
                 self.bot = Bot(token=self.bot_token)
                 self.enabled = True
-                logger.info("✅ Telegram configurado automaticamente")
+                logger.info("✅ Telegram configurado automaticamente via Replit Secrets")
+            else:
+                logger.info("⚠️ Credenciais do Telegram não encontradas nos secrets")
         except Exception as e:
             logger.error(f"Erro ao carregar config Telegram: {e}")
 
     def configure(self, token: str, chat_id: str) -> Tuple[bool, str]:
-        """Configurar Telegram"""
+        """Configurar Telegram (apenas para teste - credenciais vêm dos Secrets)"""
         if not TELEGRAM_AVAILABLE:
             return False, "❌ Biblioteca não disponível"
 
         try:
-            self.bot_token = token.strip()
-            self.chat_id = chat_id.strip()
-            self.bot = Bot(token=self.bot_token)
+            # Usar as credenciais apenas para teste, não salvar no banco
+            test_token = token.strip()
+            test_chat_id = chat_id.strip()
+            test_bot = Bot(token=test_token)
 
-            # Testar
+            # Testar conexão
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
 
-            me = loop.run_until_complete(self.bot.get_me())
-            test_msg = f"✅ Bot @{me.username} configurado!"
+            me = loop.run_until_complete(test_bot.get_me())
+            test_msg = f"✅ Bot @{me.username} testado com sucesso!"
             loop.run_until_complete(
-                self.bot.send_message(chat_id=self.chat_id, text=test_msg)
+                test_bot.send_message(chat_id=test_chat_id, text=test_msg)
             )
 
-            # Salvar
-            db.save_setting("telegram_token", self.bot_token)
-            db.save_setting("telegram_chat_id", self.chat_id)
-            db.save_setting("telegram_enabled", True)
-
-            self.enabled = True
-            return True, f"✅ Configurado: @{me.username}"
+            # NÃO salvar no banco - as credenciais devem vir dos Replit Secrets
+            # Recarregar configuração dos secrets
+            self._load_config()
+            
+            return True, f"✅ Teste ok: @{me.username}. Use os Replit Secrets para configuração permanente."
 
         except Exception as e:
             return False, f"❌ Erro: {str(e)}"
@@ -107,14 +109,22 @@ class SecureTelegramService:
                 price = data.get('price', price)
                 rsi = data.get('rsi', rsi)
 
+            # Validar dados obrigatórios com valores padrão seguros
+            symbol = symbol or "N/A"
+            signal = signal or "NEUTRO"
+            
             emoji = {'COMPRA': '🟢', 'VENDA': '🔴', 'NEUTRO': '⚪'}.get(signal, '⚪')
+
+            # Formatação segura para preço e RSI
+            price_str = f"${price:.6f}" if price is not None else "N/A"
+            rsi_str = f"{rsi:.2f}" if rsi is not None else "N/A"
 
             message = f"""
 {emoji} **SINAL DE TRADING**
 
 📊 **Par:** {symbol}
-💰 **Preço:** ${price:.6f}
-📈 **RSI:** {rsi:.2f}
+💰 **Preço:** {price_str}
+📈 **RSI:** {rsi_str}
 🎯 **Sinal:** {signal}
 
 ⏰ {format_brazil_time()}
