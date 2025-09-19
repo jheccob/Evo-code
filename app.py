@@ -30,6 +30,16 @@ except ImportError:
             return False
         def get_config_status(self):
             return {'configured': False}
+        def configure(self, bot_token: str, chat_id: str):
+            return False, "❌ Telegram não disponível"
+        def disable(self):
+            pass
+        async def test_connection(self):
+            return False, "❌ Telegram não disponível"
+        async def send_signal_alert(self, symbol: str, signal: str, price: float, rsi: float, macd: float, macd_signal: float):
+            return False
+        async def send_custom_message(self, message: str):
+            return False, "❌ Telegram não disponível"
     TELEGRAM_AVAILABLE = False
 
 try:
@@ -44,6 +54,8 @@ except ImportError:
         def get_trade_summary_df(self):
             import pandas as pd
             return pd.DataFrame()
+        def get_trade_summary(self):
+            return {'total_trades': 0, 'profit_trades': 0, 'loss_trades': 0, 'total_return': 0}
 
 # Configure page
 st.set_page_config(
@@ -259,6 +271,10 @@ except ImportError:
             return False
         def add_admin(self, user_id):
             return False
+        def is_admin(self, user_id):
+            return False
+        def get_user(self, user_id):
+            return None
     USER_MANAGER_AVAILABLE = False
 
 # Initialize user manager
@@ -286,6 +302,11 @@ with tab1:
     current_time = now_brazil()
     
     for sym in selected_symbols:
+        # Initialize variables at the start of each iteration
+        signal = "NEUTRO"
+        last_candle = None
+        sym_data = None
+        
         try:
             # Check if we have cached data for this symbol that's less than 60 seconds old
             cache_key = f"{sym}_{timeframe}"
@@ -317,6 +338,10 @@ with tab1:
                     }
                 else:
                     continue
+            
+            # Skip if we don't have valid data
+            if last_candle is None:
+                continue
             
             # Check for new signals to send alerts
             if (signal not in ["NEUTRO"] and 
@@ -363,14 +388,16 @@ with tab1:
                     'signal': signal
                 })
             
-            overview_data.append({
-                'Par': sym,
-                'Preço': f"${last_candle['close']:.6f}",
-                'RSI': f"{last_candle['rsi']:.2f}",
-                'MACD': f"{last_candle['macd']:.4f}",
-                'Sinal': signal,
-                'Variação': f"{((last_candle['close'] - last_candle['open']) / last_candle['open'] * 100):.2f}%"
-            })
+            # Only add to overview if we have valid data
+            if last_candle is not None:
+                overview_data.append({
+                    'Par': sym,
+                    'Preço': f"${last_candle['close']:.6f}",
+                    'RSI': f"{last_candle['rsi']:.2f}",
+                    'MACD': f"{last_candle['macd']:.4f}",
+                    'Sinal': signal,
+                    'Variação': f"{((last_candle['close'] - last_candle['open']) / last_candle['open'] * 100):.2f}%"
+                })
                 
         except Exception as e:
             overview_data.append({
@@ -696,7 +723,7 @@ if st.session_state.current_data is not None:
         if len(strong_buys) > 0:
             fig.add_trace(
                 go.Scatter(
-                    x=strong_buys.index,
+                    x=strong_buys.index if hasattr(strong_buys, 'index') else list(range(len(strong_buys))),
                     y=strong_buys['close'],
                     mode='markers',
                     marker=dict(symbol='triangle-up', size=20, color='green'),
@@ -709,7 +736,7 @@ if st.session_state.current_data is not None:
         if len(weak_buys) > 0:
             fig.add_trace(
                 go.Scatter(
-                    x=weak_buys.index,
+                    x=weak_buys.index if hasattr(weak_buys, 'index') else list(range(len(weak_buys))),
                     y=weak_buys['close'],
                     mode='markers',
                     marker=dict(symbol='triangle-up', size=12, color='lightgreen', opacity=0.7),
@@ -727,7 +754,7 @@ if st.session_state.current_data is not None:
         if len(strong_sells) > 0:
             fig.add_trace(
                 go.Scatter(
-                    x=strong_sells.index,
+                    x=strong_sells.index if hasattr(strong_sells, 'index') else list(range(len(strong_sells))),
                     y=strong_sells['close'],
                     mode='markers',
                     marker=dict(symbol='triangle-down', size=20, color='red'),
@@ -740,7 +767,7 @@ if st.session_state.current_data is not None:
         if len(weak_sells) > 0:
             fig.add_trace(
                 go.Scatter(
-                    x=weak_sells.index,
+                    x=weak_sells.index if hasattr(weak_sells, 'index') else list(range(len(weak_sells))),
                     y=weak_sells['close'],
                     mode='markers',
                     marker=dict(symbol='triangle-down', size=12, color='lightcoral', opacity=0.7),
