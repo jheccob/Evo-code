@@ -6,11 +6,11 @@ packages = ["cargo", "glibcLocales", "libiconv", "libxcrypt", "openssl", "pkg-co
 
 [deployment]
 deploymentTarget = "autoscale"
-run = ["streamlit", "run", "app.py", "--server.port", "5000", "--server.address", "0.0.0.0"]
+run = ["streamlit", "run", "app.py", "--server.port", "8080", "--server.address", "0.0.0.0", "--server.headless", "true"]
 build = ["sh", "-c", "pip install -r requirements_production.txt"]
 
 [workflows]
-runButton = "Streamlit Dashboard"
+runButton = "Dashboard Principal"
 
 [[workflows.workflow]]
 name = "Production Bot"
@@ -51,13 +51,18 @@ mode = "sequential"
 task = "shell.exec"
 args = "python -m streamlit run app.py --server.port=8080 --server.address=0.0.0.0"
 
-[[ports]]
-localPort = 5000
-externalPort = 80
+[[workflows.workflow]]
+name = "Dashboard Principal"
+author = 47788661
+mode = "sequential"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "python -m streamlit run app.py --server.port=8080 --server.address=0.0.0.0 --server.headless=true"
 
 [[ports]]
 localPort = 8080
-externalPort = 8080
+externalPort = 80
 
 [agent]
 expertMode = true
