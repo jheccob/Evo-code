@@ -936,48 +936,76 @@ else:
 if signals_df is not None and len(signals_df) > 0:
     
     # Format for display
-    display_df = signals_df.copy()
-    # Converter para datetime se necessário, depois formatar
-    if not pd.api.types.is_datetime64_any_dtype(display_df['timestamp']):
-        display_df['timestamp'] = pd.to_datetime(display_df['timestamp'], errors='coerce')
-    display_df['timestamp'] = display_df['timestamp'].dt.strftime('%Y-%m-%d %H:%M:%S')
-    display_df['price'] = display_df['price'].apply(lambda x: f"${x:.6f}")
-    display_df['rsi'] = display_df['rsi'].apply(lambda x: f"{x:.2f}")
-    
-    # Add MACD columns if they exist
-    if 'macd' in display_df.columns:
-        display_df['macd'] = display_df['macd'].apply(lambda x: f"{x:.4f}" if pd.notna(x) else "N/A")
-    if 'macd_signal' in display_df.columns:
-        display_df['macd_signal'] = display_df['macd_signal'].apply(lambda x: f"{x:.4f}" if pd.notna(x) else "N/A")
+    try:
+        display_df = signals_df.copy()
         
-    # Rename columns baseado nas colunas disponíveis
-    column_map = {
-        'timestamp': 'Data/Hora',
-        'symbol': 'Par', 
-        'price': 'Preço',
-        'rsi': 'RSI',
-        'macd': 'MACD',
-        'macd_signal': 'MACD Signal',
-        'signal': 'Sinal',
-        'signal_type': 'Sinal'
-    }
+        # Remove duplicate columns if any
+        display_df = display_df.loc[:, ~display_df.columns.duplicated()]
+        
+        # Ensure we have the required columns
+        required_cols = ['timestamp', 'symbol', 'price', 'rsi', 'signal']
+        missing_cols = [col for col in required_cols if col not in display_df.columns]
+        
+        if missing_cols:
+            st.error(f"Colunas ausentes nos dados: {missing_cols}")
+            display_df = None
+        else:
+            # Converter para datetime se necessário, depois formatar
+            if not pd.api.types.is_datetime64_any_dtype(display_df['timestamp']):
+                display_df['timestamp'] = pd.to_datetime(display_df['timestamp'], errors='coerce')
+            
+            # Remove rows with invalid timestamps
+            display_df = display_df.dropna(subset=['timestamp'])
+            
+            if len(display_df) == 0:
+                st.warning("Nenhum dado válido encontrado após limpeza")
+                display_df = None
+            else:
+                display_df['timestamp'] = display_df['timestamp'].dt.strftime('%Y-%m-%d %H:%M:%S')
+                display_df['price'] = display_df['price'].apply(lambda x: f"${x:.6f}" if pd.notna(x) else "N/A")
+                display_df['rsi'] = display_df['rsi'].apply(lambda x: f"{x:.2f}" if pd.notna(x) else "N/A")
+                
+                # Add MACD columns if they exist
+                if 'macd' in display_df.columns:
+                    display_df['macd'] = display_df['macd'].apply(lambda x: f"{x:.4f}" if pd.notna(x) else "N/A")
+                if 'macd_signal' in display_df.columns:
+                    display_df['macd_signal'] = display_df['macd_signal'].apply(lambda x: f"{x:.4f}" if pd.notna(x) else "N/A")
+                    
+                # Rename columns baseado nas colunas disponíveis
+                column_map = {
+                    'timestamp': 'Data/Hora',
+                    'symbol': 'Par', 
+                    'price': 'Preço',
+                    'rsi': 'RSI',
+                    'macd': 'MACD',
+                    'macd_signal': 'MACD Signal',
+                    'signal': 'Sinal',
+                    'signal_type': 'Sinal'
+                }
+                
+                # Renomear apenas as colunas que existem
+                display_df = display_df.rename(columns=column_map)
+                
+                # Selecionar apenas as colunas que queremos mostrar
+                available_columns = []
+                for col in ['Data/Hora', 'Par', 'Preço', 'RSI', 'MACD', 'MACD Signal', 'Sinal']:
+                    if col in display_df.columns:
+                        available_columns.append(col)
+                
+                display_df = display_df[available_columns]
+                
+    except Exception as e:
+        st.error(f"Erro ao processar dados do histórico: {str(e)}")
+        display_df = None
     
-    # Renomear apenas as colunas que existem
-    display_df = display_df.rename(columns=column_map)
-    
-    # Selecionar apenas as colunas que queremos mostrar
-    available_columns = []
-    for col in ['Data/Hora', 'Par', 'Preço', 'RSI', 'MACD', 'MACD Signal', 'Sinal']:
-        if col in display_df.columns:
-            available_columns.append(col)
-    
-    display_df = display_df[available_columns]
-    
-    st.dataframe(
-        display_df,
-        width='stretch',
-        hide_index=True
-    )
+    if display_df is not None and len(display_df) > 0:
+        st.dataframe(
+            display_df,
+            width='stretch',
+            hide_index=True
+        )
+    else:
+        st.warning("Não foi possível exibir os dados do histórico devido a problemas na formatação.")
     
     # Clear history button
     col1, col2 = st.columns(2)
