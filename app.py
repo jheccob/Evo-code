@@ -1032,7 +1032,7 @@ else:
             # Just rerun UI without data refresh
             st.rerun()
 
-# Backtesting Tab
+# Backtesting Tab  
 with tab2:
     st.subheader("🔬 Sistema de Backtesting")
     st.markdown("Teste suas estratégias com dados históricos para validar sua eficácia")
@@ -1049,14 +1049,16 @@ with tab2:
         bt_symbol = st.selectbox(
             "Par para Backtest:",
             ["XLM-USD", "BTC-USD", "ETH-USD", "ADA-USD", "DOT-USD", "MATIC-USD"],
-            help="Selecione o par de criptomoedas para testar"
+            help="Selecione o par de criptomoedas para testar",
+            key="bt_symbol"
         )
         
         bt_timeframe = st.selectbox(
             "Timeframe:",
             ["5m", "15m", "30m", "1h", "4h"],
             index=1,
-            help="Intervalo de tempo dos candles"
+            help="Intervalo de tempo dos candles",
+            key="bt_timeframe"
         )
         
         # Date selection with better defaults
@@ -1068,13 +1070,15 @@ with tab2:
             "📅 Data Inicial", 
             value=default_start,
             max_value=max_date,
-            help="Data de início do período de teste"
+            help="Data de início do período de teste",
+            key="bt_start_date"
         )
         bt_end_date = st.date_input(
             "📅 Data Final", 
             value=max_date,
             max_value=max_date,
-            help="Data de fim do período de teste"
+            help="Data de fim do período de teste",
+            key="bt_end_date"
         )
     
     with col2:
@@ -1086,25 +1090,29 @@ with tab2:
             max_value=100000.0, 
             value=10000.0,
             step=1000.0,
-            help="Capital inicial para simulação"
+            help="Capital inicial para simulação",
+            key="bt_initial_balance"
         )
         
         bt_rsi_period = st.slider(
             "RSI Período", 
-            5, 50, rsi_period,
-            help="Período para cálculo do RSI"
+            5, 50, 14,
+            help="Período para cálculo do RSI",
+            key="bt_rsi_period"
         )
         
         bt_rsi_min = st.slider(
             "RSI Mínimo (Sinal de Compra)", 
-            10, 40, rsi_min,
-            help="Nível de sobrevenda do RSI"
+            10, 40, 20,
+            help="Nível de sobrevenda do RSI",
+            key="bt_rsi_min"
         )
         
         bt_rsi_max = st.slider(
             "RSI Máximo (Sinal de Venda)", 
-            60, 90, rsi_max,
-            help="Nível de sobrecompra do RSI"
+            60, 90, 80,
+            help="Nível de sobrecompra do RSI",
+            key="bt_rsi_max"
         )
     
     # Validation and execution
@@ -1128,7 +1136,8 @@ with tab2:
             "🚀 Executar Backtest", 
             disabled=not date_valid or period_days < 1,
             help="Iniciar simulação com os parâmetros configurados",
-            use_container_width=True
+            use_container_width=True,
+            key="bt_execute"
         )
     
     if bt_execute and date_valid:
@@ -1327,16 +1336,6 @@ with tab2:
                     'Retorno %', 'Lucro/Perda $', 'Sinal'
                 ]
                 
-                # Style the dataframe
-                def style_profit_loss(val):
-                    if 'Retorno %' in val or 'Lucro/Perda $' in val:
-                        return ''
-                    if val.startswith('-'):
-                        return 'background-color: #ffebee'  # Light red
-                    elif val.startswith('+') or (val.replace('%', '').replace('$', '').replace(',', '').replace('.', '').isdigit() and float(val.replace('%', '').replace('$', '').replace(',', '')) > 0):
-                        return 'background-color: #e8f5e8'  # Light green
-                    return ''
-                
                 # Show last 20 trades by default
                 display_limit = min(20, len(trade_df_display))
                 st.info(f"📊 Mostrando os últimos {display_limit} trades de {len(trade_df_display)} total")
@@ -1349,12 +1348,12 @@ with tab2:
                 
                 # Summary of all trades
                 if len(trade_df_display) > display_limit:
-                    if st.button(f"📋 Ver todos os {len(trade_df_display)} trades"):
+                    if st.button(f"📋 Ver todos os {len(trade_df_display)} trades", key="show_all_trades"):
                         st.dataframe(trade_df_display, width='stretch', hide_index=True)
         
         # Clear results button
         st.markdown("---")
-        if st.button("🗑️ Limpar Resultados"):
+        if st.button("🗑️ Limpar Resultados", key="clear_backtest_results"):
             st.session_state.backtest_results = None
             st.rerun()
     
