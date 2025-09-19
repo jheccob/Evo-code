@@ -12,6 +12,10 @@ try:
     TELEGRAM_AVAILABLE = True
 except ImportError:
     TELEGRAM_AVAILABLE = False
+    # Dummy classes for when Telegram is not available
+    class Update: pass
+    class ContextTypes: 
+        DEFAULT_TYPE = None
 
 from user_manager import UserManager
 from trading_bot import TradingBot
