@@ -94,10 +94,24 @@ class BacktestEngine:
         
         max_position_size = 0.95  # Use 95% of balance per trade
         
+        # Calculate signals for all data first
+        signals = []
+        for i in range(len(data)):
+            if i < 20:  # Need minimum data for indicators
+                signals.append('NEUTRO')
+            else:
+                try:
+                    # Get signal from trading bot for this candle
+                    temp_data = data.iloc[:i+1]
+                    signal = self.trading_bot.check_signal(temp_data)
+                    signals.append(signal)
+                except:
+                    signals.append('NEUTRO')
+        
         for i in range(len(data)):
             current_candle = data.iloc[i]
             current_price = current_candle['close']
-            signal = current_candle.get('signal', 'NEUTRO')
+            signal = signals[i]
             timestamp = data.index[i]
             
             # Calculate portfolio value

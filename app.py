@@ -1138,7 +1138,14 @@ with tab2:
                 start_dt = datetime.combine(bt_start_date, datetime.min.time())
                 end_dt = datetime.combine(bt_end_date, datetime.max.time())
                 
+                # Validações adicionais
+                if period_days > 365:
+                    st.error("❌ Período muito longo. Máximo recomendado: 1 ano")
+                    st.stop()
+                
                 # Execute backtest
+                st.info(f"📊 Executando backtest para {bt_symbol} no período de {period_days} dias...")
+                
                 results = st.session_state.backtest_engine.run_backtest(
                     symbol=bt_symbol,
                     timeframe=bt_timeframe,
@@ -1150,13 +1157,30 @@ with tab2:
                     rsi_max=bt_rsi_max
                 )
                 
-                st.session_state.backtest_results = results
-                st.success("✅ Backtest concluído com sucesso!")
-                st.balloons()
+                if results and 'stats' in results:
+                    st.session_state.backtest_results = results
+                    st.success("✅ Backtest concluído com sucesso!")
+                    st.balloons()
+                else:
+                    st.error("❌ Backtest não retornou resultados válidos")
                 
             except Exception as e:
-                st.error(f"❌ Erro durante o backtest: {str(e)}")
-                st.info("💡 Dica: Tente um período menor ou verifique sua conexão")
+                error_msg = str(e)
+                st.error(f"❌ Erro durante o backtest: {error_msg}")
+                
+                # Mensagens de ajuda específicas
+                if "Dados insuficientes" in error_msg:
+                    st.warning("⚠️ **Solução**: Tente um período maior (mínimo 7 dias) ou um timeframe menor")
+                elif "API" in error_msg or "connection" in error_msg.lower():
+                    st.warning("⚠️ **Solução**: Verifique sua conexão com a internet e tente novamente")
+                elif "Rate limit" in error_msg or "limit" in error_msg.lower():
+                    st.warning("⚠️ **Solução**: Aguarde alguns minutos antes de tentar novamente")
+                else:
+                    st.info("💡 **Dicas**:\n- Tente um período menor\n- Verifique se o par selecionado está disponível\n- Aguarde alguns segundos e tente novamente")
+                
+                # Log do erro para debug
+                with st.expander("🔍 Detalhes técnicos (para debug)"):
+                    st.code(error_msg)
     
     # Display results if available
     if st.session_state.backtest_results:
