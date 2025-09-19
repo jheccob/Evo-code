@@ -6,7 +6,7 @@ packages = ["cargo", "glibcLocales", "libiconv", "libxcrypt", "openssl", "pkg-co
 
 [deployment]
 deploymentTarget = "autoscale"
-run = ["python", "-m", "streamlit", "run", "app.py", "--server.port=5000", "--server.address=0.0.0.0"]
+run = ["streamlit", "run", "app.py", "--server.port", "5000", "--server.address", "0.0.0.0"]
 build = ["sh", "-c", "pip install -r requirements_production.txt"]
 
 [workflows]
@@ -47,8 +47,8 @@ localPort = 5000
 externalPort = 80
 
 [[ports]]
-localPort = 37951
-externalPort = 3000
+localPort = 39671
+externalPort = 3001
 
 [agent]
 expertMode = true

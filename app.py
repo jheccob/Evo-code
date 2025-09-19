@@ -108,12 +108,12 @@ if enable_multi_symbol:
     selected_symbols = st.sidebar.multiselect(
         "Selecionar pares para monitorar:",
         available_pairs,
-        default=["XLM/USDT", "BTC/USDT", "ETH/USDT"]
+        default=["XLM-USD", "BTC-USD", "ETH-USD"]
     )
     
     if not selected_symbols:
         st.sidebar.warning("⚠️ Selecione pelo menos um par")
-        selected_symbols = ["XLM/USDT"]
+        selected_symbols = ["XLM-USD"]
     
     # For multi-symbol mode, use the first selected as primary
     symbol = selected_symbols[0] if selected_symbols else "XLM-USD"
@@ -127,10 +127,10 @@ else:
     )
     selected_symbols = [symbol]
 
-# Timeframe selection
+# Timeframe selection - Coinbase supported timeframes
 timeframe = st.sidebar.selectbox(
     "Timeframe",
-    ["1m", "5m", "15m", "30m", "1h", "4h", "1d"],
+    ["1m", "5m", "15m", "1h", "6h", "1d"],
     index=1
 )
 
@@ -284,6 +284,10 @@ if 'user_manager' not in st.session_state:
 # Telegram trading bot disabled for now due to import issues
 # if 'telegram_trading_bot' not in st.session_state:
 #     st.session_state.telegram_trading_bot = TelegramTradingBot()
+
+# Initialize session state for multi-symbol data
+if 'multi_symbol_data' not in st.session_state:
+    st.session_state.multi_symbol_data = {}
 
 # Create tabs for different sections
 tab1, tab2, tab3, tab4 = st.tabs(["📊 Análise em Tempo Real", "🔬 Backtesting", "⚙️ Exportar Dados", "👑 Admin Panel"])
@@ -526,9 +530,7 @@ if should_update:
     except Exception as e:
         st.error(f"Erro ao carregar dados: {str(e)}")
 
-# Store multi-symbol data
-if 'multi_symbol_data' not in st.session_state:
-    st.session_state.multi_symbol_data = {}
+# Store multi-symbol data (already initialized above)
 
 if st.session_state.current_data is not None:
     data = st.session_state.current_data
