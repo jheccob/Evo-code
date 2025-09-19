@@ -11,7 +11,7 @@ import asyncio
 import threading
 
 # Importar funções de fuso horário brasileiro
-from utils.timezone_utils import now_brazil, format_brazil_time, get_brazil_datetime_naive
+from utils.timezone_utils import now_brazil, format_brazil_time, get_brazil_datetime_naive, BRAZIL_TZ
 
 # Importar banco de dados
 from database.database import db
@@ -43,6 +43,33 @@ except ImportError:
     TELEGRAM_AVAILABLE = False
 
 from backtest import BacktestEngine
+
+# Helper function for timestamp comparison
+def _compare_timestamps(ts1, ts2):
+    """
+    Safely compare timestamps, handling timezone-aware/naive differences
+    Returns True if ts1 < ts2
+    """
+    try:
+        # Convert both to naive datetime for comparison
+        if hasattr(ts1, 'tzinfo') and ts1.tzinfo is not None:
+            # If ts1 is timezone-aware, convert to Brazil timezone then make naive
+            ts1_naive = ts1.astimezone(BRAZIL_TZ).replace(tzinfo=None) if hasattr(ts1, 'astimezone') else ts1.replace(tzinfo=None)
+        else:
+            # If ts1 is already naive, use as is
+            ts1_naive = ts1
+        
+        if hasattr(ts2, 'tzinfo') and ts2.tzinfo is not None:
+            # If ts2 is timezone-aware, convert to Brazil timezone then make naive
+            ts2_naive = ts2.astimezone(BRAZIL_TZ).replace(tzinfo=None) if hasattr(ts2, 'astimezone') else ts2.replace(tzinfo=None)
+        else:
+            # If ts2 is already naive, use as is
+            ts2_naive = ts2
+            
+        return ts1_naive < ts2_naive
+    except Exception:
+        # If comparison fails, assume it's a new signal
+        return True
 
 # Configure page
 st.set_page_config(
@@ -543,7 +570,7 @@ if st.session_state.current_data is not None:
     if signal not in ["NEUTRO"] and (
         not st.session_state.signals_history or 
         st.session_state.signals_history[-1]['signal'] != signal or
-        st.session_state.signals_history[-1]['timestamp'] < get_brazil_datetime_naive() - timedelta(minutes=5)
+        _compare_timestamps(st.session_state.signals_history[-1]['timestamp'], get_brazil_datetime_naive() - timedelta(minutes=5))
     ):
         # Send Telegram notification if enabled
         if st.session_state.telegram_notifications and st.session_state.telegram_bot.is_configured():
@@ -574,7 +601,8 @@ if st.session_state.current_data is not None:
             'signal': signal,
             'timeframe': timeframe,
             'macd_value': last_candle['macd'],
-            'signal_strength': abs(last_candle['rsi'] - 50) / 50  # Força do sinal baseada no RSI
+            'signal_strength': abs(last_candle['rsi'] - 50) / 50,  # Força do sinal baseada no RSI
+            'volume': last_candle.get('volume', 0)
         }
         
         # Salvar no banco de dados
