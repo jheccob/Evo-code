@@ -302,13 +302,15 @@ with tab1:
             # Check if we have cached data for this symbol that's less than 60 seconds old
             cache_key = f"{sym}_{timeframe}"
             should_refresh = True
+            cached_data = None
+            cache_age = 0
             
             if cache_key in st.session_state.multi_symbol_data:
                 cached_data = st.session_state.multi_symbol_data[cache_key]
                 cache_age = (current_time - cached_data['last_update']).total_seconds()
-            # Cache mais agressivo para reduzir API calls
-            cache_timeout = 30 if len(selected_symbols) > 5 else 60
-            if cached_data['last_update'] and cache_age < cache_timeout:
+                # Cache mais agressivo para reduzir API calls
+                cache_timeout = 30 if len(selected_symbols) > 5 else 60
+                if cached_data['last_update'] and cache_age < cache_timeout:
                     should_refresh = False
                     sym_data = cached_data['data']
                     signal = cached_data['signal']
@@ -1142,7 +1144,7 @@ with tab2:
                     timeframe=bt_timeframe,
                     start_date=start_dt,
                     end_date=end_dt,
-                    initial_balance=bt_initial_balance,
+                    initial_balance=int(bt_initial_balance),
                     rsi_period=bt_rsi_period,
                     rsi_min=bt_rsi_min,
                     rsi_max=bt_rsi_max
