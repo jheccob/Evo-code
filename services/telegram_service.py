@@ -140,6 +140,24 @@ class SecureTelegramService:
         except Exception as e:
             return False, f"❌ Erro: {str(e)}"
 
+    async def send_custom_message(self, message: str, chat_id: str = None) -> Tuple[bool, str]:
+        """Enviar mensagem customizada"""
+        if not self.is_configured():
+            return False, "❌ Não configurado"
+
+        try:
+            target_chat_id = chat_id or self.chat_id
+            
+            await self.bot.send_message(
+                chat_id=target_chat_id,
+                text=message,
+                parse_mode='Markdown'
+            )
+            return True, "✅ Mensagem enviada!"
+
+        except Exception as e:
+            return False, f"❌ Erro: {str(e)}"
+
     def disable(self):
         """Desabilitar"""
         db.save_setting("telegram_enabled", False)
@@ -147,8 +165,13 @@ class SecureTelegramService:
         self.bot = None
 
     def get_config_status(self) -> Dict[str, Any]:
+        # Forçar reload da configuração para garantir que os secrets sejam lidos
+        if not self.is_configured():
+            self._load_config()
+        
         return {
             'available': TELEGRAM_AVAILABLE,
             'configured': self.is_configured(),
-            'enabled': self.enabled
+            'enabled': self.enabled,
+            'auto_configured': bool(os.getenv("TELEGRAM_BOT_TOKEN") and os.getenv("TELEGRAM_CHAT_ID"))
         }

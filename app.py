@@ -5,6 +5,7 @@ import plotly.express as px
 from plotly.subplots import make_subplots
 import time
 import json
+import os
 from datetime import datetime, timedelta
 import asyncio
 import threading
@@ -18,21 +19,7 @@ from trading_bot import TradingBot
 from indicators import TechnicalIndicators
 
 # Importar serviço seguro do Telegram
-try:
-    from services.telegram_service import SecureTelegramService, TELEGRAM_AVAILABLE
-except ImportError:
-    TELEGRAM_AVAILABLE = False
-    
-    # Classe dummy para compatibilidade
-    class SecureTelegramService:
-        def __init__(self):
-            self.enabled = False
-        def configure(self, *args): return False, "Telegram não disponível"
-        def is_configured(self): return False
-        async def test_connection(self): return False, "Not available"
-        async def send_signal_alert(self, *args): return False, "Not available"
-        async def send_custom_message(self, *args): return False, "Not available"
-        def get_config_status(self): return {'available': False, 'configured': False}
+from services.telegram_service import SecureTelegramService, TELEGRAM_AVAILABLE
 
 from backtest import BacktestEngine
 
@@ -137,8 +124,14 @@ if TELEGRAM_AVAILABLE:
     # Status da configuração
     config_status = st.session_state.telegram_bot.get_config_status()
     
-    if config_status['configured']:
-        st.sidebar.success("✅ Telegram configurado!")
+    # Verificar se está configurado via Secrets
+    has_secrets = bool(os.getenv("TELEGRAM_BOT_TOKEN") and os.getenv("TELEGRAM_CHAT_ID"))
+    
+    if config_status['configured'] or has_secrets:
+        if has_secrets:
+            st.sidebar.success("✅ Telegram configurado via Replit Secrets!")
+        else:
+            st.sidebar.success("✅ Telegram configurado!")
         
         # Opções para usuário configurado
         col1, col2 = st.sidebar.columns(2)
@@ -381,7 +374,8 @@ with tab1:
     st.subheader(f"📈 Análise Detalhada - {symbol}")
 
 # Telegram Configuration Card (if not configured)
-if not st.session_state.telegram_bot.is_configured():
+has_secrets_main = bool(os.getenv("TELEGRAM_BOT_TOKEN") and os.getenv("TELEGRAM_CHAT_ID"))
+if not st.session_state.telegram_bot.is_configured() and not has_secrets_main:
     with st.expander("📱 Configurar Notificações Telegram", expanded=False):
         st.markdown("Configure o bot do Telegram para receber alertas de sinais em tempo real!")
         
