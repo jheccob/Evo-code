@@ -1033,58 +1033,128 @@ else:
 # Backtesting Tab
 with tab2:
     st.subheader("🔬 Sistema de Backtesting")
-    st.markdown("Teste suas estratégias com dados históricos")
+    st.markdown("Teste suas estratégias com dados históricos para validar sua eficácia")
+    
+    # Configurações do Backtest
+    st.markdown("### ⚙️ Configurações do Backtest")
     
     col1, col2 = st.columns(2)
     
     with col1:
+        st.markdown("**📈 Parâmetros do Mercado**")
+        
+        # Convert symbol format for backtest
         bt_symbol = st.selectbox(
             "Par para Backtest:",
-            ["XLM/USDT", "BTC/USDT", "ETH/USDT", "ADA/USDT", "DOT/USDT", "MATIC/USDT"]
+            ["XLM-USD", "BTC-USD", "ETH-USD", "ADA-USD", "DOT-USD", "MATIC-USD"],
+            help="Selecione o par de criptomoedas para testar"
         )
         
         bt_timeframe = st.selectbox(
             "Timeframe:",
             ["5m", "15m", "30m", "1h", "4h"],
-            index=0
+            index=1,
+            help="Intervalo de tempo dos candles"
         )
         
-        # Date selection
+        # Date selection with better defaults
         from datetime import date
-        end_date = st.date_input("Data Final", value=date.today())
-        start_date = st.date_input("Data Inicial", value=date.today() - timedelta(days=30))
+        max_date = date.today()
+        default_start = max_date - timedelta(days=30)
+        
+        bt_start_date = st.date_input(
+            "📅 Data Inicial", 
+            value=default_start,
+            max_value=max_date,
+            help="Data de início do período de teste"
+        )
+        bt_end_date = st.date_input(
+            "📅 Data Final", 
+            value=max_date,
+            max_value=max_date,
+            help="Data de fim do período de teste"
+        )
     
     with col2:
-        bt_initial_balance = st.number_input("Saldo Inicial ($)", min_value=100, max_value=100000, value=10000)
-        bt_rsi_period = st.slider("RSI Período", 5, 50, rsi_period)
-        bt_rsi_min = st.slider("RSI Mín (Compra)", 10, 40, rsi_min)
-        bt_rsi_max = st.slider("RSI Máx (Venda)", 60, 90, rsi_max)
+        st.markdown("**💰 Parâmetros de Trading**")
+        
+        bt_initial_balance = st.number_input(
+            "Saldo Inicial ($)", 
+            min_value=100.0, 
+            max_value=100000.0, 
+            value=10000.0,
+            step=1000.0,
+            help="Capital inicial para simulação"
+        )
+        
+        bt_rsi_period = st.slider(
+            "RSI Período", 
+            5, 50, rsi_period,
+            help="Período para cálculo do RSI"
+        )
+        
+        bt_rsi_min = st.slider(
+            "RSI Mínimo (Sinal de Compra)", 
+            10, 40, rsi_min,
+            help="Nível de sobrevenda do RSI"
+        )
+        
+        bt_rsi_max = st.slider(
+            "RSI Máximo (Sinal de Venda)", 
+            60, 90, rsi_max,
+            help="Nível de sobrecompra do RSI"
+        )
     
-    if st.button("🚀 Executar Backtest"):
-        if start_date >= end_date:
-            st.error("❌ Data inicial deve ser anterior à data final")
-        else:
-            with st.spinner("Executando backtest..."):
-                try:
-                    # Convert dates to datetime
-                    start_dt = datetime.combine(start_date, datetime.min.time())
-                    end_dt = datetime.combine(end_date, datetime.max.time())
-                    
-                    results = st.session_state.backtest_engine.run_backtest(
-                        symbol=bt_symbol,
-                        timeframe=bt_timeframe,
-                        start_date=start_dt,
-                        end_date=end_dt,
-                        initial_balance=bt_initial_balance,
-                        rsi_period=bt_rsi_period,
-                        rsi_min=bt_rsi_min,
-                        rsi_max=bt_rsi_max
-                    )
-                    st.session_state.backtest_results = results
-                    st.success("✅ Backtest concluído!")
-                    
-                except Exception as e:
-                    st.error(f"❌ Erro no backtest: {str(e)}")
+    # Validation and execution
+    st.markdown("---")
+    
+    # Validation checks
+    date_valid = bt_start_date < bt_end_date
+    period_days = (bt_end_date - bt_start_date).days
+    
+    if not date_valid:
+        st.error("❌ Data inicial deve ser anterior à data final")
+    elif period_days > 90:
+        st.warning("⚠️ Período muito longo pode causar problemas de API. Recomendado: máximo 90 dias")
+    elif period_days < 1:
+        st.error("❌ Período muito curto. Mínimo: 1 dia")
+    
+    # Execution button
+    col1, col2, col3 = st.columns([1, 2, 1])
+    with col2:
+        bt_execute = st.button(
+            "🚀 Executar Backtest", 
+            disabled=not date_valid or period_days < 1,
+            help="Iniciar simulação com os parâmetros configurados",
+            use_container_width=True
+        )
+    
+    if bt_execute and date_valid:
+        with st.spinner("🔄 Executando backtest... Isso pode levar alguns minutos."):
+            try:
+                # Convert dates to datetime
+                start_dt = datetime.combine(bt_start_date, datetime.min.time())
+                end_dt = datetime.combine(bt_end_date, datetime.max.time())
+                
+                # Execute backtest
+                results = st.session_state.backtest_engine.run_backtest(
+                    symbol=bt_symbol,
+                    timeframe=bt_timeframe,
+                    start_date=start_dt,
+                    end_date=end_dt,
+                    initial_balance=bt_initial_balance,
+                    rsi_period=bt_rsi_period,
+                    rsi_min=bt_rsi_min,
+                    rsi_max=bt_rsi_max
+                )
+                
+                st.session_state.backtest_results = results
+                st.success("✅ Backtest concluído com sucesso!")
+                st.balloons()
+                
+            except Exception as e:
+                st.error(f"❌ Erro durante o backtest: {str(e)}")
+                st.info("💡 Dica: Tente um período menor ou verifique sua conexão")
     
     # Display results if available
     if st.session_state.backtest_results:
@@ -1094,53 +1164,183 @@ with tab2:
         st.markdown("---")
         st.subheader("📊 Resultados do Backtest")
         
-        # Display key metrics
+        # Performance Overview
         col1, col2, col3, col4 = st.columns(4)
         
-        with col1:
-            st.metric("Retorno Total", f"{stats['total_return_pct']:.2f}%")
-        with col2:
-            st.metric("Total de Trades", stats['total_trades'])
-        with col3:
-            st.metric("Taxa de Acerto", f"{stats['win_rate']:.1f}%")
-        with col4:
-            st.metric("Max Drawdown", f"{stats['max_drawdown']:.2f}%")
+        # Color coding for metrics
+        return_color = "normal" if stats['total_return_pct'] >= 0 else "inverse"
+        winrate_color = "normal" if stats['win_rate'] >= 50 else "inverse"
         
-        # Detailed stats
-        st.subheader("📈 Estatísticas Detalhadas")
+        with col1:
+            st.metric(
+                "💰 Retorno Total", 
+                f"{stats['total_return_pct']:.2f}%",
+                delta=f"${stats['final_balance'] - stats['initial_balance']:,.2f}"
+            )
+        with col2:
+            st.metric("🔢 Total de Trades", stats['total_trades'])
+        with col3:
+            st.metric("🎯 Taxa de Acerto", f"{stats['win_rate']:.1f}%")
+        with col4:
+            st.metric("📉 Max Drawdown", f"-{stats['max_drawdown']:.2f}%")
+        
+        # Additional metrics row
+        col1, col2, col3, col4 = st.columns(4)
+        with col1:
+            st.metric("📈 Sharpe Ratio", f"{stats['sharpe_ratio']:.2f}")
+        with col2:
+            st.metric("💹 Profit Factor", f"{stats.get('profit_factor', 0):.2f}")
+        with col3:
+            st.metric("✅ Trades Vencedores", stats['winning_trades'])
+        with col4:
+            st.metric("❌ Trades Perdedores", stats['losing_trades'])
+        
+        # Detailed Performance Analysis
+        st.markdown("---")
+        st.subheader("📈 Análise Detalhada de Performance")
+        
         col1, col2 = st.columns(2)
         
         with col1:
+            # Financial metrics
+            st.markdown("**💰 Métricas Financeiras**")
+            profit_loss = stats['final_balance'] - stats['initial_balance']
+            profit_color = "🟢" if profit_loss >= 0 else "🔴"
+            
             st.info(f"""
             **Saldo Inicial:** ${stats['initial_balance']:,.2f}  
             **Saldo Final:** ${stats['final_balance']:,.2f}  
-            **Retorno Total:** {stats['total_return_pct']:.2f}%  
-            **Sharpe Ratio:** {stats['sharpe_ratio']:.2f}  
+            **Lucro/Prejuízo:** {profit_color} ${profit_loss:,.2f}  
+            **Retorno Percentual:** {stats['total_return_pct']:.2f}%  
+            **Sharpe Ratio:** {stats['sharpe_ratio']:.2f}
             """)
         
         with col2:
+            # Trading metrics
+            st.markdown("**📊 Métricas de Trading**")
+            avg_profit_color = "🟢" if stats['avg_profit'] > 0 else "🟡"
+            avg_loss_color = "🔴" if stats['avg_loss'] > 0 else "🟡"
+            
             st.info(f"""
-            **Trades Vencedores:** {stats['winning_trades']}  
-            **Trades Perdedores:** {stats['losing_trades']}  
-            **Lucro Médio:** {stats['avg_profit']:.2f}%  
-            **Perda Média:** {stats['avg_loss']:.2f}%  
+            **Trades Vencedores:** {stats['winning_trades']} ({stats['win_rate']:.1f}%)  
+            **Trades Perdedores:** {stats['losing_trades']} ({100-stats['win_rate']:.1f}%)  
+            **Lucro Médio:** {avg_profit_color} {stats['avg_profit']:.2f}%  
+            **Perda Média:** {avg_loss_color} {stats['avg_loss']:.2f}%  
+            **Máximo Drawdown:** {stats['max_drawdown']:.2f}%
             """)
         
-        # Trade history
+        # Performance interpretation
+        st.markdown("**🎯 Interpretação dos Resultados**")
+        if stats['total_return_pct'] > 20:
+            st.success("🚀 **Excelente Performance!** A estratégia demonstrou retornos muito bons.")
+        elif stats['total_return_pct'] > 5:
+            st.success("✅ **Boa Performance!** A estratégia teve resultados positivos.")
+        elif stats['total_return_pct'] > 0:
+            st.warning("⚠️ **Performance Moderada.** A estratégia teve ganhos pequenos.")
+        else:
+            st.error("❌ **Performance Negativa.** A estratégia resultou em perdas.")
+            
+        # Additional insights
+        if stats['win_rate'] < 40:
+            st.warning("⚠️ Taxa de acerto baixa. Considere ajustar os parâmetros.")
+        if stats['max_drawdown'] > 20:
+            st.warning("⚠️ Drawdown alto. A estratégia pode ser muito arriscada.")
+        
+        # Portfolio evolution chart
+        if results.get('portfolio_values'):
+            st.markdown("---")
+            st.subheader("📈 Evolução do Portfolio")
+            
+            portfolio_df = pd.DataFrame(results['portfolio_values'])
+            portfolio_df['timestamp'] = pd.to_datetime(portfolio_df['timestamp'])
+            
+            fig_portfolio = go.Figure()
+            fig_portfolio.add_trace(go.Scatter(
+                x=portfolio_df['timestamp'],
+                y=portfolio_df['portfolio_value'],
+                mode='lines',
+                name='Valor do Portfolio',
+                line=dict(color='blue', width=2)
+            ))
+            
+            # Add initial balance line
+            fig_portfolio.add_hline(
+                y=stats['initial_balance'], 
+                line_dash="dash", 
+                line_color="gray",
+                annotation_text="Saldo Inicial"
+            )
+            
+            fig_portfolio.update_layout(
+                title=f"Evolução do Portfolio - {bt_symbol}",
+                xaxis_title="Data",
+                yaxis_title="Valor do Portfolio ($)",
+                height=400
+            )
+            
+            st.plotly_chart(fig_portfolio, use_container_width=True)
+        
+        # Trade history table
         if results['trades']:
+            st.markdown("---")
             st.subheader("📋 Histórico de Trades")
+            
             trade_df = st.session_state.backtest_engine.get_trade_summary_df()
             if not trade_df.empty:
+                # Format trade data for display
                 trade_df_display = trade_df.copy()
-                trade_df_display['timestamp'] = trade_df_display['timestamp'].dt.strftime('%Y-%m-%d %H:%M')
+                trade_df_display['timestamp'] = trade_df_display['timestamp'].dt.strftime('%d/%m/%Y %H:%M')
                 trade_df_display['entry_price'] = trade_df_display['entry_price'].apply(lambda x: f"${x:.6f}")
                 trade_df_display['price'] = trade_df_display['price'].apply(lambda x: f"${x:.6f}")
                 trade_df_display['profit_loss_pct'] = trade_df_display['profit_loss_pct'].apply(lambda x: f"{x:.2f}%")
                 trade_df_display['profit_loss'] = trade_df_display['profit_loss'].apply(lambda x: f"${x:.2f}")
                 
-                trade_df_display.columns = ['Data/Hora', 'Preço Entrada', 'Preço Saída', 'Retorno %', 'Lucro/Perda $', 'Sinal']
+                # Rename columns
+                trade_df_display.columns = [
+                    'Data/Hora', 'Preço Entrada', 'Preço Saída', 
+                    'Retorno %', 'Lucro/Perda $', 'Sinal'
+                ]
                 
-                st.dataframe(trade_df_display, width='stretch', hide_index=True)
+                # Style the dataframe
+                def style_profit_loss(val):
+                    if 'Retorno %' in val or 'Lucro/Perda $' in val:
+                        return ''
+                    if val.startswith('-'):
+                        return 'background-color: #ffebee'  # Light red
+                    elif val.startswith('+') or (val.replace('%', '').replace('$', '').replace(',', '').replace('.', '').isdigit() and float(val.replace('%', '').replace('$', '').replace(',', '')) > 0):
+                        return 'background-color: #e8f5e8'  # Light green
+                    return ''
+                
+                # Show last 20 trades by default
+                display_limit = min(20, len(trade_df_display))
+                st.info(f"📊 Mostrando os últimos {display_limit} trades de {len(trade_df_display)} total")
+                
+                st.dataframe(
+                    trade_df_display.tail(display_limit), 
+                    width='stretch', 
+                    hide_index=True
+                )
+                
+                # Summary of all trades
+                if len(trade_df_display) > display_limit:
+                    if st.button(f"📋 Ver todos os {len(trade_df_display)} trades"):
+                        st.dataframe(trade_df_display, width='stretch', hide_index=True)
+        
+        # Clear results button
+        st.markdown("---")
+        if st.button("🗑️ Limpar Resultados"):
+            st.session_state.backtest_results = None
+            st.rerun()
+    
+    else:
+        # Help section when no results
+        st.markdown("---")
+        st.info("ℹ️ **Como usar o Backtesting:**\n\n"
+                "1. **Selecione o par** e timeframe desejado\n"
+                "2. **Configure o período** de teste (recomendado: 7-30 dias)\n" 
+                "3. **Ajuste os parâmetros** de RSI conforme sua estratégia\n"
+                "4. **Execute o backtest** e analise os resultados\n\n"
+                "💡 **Dica:** Comece com períodos menores para testes mais rápidos")
 
 # Export Data Tab
 with tab3:
