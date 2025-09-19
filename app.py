@@ -318,7 +318,10 @@ with tab1:
             
             if cache_key in st.session_state.multi_symbol_data:
                 cached_data = st.session_state.multi_symbol_data[cache_key]
-                if cached_data['last_update'] and (current_time - cached_data['last_update']).total_seconds() < 60:
+                cache_age = (current_time - cached_data['last_update']).total_seconds()
+            # Cache mais agressivo para reduzir API calls
+            cache_timeout = 30 if len(selected_symbols) > 5 else 60
+            if cached_data['last_update'] and cache_age < cache_timeout:
                     should_refresh = False
                     sym_data = cached_data['data']
                     signal = cached_data['signal']
