@@ -325,6 +325,10 @@ if 'futures_trading' not in st.session_state and FUTURES_AVAILABLE:
 # Create tabs for different sections
 tab1, tab2, tab3, tab4 = st.tabs(["🚀 Análise Mercado Futuro", "🔬 Backtesting", "⚙️ Exportar Dados", "👑 Admin Panel"])
 
+# Set default tab to Backtesting if requested
+if 'default_tab' not in st.session_state:
+    st.session_state.default_tab = 'backtest'
+
 with tab1:
     st.subheader("🚀 Trading de Mercado Futuro")
     st.markdown("**Trade com alavancagem, posições long/short e gerenciamento avançado de risco**")
@@ -1286,113 +1290,291 @@ if auto_refresh:
             else:
                 st.info("📭 Clique para ver posições simuladas com base na configuração atual")
 
-# Backtesting Tab  
+# Backtesting Tab - Otimizado para foco em testes
 with tab2:
-    st.subheader("🔬 Sistema de Backtesting")
-    st.markdown("Teste suas estratégias com dados históricos para validar sua eficácia")
+    st.header("🔬 Centro de Backtesting Avançado")
     
-    # Configurações do Backtest
-    st.markdown("### ⚙️ Configurações do Backtest")
-    
-    col1, col2 = st.columns(2)
+    # Quick test presets
+    st.markdown("### ⚡ Testes Rápidos")
+    col1, col2, col3, col4 = st.columns(4)
     
     with col1:
-        st.markdown("**📈 Parâmetros do Mercado**")
-        
-        # Convert symbol format for backtest
-        bt_symbol = st.selectbox(
-            "Par para Backtest:",
-            ["XLM-USD", "BTC-USD", "ETH-USD", "ADA-USD", "DOT-USD", "MATIC-USD"],
-            help="Selecione o par de criptomoedas para testar",
-            key="bt_symbol"
-        )
-        
-        bt_timeframe = st.selectbox(
-            "Timeframe:",
-            ["5m", "15m", "30m", "1h", "4h"],
-            index=1,
-            help="Intervalo de tempo dos candles",
-            key="bt_timeframe"
-        )
-        
-        # Date selection with better defaults
-        from datetime import date
-        max_date = date.today()
-        default_start = max_date - timedelta(days=30)
-        
-        bt_start_date = st.date_input(
-            "📅 Data Inicial", 
-            value=default_start,
-            max_value=max_date,
-            help="Data de início do período de teste",
-            key="bt_start_date"
-        )
-        bt_end_date = st.date_input(
-            "📅 Data Final", 
-            value=max_date,
-            max_value=max_date,
-            help="Data de fim do período de teste",
-            key="bt_end_date"
-        )
+        if st.button("🚀 Teste Agressivo", help="RSI 15-85, 7 dias", use_container_width=True):
+            st.session_state.bt_rsi_min = 15
+            st.session_state.bt_rsi_max = 85
+            st.session_state.bt_start_date = date.today() - timedelta(days=7)
     
     with col2:
-        st.markdown("**💰 Parâmetros de Trading**")
+        if st.button("⚖️ Teste Balanceado", help="RSI 25-75, 14 dias", use_container_width=True):
+            st.session_state.bt_rsi_min = 25
+            st.session_state.bt_rsi_max = 75
+            st.session_state.bt_start_date = date.today() - timedelta(days=14)
+    
+    with col3:
+        if st.button("🛡️ Teste Conservador", help="RSI 30-70, 30 dias", use_container_width=True):
+            st.session_state.bt_rsi_min = 30
+            st.session_state.bt_rsi_max = 70
+            st.session_state.bt_start_date = date.today() - timedelta(days=30)
+    
+    with col4:
+        if st.button("🔄 Reset Padrão", help="Voltar configurações padrão", use_container_width=True):
+            st.session_state.bt_rsi_min = 20
+            st.session_state.bt_rsi_max = 80
+            st.session_state.bt_start_date = date.today() - timedelta(days=30)
+    
+    st.markdown("---")
+    
+    # Main configuration in tabs
+    config_tab1, config_tab2, config_tab3 = st.tabs(["📊 Básico", "⚙️ Avançado", "📈 Otimização"])
+    
+    with config_tab1:
+        col1, col2 = st.columns(2)
         
-        bt_initial_balance = st.number_input(
-            "Saldo Inicial ($)", 
-            min_value=100.0, 
-            max_value=100000.0, 
-            value=10000.0,
-            step=1000.0,
-            help="Capital inicial para simulação",
-            key="bt_initial_balance"
+        with col1:
+            st.markdown("**🎯 Configuração Principal**")
+            
+            bt_symbol = st.selectbox(
+                "Par de Trading:",
+                ["XLM-USD", "BTC-USD", "ETH-USD", "ADA-USD", "DOT-USD", "MATIC-USD", "LINK-USD", "UNI-USD"],
+                index=0,
+                help="Par de criptomoedas para testar",
+                key="bt_symbol"
+            )
+            
+            bt_timeframe = st.selectbox(
+                "Timeframe:",
+                ["1m", "5m", "15m", "30m", "1h", "4h", "1d"],
+                index=2,
+                help="Intervalo dos candles - timeframes menores = mais sinais",
+                key="bt_timeframe"
+            )
+            
+            bt_initial_balance = st.number_input(
+                "Capital Inicial ($)", 
+                min_value=100.0, 
+                max_value=1000000.0, 
+                value=10000.0,
+                step=1000.0,
+                help="Quanto você investiria na estratégia",
+                key="bt_initial_balance"
+            )
+        
+        with col2:
+            st.markdown("**📅 Período de Teste**")
+            
+            # Presets de período
+            period_preset = st.selectbox(
+                "Período Pré-definido:",
+                ["Personalizado", "Última Semana", "Últimas 2 Semanas", "Último Mês", "Últimos 3 Meses"],
+                help="Escolha um período comum ou customize"
+            )
+            
+            from datetime import date
+            max_date = date.today()
+            
+            if period_preset == "Última Semana":
+                default_start = max_date - timedelta(days=7)
+            elif period_preset == "Últimas 2 Semanas":
+                default_start = max_date - timedelta(days=14)
+            elif period_preset == "Último Mês":
+                default_start = max_date - timedelta(days=30)
+            elif period_preset == "Últimos 3 Meses":
+                default_start = max_date - timedelta(days=90)
+            else:
+                default_start = max_date - timedelta(days=30)
+            
+            bt_start_date = st.date_input(
+                "📅 Data Inicial", 
+                value=getattr(st.session_state, 'bt_start_date', default_start),
+                max_value=max_date,
+                help="Início do backtest",
+                key="bt_start_date"
+            )
+            bt_end_date = st.date_input(
+                "📅 Data Final", 
+                value=max_date,
+                max_value=max_date,
+                help="Fim do backtest",
+                key="bt_end_date"
+            )
+            
+            # Mostrar duração
+            if bt_start_date < bt_end_date:
+                duration = (bt_end_date - bt_start_date).days
+                st.info(f"📊 Período: **{duration} dias**")
+    
+    with config_tab2:
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.markdown("**🎛️ Indicadores RSI**")
+            
+            bt_rsi_period = st.slider(
+                "Período RSI", 
+                5, 50, 
+                getattr(st.session_state, 'bt_rsi_period', 14),
+                help="Janela de cálculo do RSI (14 é padrão)",
+                key="bt_rsi_period"
+            )
+            
+            bt_rsi_min = st.slider(
+                "RSI Compra (Sobrevenda)", 
+                10, 40, 
+                getattr(st.session_state, 'bt_rsi_min', 20),
+                help="Nível para sinal de compra",
+                key="bt_rsi_min"
+            )
+            
+            bt_rsi_max = st.slider(
+                "RSI Venda (Sobrecompra)", 
+                60, 90, 
+                getattr(st.session_state, 'bt_rsi_max', 80),
+                help="Nível para sinal de venda",
+                key="bt_rsi_max"
+            )
+        
+        with col2:
+            st.markdown("**⚡ Configurações de Performance**")
+            
+            # Opções de filtragem de sinais
+            enable_volume_filter = st.checkbox(
+                "Filtrar por Volume",
+                value=False,
+                help="Apenas trades com volume acima da média"
+            )
+            
+            enable_trend_filter = st.checkbox(
+                "Filtrar por Tendência",
+                value=False,
+                help="Usar MACD como filtro adicional"
+            )
+            
+            stop_loss_pct = st.number_input(
+                "Stop Loss (%)",
+                min_value=0.0,
+                max_value=20.0,
+                value=0.0,
+                step=0.5,
+                help="0 = sem stop loss"
+            )
+            
+            take_profit_pct = st.number_input(
+                "Take Profit (%)",
+                min_value=0.0,
+                max_value=50.0,
+                value=0.0,
+                step=0.5,
+                help="0 = sem take profit"
+            )
+    
+    with config_tab3:
+        st.markdown("**🔍 Otimização de Parâmetros**")
+        
+        # Grid search para RSI
+        enable_optimization = st.checkbox(
+            "🚀 Modo Otimização Automática",
+            help="Testa múltiplas combinações de RSI automaticamente"
         )
         
-        bt_rsi_period = st.slider(
-            "RSI Período", 
-            5, 50, 14,
-            help="Período para cálculo do RSI",
-            key="bt_rsi_period"
-        )
+        if enable_optimization:
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                rsi_min_range = st.slider(
+                    "Range RSI Mínimo",
+                    10, 40, (15, 30),
+                    help="Faixa para testar RSI mínimo"
+                )
+                
+                rsi_max_range = st.slider(
+                    "Range RSI Máximo", 
+                    60, 90, (70, 85),
+                    help="Faixa para testar RSI máximo"
+                )
+            
+            with col2:
+                optimization_metric = st.selectbox(
+                    "Métrica de Otimização:",
+                    ["Total Return", "Sharpe Ratio", "Win Rate", "Profit Factor"],
+                    help="Qual métrica maximizar"
+                )
+                
+                max_tests = st.number_input(
+                    "Máximo de Testes:",
+                    min_value=5,
+                    max_value=50,
+                    value=20,
+                    help="Limite de combinações para testar"
+                )
         
-        bt_rsi_min = st.slider(
-            "RSI Mínimo (Sinal de Compra)", 
-            10, 40, 20,
-            help="Nível de sobrevenda do RSI",
-            key="bt_rsi_min"
-        )
-        
-        bt_rsi_max = st.slider(
-            "RSI Máximo (Sinal de Venda)", 
-            60, 90, 80,
-            help="Nível de sobrecompra do RSI",
-            key="bt_rsi_max"
+        # Comparação de timeframes
+        compare_timeframes = st.checkbox(
+            "📊 Comparar Timeframes",
+            help="Testa a mesma estratégia em diferentes timeframes"
         )
     
     # Validation and execution
     st.markdown("---")
+    st.markdown("### 🚀 Executar Testes")
     
     # Validation checks
     date_valid = bt_start_date < bt_end_date
     period_days = (bt_end_date - bt_start_date).days
     
-    if not date_valid:
-        st.error("❌ Data inicial deve ser anterior à data final")
-    elif period_days > 90:
-        st.warning("⚠️ Período muito longo pode causar problemas de API. Recomendado: máximo 90 dias")
-    elif period_days < 1:
-        st.error("❌ Período muito curto. Mínimo: 1 dia")
+    # Status da configuração
+    col1, col2 = st.columns(2)
     
-    # Execution button
-    col1, col2, col3 = st.columns([1, 2, 1])
+    with col1:
+        if not date_valid:
+            st.error("❌ Data inicial deve ser anterior à data final")
+        elif period_days > 90:
+            st.warning("⚠️ Período longo pode demorar mais")
+        elif period_days < 1:
+            st.error("❌ Período muito curto. Mínimo: 1 dia")
+        else:
+            st.success(f"✅ Configuração válida - {period_days} dias")
+    
     with col2:
+        # Estimativa de tempo
+        if date_valid and period_days > 0:
+            estimated_time = max(5, min(period_days * 0.5, 60))
+            st.info(f"⏱️ Tempo estimado: ~{estimated_time:.0f}s")
+    
+    # Execution buttons
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
         bt_execute = st.button(
             "🚀 Executar Backtest", 
             disabled=not date_valid or period_days < 1,
-            help="Iniciar simulação com os parâmetros configurados",
+            help="Rodar simulação com configurações atuais",
             use_container_width=True,
             key="bt_execute"
         )
+    
+    with col2:
+        if enable_optimization and st.button(
+            "⚡ Otimização Automática",
+            disabled=not date_valid or period_days < 1,
+            help="Testar múltiplas combinações automaticamente",
+            use_container_width=True,
+            key="bt_optimize"
+        ):
+            # Trigger optimization mode
+            st.session_state.run_optimization = True
+            bt_execute = True
+    
+    with col3:
+        if compare_timeframes and st.button(
+            "📊 Comparar Timeframes",
+            disabled=not date_valid or period_days < 1,
+            help="Testar em múltiplos timeframes",
+            use_container_width=True,
+            key="bt_compare"
+        ):
+            # Trigger comparison mode
+            st.session_state.run_comparison = True
+            bt_execute = True
     
     if bt_execute and date_valid:
         with st.spinner("🔄 Executando backtest... Isso pode levar alguns minutos."):
@@ -1518,22 +1700,125 @@ with tab2:
             **Máximo Drawdown:** {stats['max_drawdown']:.2f}%
             """)
         
-        # Performance interpretation
-        st.markdown("**🎯 Interpretação dos Resultados**")
-        if stats['total_return_pct'] > 20:
-            st.success("🚀 **Excelente Performance!** A estratégia demonstrou retornos muito bons.")
-        elif stats['total_return_pct'] > 5:
-            st.success("✅ **Boa Performance!** A estratégia teve resultados positivos.")
+        # Performance interpretation with scoring
+        st.markdown("**🎯 Análise Inteligente dos Resultados**")
+        
+        # Calculate overall score
+        score = 0
+        max_score = 100
+        
+        # Return score (40 points max)
+        if stats['total_return_pct'] > 50:
+            score += 40
+        elif stats['total_return_pct'] > 20:
+            score += 30
+        elif stats['total_return_pct'] > 10:
+            score += 20
         elif stats['total_return_pct'] > 0:
-            st.warning("⚠️ **Performance Moderada.** A estratégia teve ganhos pequenos.")
+            score += 10
+        
+        # Win rate score (25 points max)
+        if stats['win_rate'] > 70:
+            score += 25
+        elif stats['win_rate'] > 60:
+            score += 20
+        elif stats['win_rate'] > 50:
+            score += 15
+        elif stats['win_rate'] > 40:
+            score += 10
+        
+        # Drawdown score (20 points max)
+        if stats['max_drawdown'] < 5:
+            score += 20
+        elif stats['max_drawdown'] < 10:
+            score += 15
+        elif stats['max_drawdown'] < 15:
+            score += 10
+        elif stats['max_drawdown'] < 25:
+            score += 5
+        
+        # Sharpe ratio score (15 points max)
+        if stats['sharpe_ratio'] > 2:
+            score += 15
+        elif stats['sharpe_ratio'] > 1:
+            score += 10
+        elif stats['sharpe_ratio'] > 0.5:
+            score += 5
+        
+        # Display score and interpretation
+        score_pct = (score / max_score) * 100
+        
+        if score_pct >= 80:
+            st.success(f"🏆 **ESTRATÉGIA EXCELENTE** - Score: {score_pct:.0f}/100")
+            st.success("✅ Esta estratégia demonstra alta qualidade e pode ser considerada para trading real!")
+        elif score_pct >= 60:
+            st.success(f"🎯 **BOA ESTRATÉGIA** - Score: {score_pct:.0f}/100")
+            st.info("💡 Estratégia promissora, considere ajustes finos nos parâmetros.")
+        elif score_pct >= 40:
+            st.warning(f"⚠️ **ESTRATÉGIA MÉDIA** - Score: {score_pct:.0f}/100")
+            st.warning("🔧 Precisa de otimização. Teste diferentes parâmetros de RSI.")
         else:
-            st.error("❌ **Performance Negativa.** A estratégia resultou em perdas.")
-            
-        # Additional insights
-        if stats['win_rate'] < 40:
-            st.warning("⚠️ Taxa de acerto baixa. Considere ajustar os parâmetros.")
+            st.error(f"❌ **ESTRATÉGIA FRACA** - Score: {score_pct:.0f}/100")
+            st.error("🚫 Não recomendada para trading real. Revise completamente a abordagem.")
+        
+        # Specific recommendations
+        st.markdown("**🎯 Recomendações Específicas:**")
+        recommendations = []
+        
+        if stats['total_return_pct'] < 0:
+            recommendations.append("📉 **Retorno negativo**: Considere inverter a lógica ou usar timeframe maior")
+        
+        if stats['win_rate'] < 50:
+            recommendations.append("🎯 **Taxa de acerto baixa**: Teste RSI mais restritivo (ex: 15-85)")
+        
         if stats['max_drawdown'] > 20:
-            st.warning("⚠️ Drawdown alto. A estratégia pode ser muito arriscada.")
+            recommendations.append("⚠️ **Alto risco**: Implemente stop-loss ou reduza tamanho das posições")
+        
+        if stats['total_trades'] < 10:
+            recommendations.append("📊 **Poucos trades**: Use timeframe menor ou período maior")
+        
+        if stats['sharpe_ratio'] < 0.5:
+            recommendations.append("📈 **Baixo Sharpe**: Estratégia inconsistente, revise parâmetros")
+        
+        if stats.get('profit_factor', 0) < 1.2:
+            recommendations.append("💰 **Profit Factor baixo**: Ajuste take-profit ou melhore timing de entrada")
+        
+        if not recommendations:
+            recommendations.append("🏆 **Excelente trabalho!** Esta estratégia está bem calibrada.")
+        
+        for i, rec in enumerate(recommendations, 1):
+            st.markdown(f"{i}. {rec}")
+        
+        # Quick optimization suggestions
+        st.markdown("**⚡ Testes Rápidos Sugeridos:**")
+        opt_col1, opt_col2 = st.columns(2)
+        
+        with opt_col1:
+            if st.button("🔧 RSI Mais Restritivo", help="RSI 15-85"):
+                st.session_state.bt_rsi_min = 15
+                st.session_state.bt_rsi_max = 85
+                st.experimental_rerun()
+            
+            if st.button("📈 Timeframe Maior", help="Mudar para timeframe superior"):
+                current_tf = st.session_state.get('bt_timeframe', '15m')
+                tf_hierarchy = ["1m", "5m", "15m", "30m", "1h", "4h", "1d"]
+                if current_tf in tf_hierarchy:
+                    current_idx = tf_hierarchy.index(current_tf)
+                    if current_idx < len(tf_hierarchy) - 1:
+                        st.session_state.bt_timeframe = tf_hierarchy[current_idx + 1]
+                        st.experimental_rerun()
+        
+        with opt_col2:
+            if st.button("⚖️ RSI Balanceado", help="RSI 25-75"):
+                st.session_state.bt_rsi_min = 25
+                st.session_state.bt_rsi_max = 75
+                st.experimental_rerun()
+            
+            if st.button("🔄 Período Maior", help="Dobrar período de teste"):
+                current_days = (st.session_state.bt_end_date - st.session_state.bt_start_date).days
+                new_start = st.session_state.bt_end_date - timedelta(days=min(current_days * 2, 90))
+                st.session_state.bt_start_date = new_start
+                st.experimental_rerun()
         
         # Portfolio evolution chart
         if results.get('portfolio_values'):
@@ -1605,21 +1890,155 @@ with tab2:
                     if st.button(f"📋 Ver todos os {len(trade_df_display)} trades", key="show_all_trades"):
                         st.dataframe(trade_df_display, width='stretch', hide_index=True)
         
-        # Clear results button
+        # Test comparison and history
         st.markdown("---")
-        if st.button("🗑️ Limpar Resultados", key="clear_backtest_results"):
-            st.session_state.backtest_results = None
-            st.rerun()
+        st.subheader("📊 Histórico de Testes")
+        
+        # Initialize test history
+        if 'backtest_history' not in st.session_state:
+            st.session_state.backtest_history = []
+        
+        # Save current result to history
+        if st.button("💾 Salvar Teste Atual", key="save_current_test"):
+            test_record = {
+                'timestamp': datetime.now().strftime('%d/%m/%Y %H:%M'),
+                'symbol': bt_symbol,
+                'timeframe': bt_timeframe,
+                'period_days': period_days,
+                'rsi_min': bt_rsi_min,
+                'rsi_max': bt_rsi_max,
+                'return_pct': stats['total_return_pct'],
+                'win_rate': stats['win_rate'],
+                'total_trades': stats['total_trades'],
+                'max_drawdown': stats['max_drawdown'],
+                'sharpe_ratio': stats['sharpe_ratio'],
+                'score': score_pct
+            }
+            st.session_state.backtest_history.append(test_record)
+            st.success("✅ Teste salvo no histórico!")
+        
+        # Display test history
+        if st.session_state.backtest_history:
+            history_df = pd.DataFrame(st.session_state.backtest_history)
+            
+            # Style the dataframe
+            def style_history(val):
+                if isinstance(val, (int, float)):
+                    if val > 0:
+                        return 'color: green'
+                    elif val < 0:
+                        return 'color: red'
+                return ''
+            
+            # Show last 10 tests
+            display_history = history_df.tail(10).copy()
+            display_history = display_history.round(2)
+            
+            st.dataframe(
+                display_history.style.applymap(style_history, subset=['return_pct']),
+                use_container_width=True,
+                hide_index=True
+            )
+            
+            # Best test highlight
+            if len(history_df) > 0:
+                best_test = history_df.loc[history_df['score'].idxmax()]
+                st.success(f"🏆 **Melhor Teste**: {best_test['symbol']} {best_test['timeframe']} - Score: {best_test['score']:.0f} - Retorno: {best_test['return_pct']:.2f}%")
+        
+        # Action buttons
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            if st.button("🗑️ Limpar Resultados", key="clear_backtest_results"):
+                st.session_state.backtest_results = None
+                st.rerun()
+        
+        with col2:
+            if st.button("📋 Limpar Histórico", key="clear_history"):
+                st.session_state.backtest_history = []
+                st.rerun()
+        
+        with col3:
+            if st.session_state.backtest_history:
+                history_csv = pd.DataFrame(st.session_state.backtest_history).to_csv(index=False)
+                st.download_button(
+                    "💾 Exportar Histórico",
+                    data=history_csv,
+                    file_name=f"backtest_history_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
+                    mime="text/csv"
+                )
     
     else:
-        # Help section when no results
+        # Enhanced help section when no results
         st.markdown("---")
-        st.info("ℹ️ **Como usar o Backtesting:**\n\n"
-                "1. **Selecione o par** e timeframe desejado\n"
-                "2. **Configure o período** de teste (recomendado: 7-30 dias)\n" 
-                "3. **Ajuste os parâmetros** de RSI conforme sua estratégia\n"
-                "4. **Execute o backtest** e analise os resultados\n\n"
-                "💡 **Dica:** Comece com períodos menores para testes mais rápidos")
+        st.markdown("### 📚 Guia de Backtesting")
+        
+        # Quick start guide in columns
+        guide_col1, guide_col2 = st.columns(2)
+        
+        with guide_col1:
+            st.markdown("""
+            **🚀 Como Começar:**
+            
+            1. **Escolha um par** (ex: BTC-USD para volatilidade)
+            2. **Selecione timeframe** (15m é bom para iniciantes)
+            3. **Configure período** (comece com 1-2 semanas)
+            4. **Ajuste RSI** (20-80 é conservador)
+            5. **Execute e analise**
+            
+            **💡 Dicas de Performance:**
+            - Timeframes menores = mais trades
+            - RSI restritivo = menos trades, mais precisão
+            - Períodos maiores = resultados mais confiáveis
+            """)
+        
+        with guide_col2:
+            st.markdown("""
+            **🎯 Métricas Importantes:**
+            
+            - **Total Return**: Quanto ganhou/perdeu
+            - **Win Rate**: % de trades vencedores
+            - **Max Drawdown**: Maior perda consecutiva
+            - **Sharpe Ratio**: Retorno vs risco
+            - **Score**: Avaliação geral (0-100)
+            
+            **⚠️ Interpretação:**
+            - Score > 80: Estratégia excelente
+            - Score 60-80: Boa estratégia
+            - Score < 40: Precisa melhorar
+            """)
+        
+        # Sample configurations
+        st.markdown("**🔧 Configurações Populares:**")
+        
+        sample_col1, sample_col2, sample_col3 = st.columns(3)
+        
+        with sample_col1:
+            st.info("""
+            **🔥 Scalping Agressivo**
+            - Timeframe: 5m
+            - RSI: 15-85
+            - Período: 1 semana
+            - Para: traders ativos
+            """)
+        
+        with sample_col2:
+            st.info("""
+            **⚖️ Swing Trading**
+            - Timeframe: 1h
+            - RSI: 25-75
+            - Período: 1 mês
+            - Para: trading moderado
+            """)
+        
+        with sample_col3:
+            st.info("""
+            **🛡️ Posição Longa**
+            - Timeframe: 4h
+            - RSI: 30-70
+            - Período: 3 meses
+            - Para: investidores
+            """)
 
 # Export Data Tab
 with tab3:
