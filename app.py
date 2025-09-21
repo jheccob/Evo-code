@@ -1054,22 +1054,16 @@ if signals_df is not None and len(signals_df) > 0:
             except Exception as e:
                 st.warning(f"⚠️ Erro ao carregar estatísticas: {str(e)}")
 
+# Auto-refresh mechanism - throttled for performance  
+if auto_refresh:
+    # Only refresh every 30 seconds to reduce API calls
+    if st.session_state.last_update is None or (get_brazil_datetime_naive() - st.session_state.last_update).total_seconds() > 30:
+        time.sleep(1)
+        st.rerun()
     else:
-        if show_source == "Sessão Atual":
-            st.info("Nenhum sinal gerado ainda na sessão atual. Os sinais aparecerão aqui quando as condições forem atendidas.")
-        else:
-            st.info("📋 Nenhum sinal encontrado no banco de dados.")
-
-        # Auto-refresh mechanism - throttled for performance  
-        if auto_refresh:
-            # Only refresh every 30 seconds to reduce API calls
-            if st.session_state.last_update is None or (get_brazil_datetime_naive() - st.session_state.last_update).total_seconds() > 30:
-                time.sleep(1)
-                st.rerun()
-            else:
-                time.sleep(1)
-                # Just rerun UI without data refresh
-                st.rerun()
+        time.sleep(1)
+        # Just rerun UI without data refresh
+        st.rerun()
 
 # Futures Trading Tab
 with tab2:
