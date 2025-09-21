@@ -148,11 +148,19 @@ timeframe = st.sidebar.selectbox(
     index=1
 )
 
-# RSI Parameters
-st.sidebar.subheader("📊 Parâmetros RSI")
-rsi_period = st.sidebar.slider("Período RSI", 5, 50, 9)
-rsi_min = st.sidebar.slider("RSI Mínimo (Compra)", 10, 40, 20)
-rsi_max = st.sidebar.slider("RSI Máximo (Venda)", 60, 90, 80)
+# RSI Parameters - Otimizado para máxima acurácia
+st.sidebar.subheader("📊 Parâmetros RSI (Otimizados)")
+rsi_period = st.sidebar.slider("Período RSI", 5, 50, 14, help="14 períodos é o padrão mais testado")
+rsi_min = st.sidebar.slider("RSI Mínimo (Compra)", 10, 40, 25, help="25 reduz falsos sinais")
+rsi_max = st.sidebar.slider("RSI Máximo (Venda)", 60, 90, 75, help="75 aumenta precisão")
+
+# Configurações Avançadas para Acurácia
+with st.sidebar.expander("⚙️ Configurações Avançadas", expanded=False):
+    st.markdown("**Filtros de Qualidade de Sinal**")
+    min_confidence = st.slider("Confiança Mínima (%)", 50, 90, 70, help="Apenas sinais com alta confiança")
+    require_volume = st.checkbox("Exigir Volume Alto", value=True, help="Volume 50%+ acima da média")
+    require_trend = st.checkbox("Exigir Tendência Clara", value=True, help="ADX > 25")
+    avoid_ranging = st.checkbox("Evitar Mercados Laterais", value=True, help="Filtro anti-ranging")
 
 # Auto refresh toggle
 auto_refresh = st.sidebar.checkbox("🔄 Atualização Automática", value=True)

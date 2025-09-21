@@ -147,118 +147,198 @@ class TradingBot:
         return df
     
     def _generate_advanced_signal(self, row):
-        """Generate advanced trading signal with multiple confirmations and filters"""
+        """Generate optimized trading signal with maximum accuracy"""
         # Skip if basic indicators are missing
         if pd.isna(row['rsi']) or pd.isna(row['macd']) or pd.isna(row['macd_signal']):
             return "NEUTRO"
         
-        # Market regime filter - avoid trading in ranging markets
+        # Enhanced market regime filter
         market_regime = row.get('market_regime', 'trending')
         if market_regime == 'ranging':
-            return "NEUTRO"  # No signals in ranging markets
+            return "NEUTRO"
         
-        # ADX filter - only trade in trending markets
+        # Stricter ADX filter for higher accuracy
         adx = row.get('adx', 0)
-        if not pd.isna(adx) and adx < 20:
-            return "NEUTRO"  # Weak trend, avoid trading
+        if not pd.isna(adx) and adx < 25:  # Increased from 20 to 25
+            return "NEUTRO"
         
-        # Volatility filter - avoid extremely volatile periods
+        # Enhanced volatility filter
         bb_width = row.get('bb_width', 0)
-        if not pd.isna(bb_width):
-            bb_width_ma = row.get('bb_width', 0)  # Simplified check
-            if bb_width > bb_width_ma * 2:  # Extreme volatility
+        atr = row.get('atr', 0)
+        if not pd.isna(bb_width) and not pd.isna(atr):
+            # Multiple volatility checks
+            if bb_width > 0.15 or atr > row.get('close', 1) * 0.05:  # 15% BB width or 5% ATR
                 return "NEUTRO"
         
-        # Primary indicators
+        # Core indicators with optimized thresholds
         rsi = row['rsi']
         stoch_rsi_k = row.get('stoch_rsi_k', 50)
         williams_r = row.get('williams_r', -50)
+        macd = row['macd']
+        macd_signal = row['macd_signal']
         macd_histogram = row['macd_histogram']
         
-        # Trend indicators
-        price_above_sma21 = row['close'] > row.get('sma_21', row['close'])
-        sma21_above_sma50 = row.get('sma_21', 0) > row.get('sma_50', 0)
-        long_term_bullish = row.get('sma_50', 0) > row.get('sma_200', 0) if not pd.isna(row.get('sma_200')) else True
+        # Enhanced trend analysis
+        price = row['close']
+        sma_21 = row.get('sma_21', price)
+        sma_50 = row.get('sma_50', price)
+        sma_200 = row.get('sma_200', price)
         
-        # Volume confirmation
+        # Multi-timeframe trend alignment
+        price_above_sma21 = price > sma_21
+        sma21_above_sma50 = sma_21 > sma_50 if not pd.isna(sma_50) else True
+        sma50_above_sma200 = sma_50 > sma_200 if not pd.isna(sma_200) else True
+        
+        # Volume analysis with multiple confirmations
         volume_ratio = row.get('volume_ratio', 1)
-        strong_volume = volume_ratio > 1.3
+        strong_volume = volume_ratio > 1.5  # Increased threshold
+        exceptional_volume = volume_ratio > 2.0  # New threshold
         
-        # Bollinger Bands position
-        bb_upper = row.get('bb_upper', row['close'])
-        bb_lower = row.get('bb_lower', row['close'])
-        near_bb_lower = row['close'] < (bb_lower * 1.02)
-        near_bb_upper = row['close'] > (bb_upper * 0.98)
+        # Bollinger Bands with dynamic thresholds
+        bb_upper = row.get('bb_upper', price)
+        bb_middle = row.get('bb_middle', price)
+        bb_lower = row.get('bb_lower', price)
+        bb_position = (price - bb_lower) / (bb_upper - bb_lower) if bb_upper != bb_lower else 0.5
         
-        # Score-based system
+        # Advanced scoring system
         bullish_score = 0
         bearish_score = 0
+        confidence_multiplier = 1.0
         
-        # RSI scoring (optimized for crypto: 30/70 levels)
-        if rsi < 30:
+        # Optimized RSI scoring (crypto-specific levels)
+        if rsi < 25:  # Extreme oversold
+            bullish_score += 4
+            confidence_multiplier += 0.2
+        elif rsi < 35:  # Strong oversold
             bullish_score += 3
-        elif rsi < 40:
-            bullish_score += 2
-        elif rsi > 70:
-            bearish_score += 3
-        elif rsi > 60:
-            bearish_score += 2
-        
-        # Stochastic RSI scoring (better for crypto)
-        if not pd.isna(stoch_rsi_k):
-            if stoch_rsi_k < 20:
-                bullish_score += 2
-            elif stoch_rsi_k > 80:
-                bearish_score += 2
-        
-        # Williams %R scoring
-        if not pd.isna(williams_r):
-            if williams_r < -80:
-                bullish_score += 2
-            elif williams_r > -20:
-                bearish_score += 2
-        
-        # MACD scoring
-        if macd_histogram > 0:
-            bullish_score += 2
-        elif macd_histogram < 0:
-            bearish_score += 2
-        
-        # Trend alignment scoring
-        if price_above_sma21 and sma21_above_sma50 and long_term_bullish:
-            bullish_score += 3
-        elif not price_above_sma21 and not sma21_above_sma50:
-            bearish_score += 3
-        
-        # Volume confirmation
-        if strong_volume:
-            if bullish_score > bearish_score:
-                bullish_score += 1
-            elif bearish_score > bullish_score:
-                bearish_score += 1
-        
-        # Bollinger Bands bounces
-        if near_bb_lower and bullish_score > 0:
+        elif rsi < 45:  # Mild oversold
             bullish_score += 1
-        elif near_bb_upper and bearish_score > 0:
+        elif rsi > 75:  # Extreme overbought
+            bearish_score += 4
+            confidence_multiplier += 0.2
+        elif rsi > 65:  # Strong overbought
+            bearish_score += 3
+        elif rsi > 55:  # Mild overbought
             bearish_score += 1
         
-        # ADX trend strength bonus
-        if not pd.isna(adx):
-            if adx > 30:
-                if bullish_score > bearish_score:
-                    bullish_score += 1
-                elif bearish_score > bullish_score:
-                    bearish_score += 1
+        # Enhanced Stochastic RSI (more sensitive)
+        if not pd.isna(stoch_rsi_k):
+            if stoch_rsi_k < 15:  # Extreme oversold
+                bullish_score += 3
+                confidence_multiplier += 0.1
+            elif stoch_rsi_k < 25:
+                bullish_score += 2
+            elif stoch_rsi_k > 85:  # Extreme overbought
+                bearish_score += 3
+                confidence_multiplier += 0.1
+            elif stoch_rsi_k > 75:
+                bearish_score += 2
         
-        # Generate signal based on scores
-        if bullish_score >= 8 and bullish_score > bearish_score + 3:
+        # Williams %R with tighter levels
+        if not pd.isna(williams_r):
+            if williams_r < -85:  # Extreme oversold
+                bullish_score += 3
+            elif williams_r < -75:
+                bullish_score += 2
+            elif williams_r > -15:  # Extreme overbought
+                bearish_score += 3
+            elif williams_r > -25:
+                bearish_score += 2
+        
+        # MACD with momentum analysis
+        macd_bullish = macd > macd_signal and macd_histogram > 0
+        macd_bearish = macd < macd_signal and macd_histogram < 0
+        macd_strengthening = abs(macd_histogram) > abs(row.get('prev_macd_histogram', 0))
+        
+        if macd_bullish:
+            bullish_score += 3 if macd_strengthening else 2
+            if macd > 0:  # Above zero line
+                bullish_score += 1
+        elif macd_bearish:
+            bearish_score += 3 if macd_strengthening else 2
+            if macd < 0:  # Below zero line
+                bearish_score += 1
+        
+        # Enhanced trend alignment (higher weight)
+        trend_score = 0
+        if price_above_sma21 and sma21_above_sma50 and sma50_above_sma200:
+            trend_score = 5  # Strong uptrend
+            bullish_score += trend_score
+        elif not price_above_sma21 and not sma21_above_sma50 and not sma50_above_sma200:
+            trend_score = 5  # Strong downtrend
+            bearish_score += trend_score
+        elif price_above_sma21 and sma21_above_sma50:
+            trend_score = 3  # Medium uptrend
+            bullish_score += trend_score
+        elif not price_above_sma21 and not sma21_above_sma50:
+            trend_score = 3  # Medium downtrend
+            bearish_score += trend_score
+        
+        # Volume confirmation with enhanced scoring
+        if exceptional_volume:
+            if bullish_score > bearish_score:
+                bullish_score += 3
+                confidence_multiplier += 0.15
+            elif bearish_score > bullish_score:
+                bearish_score += 3
+                confidence_multiplier += 0.15
+        elif strong_volume:
+            if bullish_score > bearish_score:
+                bullish_score += 2
+            elif bearish_score > bullish_score:
+                bearish_score += 2
+        
+        # Bollinger Bands mean reversion + momentum
+        if bb_position < 0.1 and bullish_score > 0:  # Near lower band
+            bullish_score += 2
+        elif bb_position > 0.9 and bearish_score > 0:  # Near upper band
+            bearish_score += 2
+        elif bb_position < 0.3 and macd_bullish:  # Mean reversion setup
+            bullish_score += 1
+        elif bb_position > 0.7 and macd_bearish:  # Mean reversion setup
+            bearish_score += 1
+        
+        # ADX trend strength bonus (enhanced)
+        if not pd.isna(adx):
+            if adx > 40:  # Very strong trend
+                trend_bonus = 3
+                confidence_multiplier += 0.2
+            elif adx > 30:  # Strong trend
+                trend_bonus = 2
+                confidence_multiplier += 0.1
+            else:
+                trend_bonus = 1
+            
+            if bullish_score > bearish_score:
+                bullish_score += trend_bonus
+            elif bearish_score > bullish_score:
+                bearish_score += trend_bonus
+        
+        # Divergence detection (if available)
+        price_momentum = price - row.get('prev_close', price)
+        if not pd.isna(price_momentum) and price_momentum != 0:
+            rsi_momentum = rsi - row.get('prev_rsi', rsi)
+            if price_momentum > 0 and rsi_momentum < 0:  # Bearish divergence
+                bearish_score += 2
+            elif price_momentum < 0 and rsi_momentum > 0:  # Bullish divergence
+                bullish_score += 2
+        
+        # Apply confidence multiplier
+        bullish_score = int(bullish_score * confidence_multiplier)
+        bearish_score = int(bearish_score * confidence_multiplier)
+        
+        # Enhanced signal generation with stricter thresholds
+        min_strong_signal = 12  # Increased from 8
+        min_weak_signal = 8    # Increased from 5
+        min_difference = 4     # Increased from 3
+        
+        if bullish_score >= min_strong_signal and bullish_score > bearish_score + min_difference:
             return "COMPRA"
-        elif bearish_score >= 8 and bearish_score > bullish_score + 3:
+        elif bearish_score >= min_strong_signal and bearish_score > bullish_score + min_difference:
             return "VENDA"
-        elif bullish_score >= 5 and bullish_score > bearish_score + 1:
+        elif bullish_score >= min_weak_signal and bullish_score > bearish_score + 2:
             return "COMPRA_FRACA"
-        elif bearish_score >= 5 and bearish_score > bullish_score + 1:
+        elif bearish_score >= min_weak_signal and bearish_score > bullish_score + 2:
             return "VENDA_FRACA"
         else:
             return "NEUTRO"
@@ -301,17 +381,33 @@ class TradingBot:
         else:
             return "NEUTRO"
     
-    def check_signal(self, df):
-        """Check the current trading signal with confidence score"""
+    def check_signal(self, df, min_confidence=70, require_volume=True, require_trend=True, avoid_ranging=True):
+        """Check the current trading signal with enhanced quality filters"""
         if df is None or df.empty:
             return "NEUTRO"
         
         last_row = df.iloc[-1]
+        
+        # Apply quality filters first
+        if avoid_ranging and last_row.get('market_regime', 'trending') == 'ranging':
+            return "NEUTRO"
+        
+        if require_trend and last_row.get('adx', 0) < 25:
+            return "NEUTRO"
+        
+        if require_volume and last_row.get('volume_ratio', 1) < 1.5:
+            return "NEUTRO"
+        
         signal = self._generate_advanced_signal(last_row)
         confidence = self._calculate_signal_confidence(last_row)
         
-        # Filter out low confidence signals
-        if confidence < 60:
+        # Enhanced confidence filter
+        if confidence < min_confidence:
+            return "NEUTRO"
+        
+        # Additional safety check - avoid signals in extreme volatility
+        atr_pct = last_row.get('atr', 0) / last_row.get('close', 1) * 100
+        if atr_pct > 8:  # More than 8% daily volatility
             return "NEUTRO"
         
         return signal
