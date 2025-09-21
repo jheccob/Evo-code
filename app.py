@@ -315,159 +315,254 @@ if 'futures_trading' not in st.session_state and FUTURES_AVAILABLE:
     st.session_state.futures_trading = FuturesTrading()
 
 # Create tabs for different sections
-tab1, tab2, tab3, tab4, tab5 = st.tabs(["📊 Análise em Tempo Real", "🚀 Mercado Futuro", "🔬 Backtesting", "⚙️ Exportar Dados", "👑 Admin Panel"])
+tab1, tab2, tab3, tab4 = st.tabs(["🚀 Análise Mercado Futuro", "🔬 Backtesting", "⚙️ Exportar Dados", "👑 Admin Panel"])
 
 with tab1:
-    # Multi-Symbol Overview (if enabled) - with caching and performance optimization
-    if enable_multi_symbol and len(selected_symbols) > 1:
-        st.subheader("🔀 Overview - Múltiplos Pares")
+    st.subheader("🚀 Trading de Mercado Futuro")
+    st.markdown("**Trade com alavancagem, posições long/short e gerenciamento avançado de risco**")
     
-    # Initialize multi-symbol last signals tracking
-    if 'multi_symbol_signals' not in st.session_state:
-        st.session_state.multi_symbol_signals = {}
+    # Warning banner
+    st.warning("⚠️ **ATENÇÃO:** Mercado futuro envolve alto risco. Nunca arrisque mais do que pode perder!")
     
-    # Create overview table for all selected symbols
-    overview_data = []
-    current_time = now_brazil()
+    # Configurações específicas de futuros na sidebar expandida
+    st.sidebar.markdown("---")
+    st.sidebar.subheader("🚀 Configurações Futuros")
     
-    for sym in selected_symbols:
-        # Initialize variables at the start of each iteration
-        signal = "NEUTRO"
-        last_candle = None
-        sym_data = None
+    futures_leverage = st.sidebar.selectbox(
+        "Alavancagem",
+        [1, 2, 3, 5, 10, 20, 25, 50],
+        index=3,
+        help="Multiplicador de posição"
+    )
+    
+    futures_mode = st.sidebar.selectbox(
+        "Modo de Trading",
+        ["Cross Margin", "Isolated Margin"],
+        help="Cross: usa todo saldo | Isolated: limita risco por posição"
+    )
+    
+    risk_level = st.sidebar.selectbox(
+        "Nível de Risco",
+        ["Conservador", "Moderado", "Agressivo"],
+        index=1
+    )
+    
+    # Tabs dentro da análise de futuros
+    futures_tab1, futures_tab2, futures_tab3 = st.tabs([
+        "🎯 Sinais & Análise", "⚖️ Calculadoras", "📊 Posições Simuladas"
+    ])
+
+# Tab 1: Análise e Sinais para Futuros
+    with futures_tab1:
+        st.markdown("### 🎯 Análise Técnica para Futuros")
         
-        try:
-            # Check if we have cached data for this symbol that's less than 60 seconds old
-            cache_key = f"{sym}_{timeframe}"
-            should_refresh = True
-            cached_data = None
-            cache_age = 0
+        # Multi-Symbol Overview (if enabled) - with caching and performance optimization
+        if enable_multi_symbol and len(selected_symbols) > 1:
+            st.subheader("🔀 Overview - Múltiplos Pares")
+        
+        # Initialize multi-symbol last signals tracking
+        if 'multi_symbol_signals' not in st.session_state:
+            st.session_state.multi_symbol_signals = {}
+        
+        # Create overview table for all selected symbols
+        overview_data = []
+        current_time = now_brazil()
+        
+        for sym in selected_symbols:
+            # Initialize variables at the start of each iteration
+            signal = "NEUTRO"
+            last_candle = None
+            sym_data = None
             
-            if cache_key in st.session_state.multi_symbol_data:
-                cached_data = st.session_state.multi_symbol_data[cache_key]
-                cache_age = (current_time - cached_data['last_update']).total_seconds()
-                # Cache mais agressivo para reduzir API calls
-                cache_timeout = 30 if len(selected_symbols) > 5 else 60
-                if cached_data['last_update'] and cache_age < cache_timeout:
-                    should_refresh = False
-                    sym_data = cached_data['data']
-                    signal = cached_data['signal']
-                    last_candle = cached_data['last_candle']
-            
-            if should_refresh:
-                # Use shared trading bot instance
-                st.session_state.trading_bot.update_config(symbol=sym, timeframe=timeframe, rsi_period=rsi_period, rsi_min=rsi_min, rsi_max=rsi_max)
-                sym_data = st.session_state.trading_bot.get_market_data(limit=200)
+            try:
+                # Check if we have cached data for this symbol that's less than 60 seconds old
+                cache_key = f"{sym}_{timeframe}"
+                should_refresh = True
+                cached_data = None
+                cache_age = 0
                 
-                if sym_data is not None and not sym_data.empty:
-                    last_candle = sym_data.iloc[-1]
-                    signal = st.session_state.trading_bot.check_signal(sym_data)
-                    
-                    # Cache the data
-                    st.session_state.multi_symbol_data[cache_key] = {
-                        'data': sym_data,
-                        'signal': signal,
-                        'last_candle': last_candle,
-                        'last_update': current_time
-                    }
-                else:
-                    continue
-            
-            # Skip if we don't have valid data
-            if last_candle is None:
-                continue
-            
-            # Check for new signals to send alerts
-            if (signal not in ["NEUTRO"] and 
-                st.session_state.telegram_notifications and 
-                st.session_state.telegram_bot.is_configured()):
+                if cache_key in st.session_state.multi_symbol_data:
+                    cached_data = st.session_state.multi_symbol_data[cache_key]
+                    cache_age = (current_time - cached_data['last_update']).total_seconds()
+                    # Cache mais agressivo para reduzir API calls
+                    cache_timeout = 30 if len(selected_symbols) > 5 else 60
+                    if cached_data['last_update'] and cache_age < cache_timeout:
+                        should_refresh = False
+                        sym_data = cached_data['data']
+                        signal = cached_data['signal']
+                        last_candle = cached_data['last_candle']
                 
-                # Check if this is a new signal for this symbol
-                last_signal_key = f"{sym}_last_signal"
-                if (last_signal_key not in st.session_state.multi_symbol_signals or 
-                    st.session_state.multi_symbol_signals[last_signal_key]['signal'] != signal or
-                    (current_time - st.session_state.multi_symbol_signals[last_signal_key]['timestamp']).total_seconds() > 300):
+                if should_refresh:
+                    # Use shared trading bot instance
+                    st.session_state.trading_bot.update_config(symbol=sym, timeframe=timeframe, rsi_period=rsi_period, rsi_min=rsi_min, rsi_max=rsi_max)
+                    sym_data = st.session_state.trading_bot.get_market_data(limit=200)
                     
-                    # Send alert for this symbol
-                    try:
-                        loop = asyncio.new_event_loop()
-                        asyncio.set_event_loop(loop)
-                        loop.run_until_complete(
-                            st.session_state.telegram_bot.send_signal_alert(
-                                symbol=sym,
-                                signal=signal,
-                                price=last_candle['close'],
-                                rsi=last_candle['rsi'],
-                                macd=last_candle['macd'],
-                                macd_signal=last_candle['macd_signal']
-                            )
-                        )
+                    if sym_data is not None and not sym_data.empty:
+                        last_candle = sym_data.iloc[-1]
+                        signal = st.session_state.trading_bot.check_signal(sym_data)
                         
-                        # Update last signal tracking
-                        st.session_state.multi_symbol_signals[last_signal_key] = {
+                        # Cache the data
+                        st.session_state.multi_symbol_data[cache_key] = {
+                            'data': sym_data,
                             'signal': signal,
-                            'timestamp': current_time
+                            'last_candle': last_candle,
+                            'last_update': current_time
                         }
-                    except Exception as e:
-                        pass  # Silent fail for overview performance
+                    else:
+                        continue
                 
-                # Add to signals history
-                st.session_state.signals_history.append({
-                    'timestamp': current_time,
-                    'symbol': sym,
-                    'price': last_candle['close'],
-                    'rsi': last_candle['rsi'],
-                    'macd': last_candle['macd'],
-                    'macd_signal': last_candle['macd_signal'],
-                    'signal': signal
-                })
-            
-            # Only add to overview if we have valid data
-            if last_candle is not None:
+                # Skip if we don't have valid data
+                if last_candle is None:
+                    continue
+                
+                # Check for new signals to send alerts
+                if (signal not in ["NEUTRO"] and 
+                    st.session_state.telegram_notifications and 
+                    st.session_state.telegram_bot.is_configured()):
+                    
+                    # Check if this is a new signal for this symbol
+                    last_signal_key = f"{sym}_last_signal"
+                    if (last_signal_key not in st.session_state.multi_symbol_signals or 
+                        st.session_state.multi_symbol_signals[last_signal_key]['signal'] != signal or
+                        (current_time - st.session_state.multi_symbol_signals[last_signal_key]['timestamp']).total_seconds() > 300):
+                        
+                        # Send alert for this symbol
+                        try:
+                            loop = asyncio.new_event_loop()
+                            asyncio.set_event_loop(loop)
+                            loop.run_until_complete(
+                                st.session_state.telegram_bot.send_signal_alert(
+                                    symbol=sym,
+                                    signal=signal,
+                                    price=last_candle['close'],
+                                    rsi=last_candle['rsi'],
+                                    macd=last_candle['macd'],
+                                    macd_signal=last_candle['macd_signal']
+                                )
+                            )
+                            
+                            # Update last signal tracking
+                            st.session_state.multi_symbol_signals[last_signal_key] = {
+                                'signal': signal,
+                                'timestamp': current_time
+                            }
+                        except Exception as e:
+                            pass  # Silent fail for overview performance
+                    
+                    # Add to signals history
+                    st.session_state.signals_history.append({
+                        'timestamp': current_time,
+                        'symbol': sym,
+                        'price': last_candle['close'],
+                        'rsi': last_candle['rsi'],
+                        'macd': last_candle['macd'],
+                        'macd_signal': last_candle['macd_signal'],
+                        'signal': signal
+                    })
+                
+                # Only add to overview if we have valid data
+                if last_candle is not None:
+                    overview_data.append({
+                        'Par': sym,
+                        'Preço': f"${last_candle['close']:.6f}",
+                        'RSI': f"{last_candle['rsi']:.2f}",
+                        'MACD': f"{last_candle['macd']:.4f}",
+                        'Sinal Spot': signal,
+                        'Long Score': self._calculate_futures_score(last_candle, 'LONG'),
+                        'Short Score': self._calculate_futures_score(last_candle, 'SHORT'),
+                        'Variação': f"{((last_candle['close'] - last_candle['open']) / last_candle['open'] * 100):.2f}%"
+                    })
+                    
+            except Exception as e:
                 overview_data.append({
                     'Par': sym,
-                    'Preço': f"${last_candle['close']:.6f}",
-                    'RSI': f"{last_candle['rsi']:.2f}",
-                    'MACD': f"{last_candle['macd']:.4f}",
-                    'Sinal': signal,
-                    'Variação': f"{((last_candle['close'] - last_candle['open']) / last_candle['open'] * 100):.2f}%"
+                    'Preço': 'Erro',
+                    'RSI': 'N/A',
+                    'MACD': 'N/A', 
+                    'Sinal Spot': 'ERRO',
+                    'Long Score': 'N/A',
+                    'Short Score': 'N/A',
+                    'Variação': 'N/A'
                 })
-                
-        except Exception as e:
-            overview_data.append({
-                'Par': sym,
-                'Preço': 'Erro',
-                'RSI': 'N/A',
-                'MACD': 'N/A', 
-                'Sinal': 'ERRO',
-                'Variação': 'N/A'
-            })
-    
-    # Trim signals history to last 50 across all symbols
-    if len(st.session_state.signals_history) > 50:
-        st.session_state.signals_history = st.session_state.signals_history[-50:]
-    
-    if overview_data:
-        overview_df = pd.DataFrame(overview_data)
         
-        # Style the dataframe
-        def style_signals(val):
-            if val == 'COMPRA':
-                return 'background-color: #90EE90'
-            elif val == 'VENDA':
-                return 'background-color: #FFB6C1'
-            elif val == 'COMPRA_FRACA':
-                return 'background-color: #FFFF99'
-            elif val == 'VENDA_FRACA':
-                return 'background-color: #FFD4A3'
-            return ''
+        # Trim signals history to last 50 across all symbols
+        if len(st.session_state.signals_history) > 50:
+            st.session_state.signals_history = st.session_state.signals_history[-50:]
         
-        styled_df = overview_df.style.map(style_signals, subset=['Sinal'])
-        st.dataframe(styled_df, width='stretch', hide_index=True)
-    
-    st.markdown("---")
-    
-    st.subheader(f"📈 Análise Detalhada - {symbol}")
+        if overview_data:
+            overview_df = pd.DataFrame(overview_data)
+            
+            # Style the dataframe
+            def style_futures_signals(val):
+                if isinstance(val, str):
+                    if val == 'COMPRA':
+                        return 'background-color: #90EE90'
+                    elif val == 'VENDA':
+                        return 'background-color: #FFB6C1'
+                    elif val == 'COMPRA_FRACA':
+                        return 'background-color: #FFFF99'
+                    elif val == 'VENDA_FRACA':
+                        return 'background-color: #FFD4A3'
+                elif isinstance(val, (int, float)):
+                    if val >= 70:
+                        return 'background-color: #90EE90'
+                    elif val >= 50:
+                        return 'background-color: #FFFF99'
+                    elif val <= 30:
+                        return 'background-color: #FFB6C1'
+                return ''
+            
+            styled_df = overview_df.style.map(style_futures_signals)
+            st.dataframe(styled_df, width='stretch', hide_index=True)
+        
+        st.markdown("---")
+        
+        st.subheader(f"📈 Análise Detalhada de Futuros - {symbol}")
+
+# Helper function para calcular scores de futuros
+def _calculate_futures_score(last_candle, position_type):
+    """Calcular score específico para posições LONG/SHORT em futuros"""
+    try:
+        score = 0
+        
+        # RSI scoring
+        rsi = last_candle.get('rsi', 50)
+        if position_type == 'LONG':
+            if rsi < 30: score += 30
+            elif rsi < 40: score += 20
+            elif rsi > 70: score -= 20
+        else:  # SHORT
+            if rsi > 70: score += 30
+            elif rsi > 60: score += 20
+            elif rsi < 30: score -= 20
+        
+        # MACD scoring
+        macd = last_candle.get('macd', 0)
+        macd_signal = last_candle.get('macd_signal', 0)
+        
+        if position_type == 'LONG':
+            if macd > macd_signal: score += 25
+            if last_candle.get('macd_histogram', 0) > 0: score += 15
+        else:  # SHORT
+            if macd < macd_signal: score += 25
+            if last_candle.get('macd_histogram', 0) < 0: score += 15
+        
+        # Volume scoring
+        volume_ratio = last_candle.get('volume_ratio', 1)
+        if volume_ratio > 1.5: score += 15
+        elif volume_ratio > 1.2: score += 10
+        
+        # Trend scoring (simplified)
+        sma_21 = last_candle.get('sma_21', last_candle['close'])
+        if position_type == 'LONG':
+            if last_candle['close'] > sma_21: score += 15
+        else:  # SHORT
+            if last_candle['close'] < sma_21: score += 15
+        
+        return min(max(score, 0), 100)  # Normalize to 0-100
+        
+    except Exception:
+        return 0
 
 # Telegram Configuration Card (if not configured)
 has_secrets_main = bool(os.getenv("TELEGRAM_BOT_TOKEN") and os.getenv("TELEGRAM_CHAT_ID"))
@@ -1065,412 +1160,126 @@ if auto_refresh:
         # Just rerun UI without data refresh
         st.rerun()
 
-# Futures Trading Tab
-with tab2:
-    st.subheader("🚀 Trading de Mercado Futuro")
-    st.markdown("**Trade com alavancagem, posições long/short e gerenciamento avançado de risco**")
-    
-    # Warning banner
-    st.warning("⚠️ **ATENÇÃO:** Mercado futuro envolve alto risco. Nunca arrisque mais do que pode perder!")
-    
-    # Tabs dentro da aba de futuros
-    futures_tab1, futures_tab2, futures_tab3, futures_tab4 = st.tabs([
-        "🎯 Sinais Futuros", "⚖️ Calculadoras", "📊 Posições", "📚 Educação"
-    ])
-    
-    # Tab 1: Sinais específicos para futuros
-    with futures_tab1:
-        st.markdown("### 🎯 Análise para Trading de Futuros")
-        
-        # Configurações específicas de futuros
-        col1, col2, col3 = st.columns(3)
-        
-        with col1:
-            futures_leverage = st.selectbox(
-                "Alavancagem",
-                [1, 2, 3, 5, 10, 20, 25, 50],
-                index=3,
-                help="Multiplicador de posição"
-            )
+# Tab 2: Calculadoras
+        with futures_tab2:
+            st.markdown("### ⚖️ Calculadoras de Trading")
             
-        with col2:
-            futures_mode = st.selectbox(
-                "Modo de Trading",
-                ["Cross Margin", "Isolated Margin"],
-                help="Cross: usa todo saldo | Isolated: limita risco por posição"
-            )
+            calc_tab1, calc_tab2, calc_tab3 = st.tabs([
+                "🧮 Calculadora de Posição", "💀 Preço de Liquidação", "💰 P&L Simulador"
+            ])
             
-        with col3:
-            risk_level = st.selectbox(
-                "Nível de Risco",
-                ["Conservador", "Moderado", "Agressivo"],
-                index=1
-            )
-        
-        st.markdown("---")
-        
-        if st.session_state.current_data is not None:
-            last_candle = st.session_state.current_data.iloc[-1]
-            current_price = last_candle['close']
-            
-            # Análise específica para futuros
-            col1, col2 = st.columns([3, 2])
-            
-            with col1:
-                # Sinais direcionais para long e short
-                st.markdown("#### 📈 Análise Direcional")
+            with calc_tab1:
+                st.markdown("#### 🧮 Calculadora de Tamanho da Posição")
                 
-                # Sinal LONG
-                long_score = 0
-                long_reasons = []
+                col1, col2 = st.columns(2)
                 
-                if last_candle['rsi'] < 35:
-                    long_score += 2
-                    long_reasons.append(f"RSI sobrevenda ({last_candle['rsi']:.1f})")
+                with col1:
+                    account_balance = st.number_input("Saldo da Conta ($)", value=10000.0, min_value=100.0)
+                    risk_percent = st.slider("Risco por Trade (%)", 1, 10, 3)
+                    leverage_calc = st.selectbox("Alavancagem Calc", [1, 2, 3, 5, 10, 20, 25, 50], index=3)
+                    entry_price = st.number_input("Preço de Entrada ($)", value=float(st.session_state.current_data.iloc[-1]['close']) if st.session_state.current_data is not None else 1.0)
                 
-                if last_candle['macd'] > last_candle['macd_signal']:
-                    long_score += 2
-                    long_reasons.append("MACD bullish")
-                
-                if last_candle['close'] > last_candle.get('sma_21', current_price):
-                    long_score += 1
-                    long_reasons.append("Preço acima SMA21")
+                with col2:
+                    # Cálculos
+                    risk_amount = account_balance * (risk_percent / 100)
+                    position_size_usdt = risk_amount * leverage_calc
+                    quantity = position_size_usdt / entry_price
+                    margin_required = position_size_usdt / leverage_calc
                     
-                if last_candle.get('volume_ratio', 1) > 1.5:
-                    long_score += 1
-                    long_reasons.append("Volume alto")
+                    st.metric("💰 Valor Arriscado", f"${risk_amount:.2f}")
+                    st.metric("📊 Tamanho da Posição", f"${position_size_usdt:.2f}")
+                    st.metric("🪙 Quantidade", f"{quantity:.6f}")
+                    st.metric("🏦 Margem Necessária", f"${margin_required:.2f}")
+            
+            with calc_tab2:
+                st.markdown("#### 💀 Calculadora de Preço de Liquidação")
                 
-                # Sinal SHORT  
-                short_score = 0
-                short_reasons = []
+                col1, col2 = st.columns(2)
                 
-                if last_candle['rsi'] > 65:
-                    short_score += 2
-                    short_reasons.append(f"RSI sobrecompra ({last_candle['rsi']:.1f})")
+                with col1:
+                    entry_price_liq = st.number_input("Preço de Entrada Liq", value=1.0)
+                    leverage_liq = st.selectbox("Alavancagem Liq", [1, 2, 3, 5, 10, 20, 25, 50], index=3)
+                    position_side = st.radio("Lado da Posição", ["LONG", "SHORT"])
                 
-                if last_candle['macd'] < last_candle['macd_signal']:
-                    short_score += 2
-                    short_reasons.append("MACD bearish")
-                
-                if last_candle['close'] < last_candle.get('sma_21', current_price):
-                    short_score += 1
-                    short_reasons.append("Preço abaixo SMA21")
-                    
-                if last_candle.get('volume_ratio', 1) > 1.5:
-                    short_score += 1
-                    short_reasons.append("Volume alto")
-                
-                # Exibir sinais
-                col_long, col_short = st.columns(2)
-                
-                with col_long:
-                    if long_score >= 4:
-                        st.success(f"🟢 **LONG FORTE** (Score: {long_score}/6)")
-                    elif long_score >= 2:
-                        st.info(f"🟡 **LONG MODERADO** (Score: {long_score}/6)")
+                with col2:
+                    # Calcular liquidação (simplificado)
+                    if position_side == "LONG":
+                        liquidation_price = entry_price_liq * (1 - (0.9 / leverage_liq))
+                        distance = ((entry_price_liq - liquidation_price) / entry_price_liq) * 100
                     else:
-                        st.error(f"🔴 **SEM SINAL LONG** (Score: {long_score}/6)")
+                        liquidation_price = entry_price_liq * (1 + (0.9 / leverage_liq))
+                        distance = ((liquidation_price - entry_price_liq) / entry_price_liq) * 100
                     
-                    st.write("**Razões:**")
-                    for reason in long_reasons:
-                        st.write(f"• {reason}")
-                
-                with col_short:
-                    if short_score >= 4:
-                        st.success(f"🟢 **SHORT FORTE** (Score: {short_score}/6)")
-                    elif short_score >= 2:
-                        st.info(f"🟡 **SHORT MODERADO** (Score: {short_score}/6)")
+                    st.metric("💀 Preço de Liquidação", f"${liquidation_price:.6f}")
+                    st.metric("📏 Distância", f"{distance:.2f}%")
+                    
+                    if distance < 5:
+                        st.error("⚠️ ALTO RISCO DE LIQUIDAÇÃO!")
+                    elif distance < 10:
+                        st.warning("⚠️ Risco moderado de liquidação")
                     else:
-                        st.error(f"🔴 **SEM SINAL SHORT** (Score: {short_score}/6)")
+                        st.success("✅ Distância segura da liquidação")
+            
+            with calc_tab3:
+                st.markdown("#### 💰 Simulador de Profit & Loss")
+                
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    entry_price_pnl = st.number_input("Preço de Entrada PnL", value=1.0)
+                    position_size_pnl = st.number_input("Tamanho da Posição ($)", value=1000.0)
+                    leverage_pnl = st.selectbox("Alavancagem PnL", [1, 2, 3, 5, 10, 20, 25, 50], index=3)
                     
-                    st.write("**Razões:**")
-                    for reason in short_reasons:
-                        st.write(f"• {reason}")
-            
-            with col2:
-                # Métricas de risco específicas
-                st.markdown("#### ⚠️ Métricas de Risco")
+                    # Cenários de preço
+                    st.markdown("**Cenários de Preço:**")
+                    scenario_1 = st.number_input("Cenário 1 ($)", value=entry_price_pnl * 1.02)
+                    scenario_2 = st.number_input("Cenário 2 ($)", value=entry_price_pnl * 1.05)
+                    scenario_3 = st.number_input("Cenário 3 ($)", value=entry_price_pnl * 0.98)
                 
-                # Calcular preço de liquidação
-                if long_score > short_score:
-                    liquidation_long = current_price * (1 - (0.8 / futures_leverage))
-                    st.metric(
-                        "💀 Liquidação LONG",
-                        f"${liquidation_long:.6f}",
-                        delta=f"-{((current_price - liquidation_long) / current_price * 100):.1f}%"
-                    )
-                elif short_score > long_score:
-                    liquidation_short = current_price * (1 + (0.8 / futures_leverage))
-                    st.metric(
-                        "💀 Liquidação SHORT",
-                        f"${liquidation_short:.6f}",
-                        delta=f"+{((liquidation_short - current_price) / current_price * 100):.1f}%"
-                    )
-                
-                # Volatilidade
-                if 'atr' in last_candle and not pd.isna(last_candle['atr']):
-                    volatility_pct = (last_candle['atr'] / current_price) * 100
-                    st.metric("🌊 Volatilidade (ATR)", f"{volatility_pct:.2f}%")
-                
-                # Funding rate simulado
-                funding_rate = 0.01  # Simulated
-                st.metric("💰 Funding Rate", f"{funding_rate:.4f}%")
-        
-        else:
-            st.info("📊 Aguardando dados de mercado...")
-    
-    # Tab 2: Calculadoras
-    with futures_tab2:
-        st.markdown("### ⚖️ Calculadoras de Trading")
-        
-        calc_tab1, calc_tab2, calc_tab3 = st.tabs([
-            "🧮 Calculadora de Posição", "💀 Preço de Liquidação", "💰 P&L Simulador"
-        ])
-        
-        with calc_tab1:
-            st.markdown("#### 🧮 Calculadora de Tamanho da Posição")
-            
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                account_balance = st.number_input("Saldo da Conta ($)", value=10000.0, min_value=100.0)
-                risk_percent = st.slider("Risco por Trade (%)", 1, 10, 3)
-                leverage_calc = st.selectbox("Alavancagem", [1, 2, 3, 5, 10, 20, 25, 50], index=3)
-                entry_price = st.number_input("Preço de Entrada ($)", value=float(st.session_state.current_data.iloc[-1]['close']) if st.session_state.current_data is not None else 1.0)
-            
-            with col2:
-                # Cálculos
-                risk_amount = account_balance * (risk_percent / 100)
-                position_size_usdt = risk_amount * leverage_calc
-                quantity = position_size_usdt / entry_price
-                margin_required = position_size_usdt / leverage_calc
-                
-                st.metric("💰 Valor Arriscado", f"${risk_amount:.2f}")
-                st.metric("📊 Tamanho da Posição", f"${position_size_usdt:.2f}")
-                st.metric("🪙 Quantidade", f"{quantity:.6f}")
-                st.metric("🏦 Margem Necessária", f"${margin_required:.2f}")
-        
-        with calc_tab2:
-            st.markdown("#### 💀 Calculadora de Preço de Liquidação")
-            
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                entry_price_liq = st.number_input("Preço de Entrada", value=1.0)
-                leverage_liq = st.selectbox("Alavancagem", [1, 2, 3, 5, 10, 20, 25, 50], index=3, key="liq_leverage")
-                position_side = st.radio("Lado da Posição", ["LONG", "SHORT"])
-            
-            with col2:
-                # Calcular liquidação (simplificado)
-                if position_side == "LONG":
-                    liquidation_price = entry_price_liq * (1 - (0.9 / leverage_liq))
-                    distance = ((entry_price_liq - liquidation_price) / entry_price_liq) * 100
-                else:
-                    liquidation_price = entry_price_liq * (1 + (0.9 / leverage_liq))
-                    distance = ((liquidation_price - entry_price_liq) / entry_price_liq) * 100
-                
-                st.metric("💀 Preço de Liquidação", f"${liquidation_price:.6f}")
-                st.metric("📏 Distância", f"{distance:.2f}%")
-                
-                if distance < 5:
-                    st.error("⚠️ ALTO RISCO DE LIQUIDAÇÃO!")
-                elif distance < 10:
-                    st.warning("⚠️ Risco moderado de liquidação")
-                else:
-                    st.success("✅ Distância segura da liquidação")
-        
-        with calc_tab3:
-            st.markdown("#### 💰 Simulador de Profit & Loss")
-            
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                entry_price_pnl = st.number_input("Preço de Entrada", value=1.0, key="pnl_entry")
-                position_size_pnl = st.number_input("Tamanho da Posição ($)", value=1000.0)
-                leverage_pnl = st.selectbox("Alavancagem", [1, 2, 3, 5, 10, 20, 25, 50], index=3, key="pnl_leverage")
-                
-                # Cenários de preço
-                st.markdown("**Cenários de Preço:**")
-                scenario_1 = st.number_input("Cenário 1 ($)", value=entry_price_pnl * 1.02)
-                scenario_2 = st.number_input("Cenário 2 ($)", value=entry_price_pnl * 1.05)
-                scenario_3 = st.number_input("Cenário 3 ($)", value=entry_price_pnl * 0.98)
-            
-            with col2:
-                st.markdown("**Resultados:**")
-                
-                for i, price in enumerate([scenario_1, scenario_2, scenario_3], 1):
-                    price_change_pct = ((price - entry_price_pnl) / entry_price_pnl)
-                    pnl = position_size_pnl * price_change_pct * leverage_pnl
+                with col2:
+                    st.markdown("**Resultados:**")
                     
-                    color = "🟢" if pnl > 0 else "🔴"
-                    st.write(f"**Cenário {i}:** {color} ${pnl:+.2f} ({price_change_pct * leverage_pnl * 100:+.1f}%)")
-    
-    # Tab 3: Posições (simuladas)
-    with futures_tab3:
-        st.markdown("### 📊 Gerenciamento de Posições")
+                    for i, price in enumerate([scenario_1, scenario_2, scenario_3], 1):
+                        price_change_pct = ((price - entry_price_pnl) / entry_price_pnl)
+                        pnl = position_size_pnl * price_change_pct * leverage_pnl
+                        
+                        color = "🟢" if pnl > 0 else "🔴"
+                        st.write(f"**Cenário {i}:** {color} ${pnl:+.2f} ({price_change_pct * leverage_pnl * 100:+.1f}%)")
         
-        # Mock positions for demonstration
-        mock_positions = [
-            {
-                "Par": "BTC/USDT",
-                "Lado": "LONG",
-                "Tamanho": "$5,000",
-                "Alavancagem": "10x",
-                "Entrada": "$43,250",
-                "Atual": "$43,580",
-                "PnL": "+$76.28",
-                "PnL %": "+1.52%",
-                "Margem": "$500",
-                "Liquidação": "$39,127"
-            },
-            {
-                "Par": "ETH/USDT", 
-                "Lado": "SHORT",
-                "Tamanho": "$2,500",
-                "Alavancagem": "5x",
-                "Entrada": "$2,845",
-                "Atual": "$2,823",
-                "PnL": "+$38.90",
-                "PnL %": "+1.55%",
-                "Margem": "$500", 
-                "Liquidação": "$3,416"
-            }
-        ]
-        
-        if st.button("🔄 Simular Posições"):
-            positions_df = pd.DataFrame(mock_positions)
-            st.dataframe(positions_df, use_container_width=True)
+        # Tab 3: Posições (simuladas)
+        with futures_tab3:
+            st.markdown("### 📊 Gerenciamento de Posições Simuladas")
             
-            st.success("💰 PnL Total: +$115.18 (+1.53%)")
-            st.info("🏦 Margem Total Usada: $1,000 (10% do saldo)")
-        else:
-            st.info("📭 Clique para ver posições simuladas")
-    
-    # Tab 4: Educação
-    with futures_tab4:
-        st.markdown("### 📚 Guia de Trading de Futuros")
-        
-        education_tab1, education_tab2, education_tab3 = st.tabs([
-            "🎓 Básico", "⚡ Avançado", "🎯 Estratégias"
-        ])
-        
-        with education_tab1:
-            st.markdown("""
-            #### 🎓 Conceitos Fundamentais
+            # Mock positions for demonstration
+            mock_positions = [
+                {
+                    "Par": symbol,
+                    "Lado": "LONG",
+                    "Tamanho": f"${5000 * futures_leverage:.0f}",
+                    "Alavancagem": f"{futures_leverage}x",
+                    "Entrada": f"${st.session_state.current_data.iloc[-1]['close']:.6f}" if st.session_state.current_data is not None else "$1.000000",
+                    "Atual": f"${st.session_state.current_data.iloc[-1]['close'] * 1.015:.6f}" if st.session_state.current_data is not None else "$1.015000",
+                    "PnL": f"+${5000 * futures_leverage * 0.015:.2f}",
+                    "PnL %": f"+{futures_leverage * 1.5:.1f}%",
+                    "Margem": f"${5000:.0f}",
+                    "Liquidação": f"${st.session_state.current_data.iloc[-1]['close'] * (1 - 0.9/futures_leverage):.6f}" if st.session_state.current_data is not None else "$0.900000"
+                }
+            ]
             
-            **O que são Contratos Futuros?**
-            - Acordos para comprar/vender um ativo em data futura
-            - Permite alavancagem (controlar mais capital)
-            - Possibilita lucrar com queda de preços (SHORT)
-            
-            **Diferenças do Mercado Spot:**
-            - **Spot:** Compra/venda imediata, só lucra se preço subir
-            - **Futuros:** Alavancagem, pode lucrar com queda, maior risco
-            
-            **Alavancagem:**
-            - 10x = controla $10,000 com apenas $1,000
-            - Amplifica lucros E perdas proporcionalmente
-            - Maior alavancagem = maior risco de liquidação
-            """)
-            
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                st.success("""
-                **✅ Vantagens:**
-                - Maior potencial de lucro
-                - Lucrar com quedas (SHORT)
-                - Menor capital inicial necessário  
-                - Hedging de posições spot
-                """)
-            
-            with col2:
-                st.error("""
-                **❌ Riscos:**
-                - Perdas amplificadas
-                - Risco de liquidação
-                - Funding rates
-                - Maior complexidade
-                """)
-        
-        with education_tab2:
-            st.markdown("""
-            #### ⚡ Conceitos Avançados
-            
-            **Funding Rates:**
-            - Taxa paga entre traders long e short
-            - A cada 8 horas
-            - Positiva: longs pagam shorts
-            - Negativa: shorts pagam longs
-            
-            **Liquidação:**
-            - Fechamento forçado quando margem insuficiente
-            - Preço de liquidação varia com alavancagem
-            - Cross margin vs Isolated margin
-            
-            **Gerenciamento de Risco:**
-            - Nunca arrisque mais que 2-5% por trade
-            - Use stop loss sempre
-            - Diversifique posições
-            - Monitore funding rates
-            """)
-            
-            # Exemplo prático
-            st.markdown("#### 💡 Exemplo Prático:")
-            with st.expander("Ver exemplo de trade"):
-                st.code("""
-                Cenário: BTC a $40,000
-                Capital: $1,000
-                Alavancagem: 10x
-                Posição: LONG $10,000
+            if st.button("🔄 Simular Posições"):
+                positions_df = pd.DataFrame(mock_positions)
+                st.dataframe(positions_df, use_container_width=True)
                 
-                Se BTC sobe 5% para $42,000:
-                Lucro = $10,000 × 5% = $500
-                ROI = 50% do capital inicial
-                
-                Se BTC cai 5% para $38,000:
-                Perda = $10,000 × 5% = $500
-                Perda = 50% do capital inicial
-                
-                Liquidação (aprox.): $36,400 (-9%)
-                """)
-        
-        with education_tab3:
-            st.markdown("""
-            #### 🎯 Estratégias Populares
-            
-            **1. Scalping (Segundos/Minutos)**
-            - Lucros pequenos e frequentes
-            - Alta alavancagem (20-50x)
-            - Requer experiência e disciplina
-            
-            **2. Day Trading (Horas)**
-            - Posições intraday
-            - Alavancagem moderada (5-20x)
-            - Análise técnica focada
-            
-            **3. Swing Trading (Dias/Semanas)**
-            - Aproveitar tendências
-            - Alavancagem baixa (2-10x)
-            - Análise fundamentalista + técnica
-            
-            **4. Hedging**
-            - Proteção de posições spot
-            - SHORT para proteger de quedas
-            - Reduz risco geral do portfolio
-            """)
-            
-            st.warning("""
-            ⚠️ **Lembre-se:**
-            - Pratique em conta demo primeiro
-            - Comece com alavancagem baixa
-            - Tenha um plano de trading
-            - Gerencie suas emoções
-            - Nunca invista mais do que pode perder
-            """)
+                profit = 5000 * futures_leverage * 0.015
+                profit_pct = futures_leverage * 1.5
+                st.success(f"💰 PnL Total Simulado: +${profit:.2f} (+{profit_pct:.1f}%)")
+                st.info(f"🏦 Margem Total Usada: $5,000 com {futures_mode}")
+                st.warning("⚠️ Esta é apenas uma simulação para fins educacionais")
+            else:
+                st.info("📭 Clique para ver posições simuladas com base na configuração atual")
 
 # Backtesting Tab  
-with tab3:
+with tab2:
     st.subheader("🔬 Sistema de Backtesting")
     st.markdown("Teste suas estratégias com dados históricos para validar sua eficácia")
     
@@ -1805,7 +1614,7 @@ with tab3:
                 "💡 **Dica:** Comece com períodos menores para testes mais rápidos")
 
 # Export Data Tab
-with tab4:
+with tab3:
     st.subheader("⚙️ Exportar Dados")
     st.markdown("Exporte dados e sinais para análise externa")
     
@@ -1870,7 +1679,7 @@ with tab4:
                 )
 
 # Admin Panel Tab
-with tab5:
+with tab4:
     st.subheader("👑 Painel Administrativo")
     
     # Admin authentication
