@@ -60,6 +60,15 @@ mode = "sequential"
 task = "shell.exec"
 args = "python -m streamlit run app.py --server.port=8080 --server.address=0.0.0.0 --server.headless=true"
 
+[[workflows.workflow]]
+name = "Bot Telegram"
+author = 47788661
+mode = "sequential"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "python run_telegram_bot.py"
+
 [[ports]]
 localPort = 8080
 externalPort = 80
