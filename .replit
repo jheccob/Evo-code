@@ -78,7 +78,7 @@ localPort = 8080
 externalPort = 80
 
 [[ports]]
-localPort = 34663
+localPort = 42177
 externalPort = 3000
 
 [agent]
