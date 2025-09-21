@@ -10,6 +10,7 @@ import os
 from datetime import datetime
 from typing import Optional
 
+# Verificar se telegram está disponível
 try:
     from telegram import Bot, Update
     from telegram.ext import Application, CommandHandler, ContextTypes
@@ -22,44 +23,12 @@ except ImportError as e:
     print(f"❌ Telegram library not available: {e}")
     print("💡 Install with: pip install python-telegram-bot==20.7")
     
-    # Create dummy classes for when telegram is not available
-    class Update:
-        def __init__(self):
-            self.effective_user = type('EffectiveUser', (), {'id': None, 'username': None, 'first_name': None})()
-            self.message = type('Message', (), {'reply_text': lambda *args, **kwargs: None})()
-    
-    class ContextTypes:
-        DEFAULT_TYPE = None
-    
-    class Bot:
-        def __init__(self, token):
-            pass
-        async def get_me(self):
-            return type('Me', (), {'username': 'test'})()
-        async def send_message(self, *args, **kwargs):
-            pass
-    
-    class Application:
-        @staticmethod
-        def builder():
-            return type('Builder', (), {
-                'token': lambda x: type('Builder', (), {'build': lambda: type('App', (), {
-                    'add_handler': lambda x: None,
-                    'run_polling': lambda **kwargs: None,
-                    'initialize': lambda: None,
-                    'start': lambda: None,
-                    'updater': type('Updater', (), {
-                        'start_polling': lambda **kwargs: None,
-                        'idle': lambda: None
-                    })(),
-                    'stop': lambda: None,
-                    'shutdown': lambda: None
-                })()})()
-            })()
-    
-    class CommandHandler:
-        def __init__(self, command, callback):
-            pass
+    # Se não tiver telegram, não prosseguir
+    Bot = None
+    Update = None
+    ContextTypes = None
+    Application = None
+    CommandHandler = None
 
 from user_manager import UserManager
 from trading_bot import TradingBot
@@ -76,6 +45,9 @@ class TelegramTradingBot:
         if not TELEGRAM_AVAILABLE:
             self.logger.error("❌ Telegram library not available")
             self.enabled = False
+            self.bot_token = None
+            self.bot = None
+            self.application = None
             return
             
         self.bot_token = None
@@ -84,8 +56,15 @@ class TelegramTradingBot:
         self.enabled = False
         
         # Core services
-        self.user_manager = UserManager()
-        self.trading_bot = TradingBot()
+        try:
+            from user_manager import UserManager
+            from trading_bot import TradingBot
+            self.user_manager = UserManager()
+            self.trading_bot = TradingBot()
+        except ImportError as e:
+            self.logger.warning(f"⚠️ Erro ao importar dependências: {e}")
+            self.user_manager = None
+            self.trading_bot = None
         
         # Auto-configure from environment
         self._auto_configure()
@@ -112,12 +91,18 @@ class TelegramTradingBot:
             self.logger.error("❌ Cannot configure: Telegram library not available")
             return False
             
+        if not bot_token or not bot_token.strip():
+            self.logger.error("❌ Token do bot está vazio")
+            return False
+            
         try:
-            self.bot_token = bot_token
-            self.bot = Bot(token=bot_token)
+            self.logger.info("🔧 Configurando bot Telegram...")
+            
+            self.bot_token = bot_token.strip()
+            self.bot = Bot(token=self.bot_token)
             
             # Create application
-            self.application = Application.builder().token(bot_token).build()
+            self.application = Application.builder().token(self.bot_token).build()
             
             # Setup handlers
             self._setup_handlers()
@@ -128,49 +113,100 @@ class TelegramTradingBot:
             
         except Exception as e:
             self.logger.error(f"❌ Erro ao configurar bot: {e}")
+            self.enabled = False
             return False
     
     def _setup_handlers(self):
         """Setup command handlers"""
         if not self.application:
+            self.logger.error("❌ Application não inicializada")
             return
             
-        handlers = [
-            ("start", self.start_command),
-            ("help", self.help_command),
-            ("analise", self.analyze_command),
-            ("status", self.status_command),
-            ("premium", self.premium_command),
-            ("admin", self.admin_command),
-            ("stats", self.stats_command),
-            ("users", self.users_command),
-            ("upgrade", self.upgrade_command),
-            ("broadcast", self.broadcast_command),
-        ]
-        
-        for command, handler in handlers:
-            self.application.add_handler(CommandHandler(command, handler))
-        
-        self.logger.info("✅ Handlers configurados")
+        try:
+            handlers = [
+                ("start", self.start_command),
+                ("help", self.help_command),
+                ("analise", self.analyze_command),
+                ("status", self.status_command),
+                ("premium", self.premium_command),
+                ("admin", self.admin_command),
+                ("stats", self.stats_command),
+                ("users", self.users_command),
+                ("upgrade", self.upgrade_command),
+                ("broadcast", self.broadcast_command),
+            ]
+            
+            for command, handler in handlers:
+                self.application.add_handler(CommandHandler(command, handler))
+                self.logger.debug(f"✅ Handler /{command} adicionado")
+            
+            self.logger.info("✅ Todos os handlers configurados")
+            
+        except Exception as e:
+            self.logger.error(f"❌ Erro ao configurar handlers: {e}")
     
     async def start_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /start command"""
         try:
             user_id = update.effective_user.id
-            username = update.effective_user.username
+            username = update.effective_user.username or "sem_username"
             first_name = update.effective_user.first_name or "Usuário"
             
-            # Add user to database
-            self.user_manager.add_user(user_id, username, first_name)
+            self.logger.info(f"📥 Comando /start recebido de {user_id} ({first_name})")
             
-            welcome_message = f"Bem-vindo ao Trading Bot!\n\nOla {first_name}!\n\nSobre o bot:\n- Analises tecnicas de criptomoedas em tempo real\n- Sinais baseados em RSI e MACD\n- Suporte a multiplos pares de trading\n\nComandos principais:\n- /analise BTC/USDT - Analisar criptomoeda\n- /status - Ver seu status e limites\n- /help - Ver todos os comandos\n- /premium - Informacoes sobre Premium\n\nPares suportados:\n{', '.join(TelegramBotConfig.SUPPORTED_PAIRS[:6])}\n\nTipos de Usuario:\n- Free: 1 analise por dia\n- Premium: Analises ilimitadas\n\nExemplo de uso:\n/analise BTC/USDT\n\nVamos comecar a analisar o mercado!"
+            # Add user to database if user_manager is available
+            if self.user_manager:
+                try:
+                    self.user_manager.add_user(user_id, username, first_name)
+                    self.logger.info(f"✅ Usuário {user_id} adicionado ao banco")
+                except Exception as e:
+                    self.logger.warning(f"⚠️ Erro ao adicionar usuário: {e}")
             
-            await update.message.reply_text(welcome_message)
-            self.logger.info(f"✅ Usuário {user_id} executou /start")
+            # Importar configuração
+            try:
+                from config.telegram_bot_config import TelegramBotConfig
+                supported_pairs = TelegramBotConfig.SUPPORTED_PAIRS[:6]
+            except ImportError:
+                supported_pairs = ["BTC/USDT", "ETH/USDT", "XLM/USDT"]
+            
+            welcome_message = f"""🤖 **Bem-vindo ao Trading Bot!**
+
+Olá {first_name}! 👋
+
+**Sobre o bot:**
+• Análises técnicas de criptomoedas em tempo real
+• Sinais baseados em RSI e MACD  
+• Suporte a múltiplos pares de trading
+
+**Comandos principais:**
+• /analise BTC/USDT - Analisar criptomoeda
+• /status - Ver seu status e limites
+• /help - Ver todos os comandos
+• /premium - Informações sobre Premium
+
+**Pares suportados:**
+{', '.join(supported_pairs)}
+
+**Tipos de Usuário:**
+• Free: 1 análise por dia
+• Premium: Análises ilimitadas
+
+**Exemplo de uso:**
+/analise BTC/USDT
+
+Vamos começar a analisar o mercado! 📈"""
+            
+            await update.message.reply_text(welcome_message, parse_mode='Markdown')
+            self.logger.info(f"✅ Usuário {user_id} - comando /start processado com sucesso")
             
         except Exception as e:
             self.logger.error(f"❌ Erro no comando /start: {e}")
-            await update.message.reply_text("❌ Erro interno. Tente novamente em alguns minutos.")
+            try:
+                await update.message.reply_text(
+                    "❌ Erro interno no comando /start. Tente novamente em alguns minutos."
+                )
+            except Exception as reply_error:
+                self.logger.error(f"❌ Erro ao enviar resposta de erro: {reply_error}")
     
     async def help_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /help command"""

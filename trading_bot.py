@@ -14,7 +14,7 @@ class TradingBot:
         })
         self.symbol = "XLM-USD"
         self.timeframe = "5m"
-        self.rsi_period = 9
+        self.rsi_period = 14
         self.rsi_min = 20
         self.rsi_max = 80
         self.indicators = TechnicalIndicators()

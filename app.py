@@ -11,7 +11,7 @@ import asyncio
 import threading
 
 # Importar funções de fuso horário brasileiro
-from utils.timezone_utils import now_brazil, format_brazil_time, get_brazil_datetime_naive
+from utils.timezone_utils import now_brazil, format_brazil_time, get_brazil_datetime_naive, BRAZIL_TZ
 
 # Importar banco de dados
 from database.database import db
@@ -43,6 +43,33 @@ except ImportError:
     TELEGRAM_AVAILABLE = False
 
 from backtest import BacktestEngine
+
+# Helper function for timestamp comparison
+def _compare_timestamps(ts1, ts2):
+    """
+    Safely compare timestamps, handling timezone-aware/naive differences
+    Returns True if ts1 < ts2
+    """
+    try:
+        # Convert both to naive datetime for comparison
+        if hasattr(ts1, 'tzinfo') and ts1.tzinfo is not None:
+            # If ts1 is timezone-aware, convert to Brazil timezone then make naive
+            ts1_naive = ts1.astimezone(BRAZIL_TZ).replace(tzinfo=None) if hasattr(ts1, 'astimezone') else ts1.replace(tzinfo=None)
+        else:
+            # If ts1 is already naive, use as is
+            ts1_naive = ts1
+        
+        if hasattr(ts2, 'tzinfo') and ts2.tzinfo is not None:
+            # If ts2 is timezone-aware, convert to Brazil timezone then make naive
+            ts2_naive = ts2.astimezone(BRAZIL_TZ).replace(tzinfo=None) if hasattr(ts2, 'astimezone') else ts2.replace(tzinfo=None)
+        else:
+            # If ts2 is already naive, use as is
+            ts2_naive = ts2
+            
+        return ts1_naive < ts2_naive
+    except Exception:
+        # If comparison fails, assume it's a new signal
+        return True
 
 # Configure page
 st.set_page_config(
@@ -276,8 +303,19 @@ if 'user_manager' not in st.session_state:
 if 'multi_symbol_data' not in st.session_state:
     st.session_state.multi_symbol_data = {}
 
+# Import futures trading
+try:
+    from futures_trading import FuturesTrading
+    FUTURES_AVAILABLE = True
+except ImportError:
+    FUTURES_AVAILABLE = False
+
+# Initialize futures trading if available
+if 'futures_trading' not in st.session_state and FUTURES_AVAILABLE:
+    st.session_state.futures_trading = FuturesTrading()
+
 # Create tabs for different sections
-tab1, tab2, tab3, tab4 = st.tabs(["📊 Análise em Tempo Real", "🔬 Backtesting", "⚙️ Exportar Dados", "👑 Admin Panel"])
+tab1, tab2, tab3, tab4, tab5 = st.tabs(["📊 Análise em Tempo Real", "🚀 Mercado Futuro", "🔬 Backtesting", "⚙️ Exportar Dados", "👑 Admin Panel"])
 
 with tab1:
     # Multi-Symbol Overview (if enabled) - with caching and performance optimization
@@ -543,7 +581,7 @@ if st.session_state.current_data is not None:
     if signal not in ["NEUTRO"] and (
         not st.session_state.signals_history or 
         st.session_state.signals_history[-1]['signal'] != signal or
-        st.session_state.signals_history[-1]['timestamp'] < get_brazil_datetime_naive() - timedelta(minutes=5)
+        _compare_timestamps(st.session_state.signals_history[-1]['timestamp'], get_brazil_datetime_naive() - timedelta(minutes=5))
     ):
         # Send Telegram notification if enabled
         if st.session_state.telegram_notifications and st.session_state.telegram_bot.is_configured():
@@ -574,7 +612,8 @@ if st.session_state.current_data is not None:
             'signal': signal,
             'timeframe': timeframe,
             'macd_value': last_candle['macd'],
-            'signal_strength': abs(last_candle['rsi'] - 50) / 50  # Força do sinal baseada no RSI
+            'signal_strength': abs(last_candle['rsi'] - 50) / 50,  # Força do sinal baseada no RSI
+            'volume': last_candle.get('volume', 0)
         }
         
         # Salvar no banco de dados
@@ -1032,8 +1071,274 @@ else:
             # Just rerun UI without data refresh
             st.rerun()
 
-# Backtesting Tab  
+# Futures Trading Tab
 with tab2:
+    st.subheader("🚀 Trading de Mercado Futuro")
+    st.markdown("Trade com alavancagem, posições long/short e gerenciamento avançado de risco")
+    
+    if not FUTURES_AVAILABLE:
+        st.error("❌ Módulo de futuros não disponível. Verifique a instalação.")
+        st.info("💡 O módulo futures_trading.py deve estar no diretório raiz")
+    else:
+        # Futures configuration
+        st.markdown("### ⚙️ Configurações de Futuros")
+        
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            futures_leverage = st.selectbox(
+                "Alavancagem",
+                [1, 2, 3, 5, 10, 20, 25, 50],
+                index=3,  # 5x default
+                help="Multiplicador de posição. Maior alavancagem = maior risco"
+            )
+            
+            position_size = st.slider(
+                "Tamanho da Posição (%)",
+                min_value=1,
+                max_value=50,
+                value=10,
+                help="Porcentagem do saldo para cada trade"
+            )
+        
+        with col2:
+            stop_loss_pct = st.slider(
+                "Stop Loss (%)",
+                min_value=0.5,
+                max_value=10.0,
+                value=2.0,
+                step=0.1,
+                help="Porcentagem de perda máxima por trade"
+            )
+            
+            take_profit_pct = st.slider(
+                "Take Profit (%)",
+                min_value=1.0,
+                max_value=20.0,
+                value=4.0,
+                step=0.1,
+                help="Porcentagem de lucro alvo por trade"
+            )
+        
+        with col3:
+            max_positions = st.number_input(
+                "Máx. Posições Simultâneas",
+                min_value=1,
+                max_value=10,
+                value=3,
+                help="Número máximo de posições abertas ao mesmo tempo"
+            )
+            
+            dry_run = st.checkbox(
+                "Modo Simulação",
+                value=True,
+                help="Ativado: apenas simula. Desativado: executa trades reais"
+            )
+        
+        # Update futures bot configuration
+        if st.session_state.futures_trading:
+            st.session_state.futures_trading.leverage = futures_leverage
+            st.session_state.futures_trading.position_size_pct = position_size / 100
+            st.session_state.futures_trading.stop_loss_pct = stop_loss_pct / 100
+            st.session_state.futures_trading.take_profit_pct = take_profit_pct / 100
+            st.session_state.futures_trading.max_positions = max_positions
+        
+        st.markdown("---")
+        
+        # Account Information
+        st.markdown("### 💰 Informações da Conta")
+        
+        if dry_run:
+            # Simulated account for demo
+            st.info("📊 **CONTA SIMULADA**")
+            account_info = {
+                'total_balance': 10000.00,
+                'available_balance': 8500.00,
+                'used_balance': 1500.00,
+                'unrealized_pnl': 125.50,
+                'margin_ratio': 0.15
+            }
+        else:
+            account_info = st.session_state.futures_trading.get_account_balance() if st.session_state.futures_trading else None
+        
+        if account_info:
+            col1, col2, col3, col4 = st.columns(4)
+            
+            with col1:
+                st.metric(
+                    "💰 Saldo Total",
+                    f"${account_info['total_balance']:,.2f}",
+                    delta=f"PnL: ${account_info['unrealized_pnl']:+,.2f}"
+                )
+            
+            with col2:
+                st.metric(
+                    "✅ Disponível",
+                    f"${account_info['available_balance']:,.2f}"
+                )
+            
+            with col3:
+                st.metric(
+                    "📊 Em Uso",
+                    f"${account_info['used_balance']:,.2f}"
+                )
+            
+            with col4:
+                margin_color = "normal" if account_info['margin_ratio'] < 0.8 else "inverse"
+                st.metric(
+                    "⚠️ Margem",
+                    f"{account_info['margin_ratio']*100:.1f}%"
+                )
+        
+        st.markdown("---")
+        
+        # Signal Generation and Trading
+        st.markdown("### 🎯 Sinais para Futures")
+        
+        col1, col2 = st.columns([2, 1])
+        
+        with col1:
+            if st.session_state.current_data is not None and st.session_state.futures_trading:
+                # Generate futures signal
+                futures_signal = st.session_state.futures_trading.generate_futures_signal(
+                    st.session_state.current_data,
+                    account_info['available_balance'] if account_info else 10000
+                )
+                
+                # Display signal information
+                signal = futures_signal['signal']
+                confidence = futures_signal['confidence']
+                
+                if signal != "NEUTRO":
+                    signal_color = "success" if signal in ['COMPRA', 'COMPRA_FRACA'] else "error"
+                    
+                    if signal_color == "success":
+                        st.success(f"""
+                        🟢 **SINAL DE {signal.replace('_', ' ')}** (Confiança: {confidence:.1f}%)
+                        
+                        **Estratégia LONG:**
+                        - Entrada: ${futures_signal['entry_price']:.6f}
+                        - Stop Loss: ${futures_signal['stop_loss']:.6f} (-{stop_loss_pct:.1f}%)
+                        - Take Profit: ${futures_signal['take_profit']:.6f} (+{take_profit_pct:.1f}%)
+                        - Quantidade: {futures_signal['quantity']:.6f}
+                        - Alavancagem: {futures_leverage}x
+                        """)
+                    else:
+                        st.error(f"""
+                        🔴 **SINAL DE {signal.replace('_', ' ')}** (Confiança: {confidence:.1f}%)
+                        
+                        **Estratégia SHORT:**
+                        - Entrada: ${futures_signal['entry_price']:.6f}
+                        - Stop Loss: ${futures_signal['stop_loss']:.6f} (+{stop_loss_pct:.1f}%)
+                        - Take Profit: ${futures_signal['take_profit']:.6f} (-{take_profit_pct:.1f}%)
+                        - Quantidade: {futures_signal['quantity']:.6f}
+                        - Alavancagem: {futures_leverage}x
+                        """)
+                        
+                    # Calculate potential profit/loss
+                    potential_loss = account_info['available_balance'] * (position_size/100) if account_info else 1000
+                    potential_profit = potential_loss * 2  # 2:1 risk/reward ratio
+                    
+                    st.info(f"""
+                    📊 **Análise de Risco:**
+                    - Risco por Trade: ${potential_loss:.2f}
+                    - Potencial Lucro: ${potential_profit:.2f}
+                    - Relação R:R: 1:2
+                    """)
+                    
+                else:
+                    st.warning("⚪ **SINAL NEUTRO** - Aguardar melhor oportunidade")
+            
+            else:
+                st.info("Aguardando dados de mercado para gerar sinal...")
+        
+        with col2:
+            st.markdown("#### 🎮 Ações")
+            
+            if st.button("🎯 Executar Trade", disabled=(not st.session_state.current_data or signal == "NEUTRO")):
+                if st.session_state.futures_trading and st.session_state.current_data:
+                    with st.spinner("Executando trade..."):
+                        result = st.session_state.futures_trading.execute_futures_trade(
+                            futures_signal, 
+                            dry_run=dry_run
+                        )
+                    
+                    if result["success"]:
+                        st.success("✅ Trade executado com sucesso!")
+                        st.json(result["details"])
+                    else:
+                        st.error(f"❌ {result['message']}")
+            
+            if st.button("📊 Atualizar Sinal"):
+                st.rerun()
+            
+            # Quick actions
+            st.markdown("#### ⚡ Ações Rápidas")
+            if st.button("🛑 Fechar Todas as Posições"):
+                st.warning("Funcionalidade disponível apenas com API configurada")
+        
+        st.markdown("---")
+        
+        # Open Positions
+        st.markdown("### 📈 Posições Abertas")
+        
+        if dry_run:
+            # Simulated positions for demo
+            demo_positions = [
+                {
+                    'symbol': 'BTCUSDT',
+                    'side': 'long',
+                    'size': 0.1,
+                    'entry_price': 43250.00,
+                    'mark_price': 43580.50,
+                    'unrealized_pnl': 33.05,
+                    'margin': 865.00,
+                    'leverage': 5
+                }
+            ]
+            
+            if demo_positions:
+                positions_df = pd.DataFrame(demo_positions)
+                positions_df.columns = ['Símbolo', 'Lado', 'Tamanho', 'Preço Entrada', 'Preço Atual', 'PnL', 'Margem', 'Alavancagem']
+                st.dataframe(positions_df, use_container_width=True)
+            else:
+                st.info("📭 Nenhuma posição aberta")
+        else:
+            open_positions = st.session_state.futures_trading.get_open_positions() if st.session_state.futures_trading else []
+            
+            if open_positions:
+                st.dataframe(pd.DataFrame(open_positions), use_container_width=True)
+            else:
+                st.info("📭 Nenhuma posição aberta")
+        
+        # Trading Tips
+        st.markdown("---")
+        st.markdown("### 💡 Dicas para Mercado Futuro")
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.info("""
+            **✅ Boas Práticas:**
+            - Sempre use stop loss
+            - Não arrisque mais que 2-5% por trade
+            - Gerencie suas posições ativamente
+            - Monitore funding rates
+            - Use alavancagem com moderação
+            """)
+        
+        with col2:
+            st.warning("""
+            **⚠️ Cuidados:**
+            - Alavancagem alta = risco alto
+            - Funding rates podem impactar lucros
+            - Liquidação pode ocorrer rapidamente
+            - Mercado futuro é 24/7
+            - Volatilidade é maior que spot
+            """)
+
+# Backtesting Tab  
+with tab3:
     st.subheader("🔬 Sistema de Backtesting")
     st.markdown("Teste suas estratégias com dados históricos para validar sua eficácia")
     
@@ -1368,7 +1673,7 @@ with tab2:
                 "💡 **Dica:** Comece com períodos menores para testes mais rápidos")
 
 # Export Data Tab
-with tab3:
+with tab4:
     st.subheader("⚙️ Exportar Dados")
     st.markdown("Exporte dados e sinais para análise externa")
     
@@ -1433,7 +1738,7 @@ with tab3:
                 )
 
 # Admin Panel Tab
-with tab4:
+with tab5:
     st.subheader("👑 Painel Administrativo")
     
     # Admin authentication
