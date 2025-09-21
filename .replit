@@ -6,7 +6,7 @@ packages = ["cargo", "glibcLocales", "libiconv", "libxcrypt", "openssl", "pkg-co
 
 [deployment]
 deploymentTarget = "autoscale"
-run = ["streamlit", "run", "app.py", "--server.port", "5000", "--server.address", "0.0.0.0"]
+run = ["streamlit", "run", "app.py", "--server.port", "5000", "--server.address"]
 build = ["sh", "-c", "pip install -r requirements_production.txt"]
 
 [workflows]
@@ -72,14 +72,6 @@ args = "python run_telegram_bot.py"
 [[ports]]
 localPort = 5000
 externalPort = 80
-
-[[ports]]
-localPort = 8080
-externalPort = 80
-
-[[ports]]
-localPort = 42177
-externalPort = 3000
 
 [agent]
 expertMode = true
