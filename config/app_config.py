@@ -7,6 +7,10 @@ class AppConfig:
     DEFAULT_RSI_MIN = 25       # Changed from 20 for fewer false signals
     DEFAULT_RSI_MAX = 75       # Changed from 80 for better precision
     
+    # Exchange configuration for Brazil
+    DEFAULT_EXCHANGE = "bybit"  # Recommended for Brazil
+    BRAZIL_SUPPORTED_EXCHANGES = ["bybit", "okx", "kucoin", "mexc"]
+    
     # Enhanced signal quality filters
     MIN_SIGNAL_CONFIDENCE = 70  # Increased from 60
     HIGH_CONFIDENCE_THRESHOLD = 85  # Increased from 80

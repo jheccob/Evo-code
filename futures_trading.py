@@ -5,6 +5,7 @@ import numpy as np
 from datetime import datetime
 from typing import Dict, Optional, Tuple
 from trading_bot import TradingBot
+from config.exchange_config import ExchangeConfig
 
 class FuturesTrading(TradingBot):
     """
@@ -12,18 +13,11 @@ class FuturesTrading(TradingBot):
     Suporte para alavancagem, posições short/long e gerenciamento de risco
     """
     
-    def __init__(self):
+    def __init__(self, exchange_name='bybit'):
         super().__init__()
-        # Configurar para mercado futuro
-        self.exchange = ccxt.binance({
-            'apiKey': '',  # Configure via Secrets
-            'secret': '',  # Configure via Secrets
-            'sandbox': True,  # Usar testnet inicialmente
-            'enableRateLimit': True,
-            'options': {
-                'defaultType': 'future'  # Mercado futuro
-            }
-        })
+        # Configurar exchange que funciona no Brasil
+        self.exchange = ExchangeConfig.get_exchange_instance(exchange_name, testnet=True)
+        self.exchange_name = exchange_name
         
         # Definir símbolo padrão em USDT
         self.symbol = "XLM/USDT"

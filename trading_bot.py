@@ -7,7 +7,8 @@ from indicators import TechnicalIndicators
 
 class TradingBot:
     def __init__(self):
-        self.exchange = ccxt.binance({
+        # Usar Bybit que funciona bem no Brasil
+        self.exchange = ccxt.bybit({
             'enableRateLimit': True,
             'sandbox': False,
             'rateLimit': 1000,

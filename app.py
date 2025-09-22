@@ -17,6 +17,7 @@ from utils.timezone_utils import now_brazil, format_brazil_time, get_brazil_date
 from database.database import db
 from trading_bot import TradingBot
 from indicators import TechnicalIndicators
+from config.exchange_config import ExchangeConfig
 
 # Importar serviço seguro do Telegram
 try:
@@ -83,6 +84,19 @@ st.set_page_config(
 if 'trading_bot' not in st.session_state:
     st.session_state.trading_bot = TradingBot()
 
+# Update exchange if changed
+if 'current_exchange' not in st.session_state or st.session_state.current_exchange != selected_exchange:
+    try:
+        st.session_state.trading_bot.exchange = ExchangeConfig.get_exchange_instance(selected_exchange, testnet=False)
+        st.session_state.current_exchange = selected_exchange
+        # Clear cached data when exchange changes
+        st.session_state.current_data = None
+        st.session_state.last_update = None
+        if 'multi_symbol_data' in st.session_state:
+            st.session_state.multi_symbol_data = {}
+    except Exception as e:
+        st.sidebar.error(f"Erro ao configurar {selected_exchange}: {str(e)}")
+
 if 'telegram_bot' not in st.session_state:
     st.session_state.telegram_bot = SecureTelegramService()
     # Configuração será carregada automaticamente no __init__
@@ -111,18 +125,40 @@ if 'backtest_results' not in st.session_state:
 # Sidebar configuration
 st.sidebar.title("🔧 Configurações")
 
+# Exchange selection for Brazil
+st.sidebar.subheader("🌎 Exchange (Brasil)")
+available_exchanges = list(ExchangeConfig.SUPPORTED_EXCHANGES.keys())
+selected_exchange = st.sidebar.selectbox(
+    "Escolher Exchange:",
+    available_exchanges,
+    index=0,
+    help="Exchanges que funcionam no Brasil"
+)
+
+# Test exchange connection
+if st.sidebar.button("🧪 Testar Conexão"):
+    success, message = ExchangeConfig.test_connection(selected_exchange)
+    if success:
+        st.sidebar.success(message)
+    else:
+        st.sidebar.error(message)
+
 # Multi-symbol monitoring
 st.sidebar.subheader("📊 Pares de Moedas")
 enable_multi_symbol = st.sidebar.checkbox("🔀 Monitoramento Múltiplo", value=False)
 
 if enable_multi_symbol:
-    # Multi-symbol selection - Updated for Coinbase Pro
-    available_pairs = ["XLM-USD", "BTC-USD", "ETH-USD", "ADA-USD", "DOT-USD", "MATIC-USD", 
-                       "LINK-USD", "UNI-USD", "SOL-USD", "AVAX-USD"]
+    # Multi-symbol selection baseado no exchange selecionado
+    try:
+        available_pairs = ExchangeConfig.get_usdt_pairs(selected_exchange)[:20]  # Top 20 pares
+    except:
+        available_pairs = ["XLM/USDT", "BTC/USDT", "ETH/USDT", "ADA/USDT", "DOT/USDT", 
+                          "MATIC/USDT", "LINK/USDT", "UNI/USDT", "SOL/USDT", "AVAX/USDT"]
+    
     selected_symbols = st.sidebar.multiselect(
         "Selecionar pares para monitorar:",
         available_pairs,
-        default=["XLM-USD", "BTC-USD", "ETH-USD"]
+        default=["XLM/USDT", "BTC/USDT", "ETH/USDT"]
     )
     
     if not selected_symbols:
@@ -133,10 +169,15 @@ if enable_multi_symbol:
     symbol = selected_symbols[0] if selected_symbols else "XLM-USD"
     
 else:
-    # Single symbol selection - Updated for Coinbase Pro
+    # Single symbol selection para exchanges que funcionam no Brasil
+    try:
+        symbol_options = ExchangeConfig.get_usdt_pairs(selected_exchange)[:10]  # Top 10 pares
+    except:
+        symbol_options = ["XLM/USDT", "BTC/USDT", "ETH/USDT", "ADA/USDT", "DOT/USDT", "MATIC/USDT"]
+    
     symbol = st.sidebar.selectbox(
         "Par de Trading",
-        ["XLM-USD", "BTC-USD", "ETH-USD", "ADA-USD", "DOT-USD", "MATIC-USD"],
+        symbol_options,
         index=0
     )
     selected_symbols = [symbol]
@@ -277,6 +318,21 @@ st.session_state.trading_bot.update_config(
 
 # Main dashboard
 st.title("📈 Trading Signals Dashboard")
+
+# Aviso sobre Binance Brasil
+if selected_exchange == 'binance' or 'binance' in str(st.session_state.trading_bot.exchange).lower():
+    st.error("""
+    ⚠️ **ATENÇÃO - BINANCE BLOQUEADA NO BRASIL**
+    
+    A Binance bloqueou acesso do Brasil para mercado futuro devido a regulamentações.
+    **Solução**: Use exchanges alternativos como Bybit, OKX ou KuCoin que funcionam perfeitamente no Brasil.
+    
+    ✅ **Recomendado**: Bybit (já configurado como padrão)
+    """)
+    
+    if st.button("🔄 Trocar para Bybit Automaticamente"):
+        st.session_state.current_exchange = 'bybit'
+        st.rerun()
 
 # Import user manager for admin features  
 try:
