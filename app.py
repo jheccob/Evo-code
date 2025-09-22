@@ -139,11 +139,53 @@ if 'backtest_results' not in st.session_state:
 
 # Test exchange connection
 if st.sidebar.button("🧪 Testar Conexão"):
-    success, message = ExchangeConfig.test_connection(selected_exchange)
-    if success:
-        st.sidebar.success(message)
-    else:
-        st.sidebar.error(message)
+    with st.sidebar.spinner("Testando conexão..."):
+        success, message = ExchangeConfig.test_connection(selected_exchange)
+        if success:
+            st.sidebar.success(message)
+        else:
+            st.sidebar.error(message)
+            
+            # Diagnóstico adicional
+            st.sidebar.info("💡 Tentando diagnóstico...")
+            try:
+                import requests
+                response = requests.get("https://httpbin.org/ip", timeout=10)
+                if response.status_code == 200:
+                    st.sidebar.success("✅ Internet funcionando")
+                else:
+                    st.sidebar.error("❌ Problema de conectividade")
+            except:
+                st.sidebar.error("❌ Sem acesso à internet")
+
+# Diagnóstico avançado
+if st.sidebar.button("🔍 Diagnóstico Completo"):
+    with st.sidebar.spinner("Executando diagnóstico..."):
+        st.sidebar.markdown("**🔍 Relatório de Diagnóstico:**")
+        
+        # Teste 1: Internet
+        try:
+            import requests
+            response = requests.get("https://httpbin.org/ip", timeout=5)
+            st.sidebar.success("✅ Conexão com internet OK")
+        except:
+            st.sidebar.error("❌ Sem conexão com internet")
+        
+        # Teste 2: DNS
+        try:
+            import socket
+            socket.gethostbyname('api.bybit.com')
+            st.sidebar.success("✅ DNS funcionando")
+        except:
+            st.sidebar.error("❌ Problema de DNS")
+        
+        # Teste 3: Exchange específico
+        try:
+            exchange = ExchangeConfig.get_exchange_instance(selected_exchange)
+            markets = exchange.load_markets()
+            st.sidebar.success(f"✅ {selected_exchange} acessível")
+        except Exception as e:
+            st.sidebar.error(f"❌ {selected_exchange}: {str(e)[:50]}...")
 
 # Multi-symbol monitoring
 st.sidebar.subheader("📊 Pares de Moedas")

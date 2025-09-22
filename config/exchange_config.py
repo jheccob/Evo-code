@@ -38,7 +38,7 @@ class ExchangeConfig:
     }
     
     @classmethod
-    def get_exchange_instance(cls, exchange_name='bybit', testnet=True):
+    def get_exchange_instance(cls, exchange_name='bybit', testnet=False):
         """Criar instância do exchange configurado para Brasil"""
         
         if exchange_name not in cls.SUPPORTED_EXCHANGES:
@@ -49,8 +49,15 @@ class ExchangeConfig:
         config = {
             'enableRateLimit': True,
             'sandbox': testnet,
-            'rateLimit': 1000,
-            'timeout': 30000,
+            'rateLimit': 1200,
+            'timeout': 60000,
+            'options': {
+                'adjustForTimeDifference': True,
+                'recvWindow': 10000,
+            },
+            'headers': {
+                'User-Agent': 'TradingBot-Brazil/1.0'
+            }
         }
         
         # Configurações específicas por exchange

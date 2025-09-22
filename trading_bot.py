@@ -11,7 +11,15 @@ class TradingBot:
         self.exchange = ccxt.bybit({
             'enableRateLimit': True,
             'sandbox': False,
-            'rateLimit': 1000,
+            'rateLimit': 1200,
+            'timeout': 30000,
+            'options': {
+                'defaultType': 'spot',  # Usar spot para dados públicos
+                'adjustForTimeDifference': True,
+            },
+            'headers': {
+                'User-Agent': 'Trading-Bot/1.0'
+            }
         })
         self.symbol = "XLM/USDT"
         self.timeframe = "5m"
