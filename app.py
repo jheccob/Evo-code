@@ -80,6 +80,19 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
+# Sidebar configuration - Move this section before session state initialization
+st.sidebar.title("🔧 Configurações")
+
+# Exchange selection for Brazil
+st.sidebar.subheader("🌎 Exchange (Brasil)")
+available_exchanges = list(ExchangeConfig.SUPPORTED_EXCHANGES.keys())
+selected_exchange = st.sidebar.selectbox(
+    "Escolher Exchange:",
+    available_exchanges,
+    index=0,
+    help="Exchanges que funcionam no Brasil"
+)
+
 # Initialize session state
 if 'trading_bot' not in st.session_state:
     st.session_state.trading_bot = TradingBot()
@@ -122,18 +135,7 @@ if 'backtest_engine' not in st.session_state:
 if 'backtest_results' not in st.session_state:
     st.session_state.backtest_results = None
 
-# Sidebar configuration
-st.sidebar.title("🔧 Configurações")
-
-# Exchange selection for Brazil
-st.sidebar.subheader("🌎 Exchange (Brasil)")
-available_exchanges = list(ExchangeConfig.SUPPORTED_EXCHANGES.keys())
-selected_exchange = st.sidebar.selectbox(
-    "Escolher Exchange:",
-    available_exchanges,
-    index=0,
-    help="Exchanges que funcionam no Brasil"
-)
+# Continue with sidebar configuration
 
 # Test exchange connection
 if st.sidebar.button("🧪 Testar Conexão"):
