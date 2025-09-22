@@ -25,6 +25,9 @@ class FuturesTrading(TradingBot):
             }
         })
         
+        # Definir símbolo padrão em USDT
+        self.symbol = "XLM/USDT"
+        
         # Configurações específicas para futuros
         self.leverage = 5  # Alavancagem padrão
         self.position_size_pct = 0.1  # 10% do saldo por trade

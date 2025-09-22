@@ -1,7 +1,7 @@
 
 class AppConfig:
     # Trading parameters - Optimized for maximum accuracy
-    DEFAULT_SYMBOL = "XLM-USD"
+    DEFAULT_SYMBOL = "XLM/USDT"
     DEFAULT_TIMEFRAME = "15m"  # Changed from 5m for better signal quality
     DEFAULT_RSI_PERIOD = 14    # Changed from 9 to standard 14
     DEFAULT_RSI_MIN = 25       # Changed from 20 for fewer false signals
@@ -42,8 +42,8 @@ class AppConfig:
     
     @classmethod
     def get_supported_pairs(cls):
-        return ["XLM-USD", "BTC-USD", "ETH-USD", "ADA-USD", "DOT-USD", 
-                "MATIC-USD", "LINK-USD", "UNI-USD", "SOL-USD", "AVAX-USD"]
+        return ["XLM/USDT", "BTC/USDT", "ETH/USDT", "ADA/USDT", "DOT/USDT", 
+                "MATIC/USDT", "LINK/USDT", "UNI/USDT", "SOL/USDT", "AVAX/USDT"]
     
     @classmethod
     def get_supported_timeframes(cls):
