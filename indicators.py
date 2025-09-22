@@ -302,65 +302,136 @@ class TechnicalIndicators:
 
     def calculate_signal_confidence(self, indicators_dict):
         """
-        Calculate confidence score for a trading signal (0-100)
-        Higher score = more reliable signal
+        Calculate optimized confidence score for maximum accuracy (0-100)
         """
         confidence = 0
         max_confidence = 100
         
-        # RSI confirmation (20 points)
+        # Enhanced RSI confirmation (25 points)
         rsi = indicators_dict.get('rsi', 50)
-        if rsi < 25 or rsi > 75:  # Strong oversold/overbought
+        if rsi < 20 or rsi > 80:  # Extreme levels
+            confidence += 25
+        elif rsi < 25 or rsi > 75:  # Strong levels
             confidence += 20
-        elif rsi < 35 or rsi > 65:  # Medium oversold/overbought
-            confidence += 10
+        elif rsi < 35 or rsi > 65:  # Medium levels
+            confidence += 12
+        elif rsi < 45 or rsi > 55:  # Mild bias
+            confidence += 5
         
-        # MACD confirmation (20 points)
+        # Enhanced MACD confirmation (25 points)
         macd = indicators_dict.get('macd', 0)
         macd_signal = indicators_dict.get('macd_signal', 0)
         macd_histogram = indicators_dict.get('macd_histogram', 0)
         
-        if (macd > macd_signal and macd_histogram > 0) or (macd < macd_signal and macd_histogram < 0):
+        macd_aligned = (macd > macd_signal and macd_histogram > 0) or (macd < macd_signal and macd_histogram < 0)
+        if macd_aligned:
             confidence += 15
-            if abs(macd_histogram) > abs(indicators_dict.get('prev_macd_histogram', 0)):
-                confidence += 5  # Strengthening signal
+            
+            # Momentum strengthening
+            prev_histogram = indicators_dict.get('prev_macd_histogram', 0)
+            if abs(macd_histogram) > abs(prev_histogram):
+                confidence += 5
+            
+            # Zero line cross bonus
+            if (macd > 0 and macd_signal > 0) or (macd < 0 and macd_signal < 0):
+                confidence += 5
         
-        # Trend alignment (20 points)
+        # Enhanced trend alignment (25 points)
         trend = indicators_dict.get('trend_analysis', 'LATERAL')
-        if trend in ['FORTE_ALTA', 'FORTE_BAIXA']:
-            confidence += 20
-        elif trend in ['ALTA', 'BAIXA']:
-            confidence += 10
+        trend_strength = indicators_dict.get('trend_strength', 0)
         
-        # ADX trend strength (15 points)
-        adx = indicators_dict.get('adx', 0)
-        if adx > 30:
-            confidence += 15
-        elif adx > 20:
+        if trend in ['FORTE_ALTA', 'FORTE_BAIXA']:
+            confidence += 25
+        elif trend in ['ALTA', 'BAIXA']:
+            confidence += 18
+        elif trend_strength > 70:
+            confidence += 12
+        elif trend_strength > 50:
             confidence += 8
         
-        # Stochastic RSI confirmation (10 points)
+        # Enhanced ADX trend strength (15 points)
+        adx = indicators_dict.get('adx', 0)
+        if adx > 40:  # Very strong trend
+            confidence += 15
+        elif adx > 30:  # Strong trend
+            confidence += 12
+        elif adx > 25:  # Medium trend
+            confidence += 8
+        elif adx > 20:  # Weak trend
+            confidence += 4
+        
+        # Multi-oscillator confirmation (10 points)
+        oscillator_consensus = 0
+        
+        # Stochastic RSI
         stoch_rsi_k = indicators_dict.get('stoch_rsi_k', 50)
-        if stoch_rsi_k < 20 or stoch_rsi_k > 80:
-            confidence += 10
-        elif stoch_rsi_k < 30 or stoch_rsi_k > 70:
-            confidence += 5
+        if stoch_rsi_k < 15 or stoch_rsi_k > 85:
+            oscillator_consensus += 1
+        elif stoch_rsi_k < 25 or stoch_rsi_k > 75:
+            oscillator_consensus += 0.5
         
-        # Volume confirmation (10 points)
+        # Williams %R
+        williams_r = indicators_dict.get('williams_r', -50)
+        if williams_r < -85 or williams_r > -15:
+            oscillator_consensus += 1
+        elif williams_r < -75 or williams_r > -25:
+            oscillator_consensus += 0.5
+        
+        # Apply oscillator bonus
+        if oscillator_consensus >= 1.5:
+            confidence += 10
+        elif oscillator_consensus >= 1:
+            confidence += 7
+        elif oscillator_consensus >= 0.5:
+            confidence += 4
+        
+        # Enhanced volume confirmation (15 points)
         volume_ratio = indicators_dict.get('volume_ratio', 1)
-        if volume_ratio > 1.5:
-            confidence += 10
-        elif volume_ratio > 1.2:
+        if volume_ratio > 2.5:  # Exceptional volume
+            confidence += 15
+        elif volume_ratio > 2.0:  # Very high volume
+            confidence += 12
+        elif volume_ratio > 1.5:  # High volume
+            confidence += 9
+        elif volume_ratio > 1.2:  # Above average volume
             confidence += 5
+        elif volume_ratio < 0.8:  # Low volume penalty
+            confidence -= 5
         
-        # Market regime penalty (reduce confidence in ranging markets)
+        # Market structure bonus/penalty
         market_regime = indicators_dict.get('market_regime', 'trending')
-        if market_regime == 'ranging':
-            confidence *= 0.7  # 30% penalty
+        if market_regime == 'trending':
+            confidence += 5  # Bonus for trending markets
+        elif market_regime == 'ranging':
+            confidence *= 0.6  # 40% penalty for ranging markets
         elif market_regime == 'volatile':
-            confidence *= 0.8  # 20% penalty
+            confidence *= 0.75  # 25% penalty for volatile markets
         
-        return min(confidence, max_confidence)
+        # Time of day filter (if available)
+        # Peak trading hours tend to have better signal reliability
+        hour = indicators_dict.get('hour', 12)
+        if 8 <= hour <= 16 or 20 <= hour <= 23:  # Peak trading hours
+            confidence += 3
+        
+        # Divergence detection bonus
+        price_rsi_divergence = indicators_dict.get('price_rsi_divergence', False)
+        if price_rsi_divergence:
+            confidence += 8
+        
+        # Multiple timeframe alignment bonus
+        higher_tf_aligned = indicators_dict.get('higher_timeframe_aligned', False)
+        if higher_tf_aligned:
+            confidence += 10
+        
+        # Apply final constraints
+        confidence = max(0, confidence)  # Ensure non-negative
+        confidence = min(confidence, max_confidence)
+        
+        # Quality threshold - only high-quality signals
+        if confidence < 50:
+            confidence *= 0.8  # Further reduce low-confidence signals
+        
+        return int(confidence)
     
     def calculate_stochastic(self, high, low, close, k_period=14, d_period=3):
         """
