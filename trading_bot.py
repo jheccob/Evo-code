@@ -7,12 +7,12 @@ from indicators import TechnicalIndicators
 
 class TradingBot:
     def __init__(self):
-        self.exchange = ccxt.coinbase({
+        self.exchange = ccxt.binance({
             'enableRateLimit': True,
             'sandbox': False,
             'rateLimit': 1000,
         })
-        self.symbol = "XLM-USD"
+        self.symbol = "XLM/USDT"
         self.timeframe = "5m"
         self.rsi_period = 14
         self.rsi_min = 20
@@ -35,8 +35,8 @@ class TradingBot:
     def get_market_data(self, limit=200):
         """Fetch OHLCV data from exchange"""
         try:
-            # Format symbol for Coinbase Pro
-            formatted_symbol = self.format_symbol_for_coinbase(self.symbol)
+            # Use symbol directly for Binance (already in correct format)
+            formatted_symbol = self.symbol
             
             # Fetch raw OHLCV data
             ohlcv = self.exchange.fetch_ohlcv(formatted_symbol, self.timeframe, limit=limit)
@@ -453,19 +453,15 @@ class TradingBot:
         """Validate if symbol exists on the exchange"""
         try:
             markets = self.exchange.load_markets()
-            # Convert format: BTC/USDT -> BTC-USD
-            if '/' in symbol:
-                symbol = symbol.replace('/USDT', '-USD').replace('/BTC', '-BTC')
+            # Symbol já está no formato correto para Binance (BTC/USDT)
             return symbol in markets
         except:
             return False
 
-    def format_symbol_for_coinbase(self, symbol):
-        """Convert symbol format for Coinbase Pro to CCXT unified format"""
-        if '-' in symbol:
-            # Convert Coinbase dash format to CCXT unified format
-            return symbol.replace('-USD', '/USD').replace('-BTC', '/BTC').replace('-', '/')
-        elif '/' in symbol:
-            # Already in unified format
-            return symbol
+    def format_symbol_for_binance(self, symbol):
+        """Ensure symbol is in correct format for Binance"""
+        # Binance usa formato BTC/USDT
+        if not '/' in symbol:
+            # Se não tem barra, adicionar /USDT como padrão
+            return f"{symbol}/USDT"
         return symbol
