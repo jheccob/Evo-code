@@ -36,43 +36,52 @@ class FuturesTrading(TradingBot):
         self.max_positions = 3  # Máximo de posições simultaneas
         
     def set_leverage(self, symbol: str, leverage: int):
-        """Define alavancagem para um símbolo"""
+        """Define alavancagem para um símbolo USDT"""
         try:
+            # Verificar se é par USDT
+            if not self.validate_usdt_pair(symbol):
+                return False, f"Símbolo {symbol} não é um par USDT válido para futuros"
+            
             result = self.exchange.set_leverage(leverage, symbol)
             self.leverage = leverage
-            return True, f"Alavancagem {leverage}x definida para {symbol}"
+            return True, f"Alavancagem {leverage}x definida para {symbol} (USDT)"
         except Exception as e:
             return False, f"Erro ao definir alavancagem: {str(e)}"
     
     def get_account_balance(self):
-        """Obtém saldo da conta de futuros"""
+        """Obtém saldo da conta de futuros em USDT"""
         try:
             balance = self.exchange.fetch_balance()
             
-            # Informações específicas de futuros
+            # Informações específicas de futuros USDT
             return {
                 'total_balance': balance['USDT']['total'],
                 'available_balance': balance['USDT']['free'],
                 'used_balance': balance['USDT']['used'],
                 'unrealized_pnl': balance['info'].get('totalUnrealizedProfit', 0),
-                'margin_ratio': balance['info'].get('totalMaintMargin', 0)
+                'margin_ratio': balance['info'].get('totalMaintMargin', 0),
+                'currency': 'USDT'
             }
         except Exception as e:
-            print(f"Erro ao obter saldo: {e}")
+            print(f"Erro ao obter saldo USDT: {e}")
             return None
     
     def calculate_position_size(self, balance: float, price: float, signal_strength: float = 1.0):
         """
-        Calcula tamanho da posição baseado no saldo e alavancagem
+        Calcula tamanho da posição baseado no saldo USDT e alavancagem
         
         Args:
-            balance: Saldo disponível
-            price: Preço atual
+            balance: Saldo disponível em USDT
+            price: Preço atual do par /USDT
             signal_strength: Força do sinal (0.1 a 1.0)
         
         Returns:
             Quantidade para a ordem
         """
+        # Validar se é par USDT
+        if not self.symbol.endswith('/USDT'):
+            raise ValueError("Mercado futuro configurado apenas para pares USDT")
+        
         # Ajustar tamanho baseado na força do sinal
         adjusted_size_pct = self.position_size_pct * signal_strength
         
@@ -364,10 +373,10 @@ class FuturesTrading(TradingBot):
     def calculate_liquidation_price(self, entry_price: float, leverage: int, 
                                   side: str, margin_ratio: float = 0.1):
         """
-        Calcular preço de liquidação
+        Calcular preço de liquidação para pares USDT
         
         Args:
-            entry_price: Preço de entrada
+            entry_price: Preço de entrada em USDT
             leverage: Alavancagem utilizada
             side: 'long' ou 'short'
             margin_ratio: Razão de margem de manutenção
@@ -378,3 +387,31 @@ class FuturesTrading(TradingBot):
             liquidation_price = entry_price * (1 + (1/leverage) - margin_ratio)
         
         return liquidation_price
+    
+    def validate_usdt_pair(self, symbol: str):
+        """Validar se o símbolo é um par USDT válido"""
+        if not symbol.endswith('/USDT'):
+            return False
+        
+        try:
+            markets = self.exchange.load_markets()
+            return symbol in markets and markets[symbol]['future']
+        except:
+            return False
+    
+    def get_supported_usdt_pairs(self):
+        """Obter lista de pares USDT suportados para futuros"""
+        try:
+            markets = self.exchange.load_markets()
+            usdt_futures = []
+            
+            for symbol, market in markets.items():
+                if (symbol.endswith('/USDT') and 
+                    market.get('type') == 'future' and 
+                    market.get('active', True)):
+                    usdt_futures.append(symbol)
+            
+            return sorted(usdt_futures)
+        except Exception as e:
+            print(f"Erro ao obter pares USDT: {e}")
+            return ["BTC/USDT", "ETH/USDT", "XLM/USDT"]  # fallback
