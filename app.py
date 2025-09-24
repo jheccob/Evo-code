@@ -6,7 +6,7 @@ from plotly.subplots import make_subplots
 import time
 import json
 import os
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 import asyncio
 import threading
 
@@ -580,8 +580,8 @@ with tab1:
                         'RSI': f"{last_candle['rsi']:.2f}",
                         'MACD': f"{last_candle['macd']:.4f}",
                         'Sinal Spot': signal,
-                        'Long Score': self._calculate_futures_score(last_candle, 'LONG'),
-                        'Short Score': self._calculate_futures_score(last_candle, 'SHORT'),
+                        'Long Score': 'N/A',
+                        'Short Score': 'N/A',
                         'Variação': f"{((last_candle['close'] - last_candle['open']) / last_candle['open'] * 100):.2f}%"
                     })
                     
@@ -1897,7 +1897,7 @@ with tab2:
             if st.button("🔧 RSI Mais Restritivo", help="RSI 15-85"):
                 st.session_state.bt_rsi_min = 15
                 st.session_state.bt_rsi_max = 85
-                st.experimental_rerun()
+                st.rerun()
             
             if st.button("📈 Timeframe Maior", help="Mudar para timeframe superior"):
                 current_tf = st.session_state.get('bt_timeframe', '15m')
@@ -1906,19 +1906,19 @@ with tab2:
                     current_idx = tf_hierarchy.index(current_tf)
                     if current_idx < len(tf_hierarchy) - 1:
                         st.session_state.bt_timeframe = tf_hierarchy[current_idx + 1]
-                        st.experimental_rerun()
+                        st.rerun()
         
         with opt_col2:
             if st.button("⚖️ RSI Balanceado", help="RSI 25-75"):
                 st.session_state.bt_rsi_min = 25
                 st.session_state.bt_rsi_max = 75
-                st.experimental_rerun()
+                st.rerun()
             
             if st.button("🔄 Período Maior", help="Dobrar período de teste"):
                 current_days = (st.session_state.bt_end_date - st.session_state.bt_start_date).days
                 new_start = st.session_state.bt_end_date - timedelta(days=min(current_days * 2, 90))
                 st.session_state.bt_start_date = new_start
-                st.experimental_rerun()
+                st.rerun()
         
         # Portfolio evolution chart
         if results.get('portfolio_values'):
