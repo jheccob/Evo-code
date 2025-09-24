@@ -96,7 +96,7 @@ class AppConfig:
         """Configurações otimizadas para RSI 9 - mais sensível mas com filtros rigorosos"""
         settings = {
             "1m": {
-                "rsi_oversold": 15,  # Extremos para RSI 9
+                "rsi_oversold": 15,  # Extremos para RSI 9 - Day Trading
                 "rsi_overbought": 85,
                 "min_confidence": 85,  # Mais restritivo com RSI sensível
                 "min_volume_ratio": 2.5,  # Volume muito alto obrigatório
@@ -104,7 +104,7 @@ class AppConfig:
                 "rsi_period": 9
             },
             "5m": {
-                "rsi_oversold": 20,  # Mais agressivo com RSI 9
+                "rsi_oversold": 20,  # Ideal para Day Trading com RSI 9
                 "rsi_overbought": 80,
                 "min_confidence": 80,  # Confiança alta
                 "min_volume_ratio": 2.0,  # Volume alto
@@ -145,3 +145,89 @@ class AppConfig:
             }
         }
         return settings.get(timeframe, settings["5m"])
+    
+    @classmethod
+    def get_day_trading_settings(cls, timeframe="5m"):
+        """Configurações otimizadas especificamente para Day Trading"""
+        day_trading_config = {
+            "1m": {
+                "rsi_period": 9,        # RSI ultra-sensível
+                "rsi_oversold": 12,     # Extremamente oversold
+                "rsi_overbought": 88,   # Extremamente overbought
+                "min_confidence": 88,   # Confiança muito alta
+                "min_volume_ratio": 3.0, # Volume excepcional obrigatório
+                "volatility_filter": 0.12, # Filtro de volatilidade agressivo
+                "macd_fast": 8,         # MACD mais rápido
+                "macd_slow": 17,
+                "macd_signal": 6,
+                "stoch_rsi_extreme": {"low": 10, "high": 90},
+                "williams_r_extreme": {"low": -90, "high": -10},
+                "min_adx": 30,          # Tendência muito forte
+                "bb_squeeze_threshold": 0.08,
+                "time_filters": {
+                    "avoid_lunch": True,  # Evitar 12h-14h
+                    "peak_hours_only": True, # 9h-11h, 14h-16h, 20h-22h
+                }
+            },
+            "5m": {
+                "rsi_period": 9,        # RSI sensível para day trading
+                "rsi_oversold": 18,     # Mais agressivo que swing
+                "rsi_overbought": 82,   # Mais agressivo que swing
+                "min_confidence": 82,   # Alta confiança
+                "min_volume_ratio": 2.2, # Volume alto
+                "volatility_filter": 0.09,
+                "macd_fast": 9,         # MACD otimizado para day trading
+                "macd_slow": 19,
+                "macd_signal": 7,
+                "stoch_rsi_extreme": {"low": 15, "high": 85},
+                "williams_r_extreme": {"low": -85, "high": -15},
+                "min_adx": 28,
+                "bb_squeeze_threshold": 0.10,
+                "time_filters": {
+                    "avoid_lunch": True,
+                    "peak_hours_only": True,
+                }
+            },
+            "15m": {
+                "rsi_period": 9,        # Mantém RSI 9 para consistência
+                "rsi_oversold": 22,     # Menos agressivo em TF maior
+                "rsi_overbought": 78,
+                "min_confidence": 78,
+                "min_volume_ratio": 1.8,
+                "volatility_filter": 0.07,
+                "macd_fast": 12,        # MACD padrão para 15m
+                "macd_slow": 26,
+                "macd_signal": 9,
+                "stoch_rsi_extreme": {"low": 20, "high": 80},
+                "williams_r_extreme": {"low": -80, "high": -20},
+                "min_adx": 25,
+                "bb_squeeze_threshold": 0.12,
+                "time_filters": {
+                    "avoid_lunch": False,  # 15m pode operar no almoço
+                    "peak_hours_only": False,
+                }
+            }
+        }
+        return day_trading_config.get(timeframe, day_trading_config["5m"])
+    
+    @classmethod 
+    def get_scalping_settings(cls):
+        """Configurações extremas para scalping (1m)"""
+        return {
+            "timeframe": "1m",
+            "rsi_period": 7,            # RSI ultra-rápido
+            "rsi_oversold": 10,         # Extremos absolutos
+            "rsi_overbought": 90,
+            "min_confidence": 92,       # Confiança máxima
+            "min_volume_ratio": 4.0,    # Volume excepcional
+            "volatility_filter": 0.15,  # Filtro muito agressivo
+            "max_trades_per_hour": 12,  # Limitar trades por hora
+            "min_profit_target": 0.3,   # 0.3% mínimo
+            "max_loss_tolerance": 0.2,  # Stop muito apertado
+            "require_all_indicators": True, # Todos indicadores devem concordar
+            "time_restrictions": {
+                "start_hour": 9,
+                "end_hour": 16,
+                "avoid_news_times": True,
+            }
+        }

@@ -382,27 +382,47 @@ class TradingBot:
             return "NEUTRO"
 
     def check_signal(self, df, min_confidence=70, require_volume=True, require_trend=True, avoid_ranging=True,
-                    crypto_optimized=True, timeframe="5m"):
+                    crypto_optimized=True, timeframe="5m", day_trading_mode=False):
         """Check the current trading signal with enhanced quality filters"""
         if df is None or df.empty:
             return "NEUTRO"
 
         last_row = df.iloc[-1]
 
-        # Aplicar configurações otimizadas para crypto se habilitado
-        if crypto_optimized:
+        # Aplicar configurações otimizadas
+        if day_trading_mode:
+            from config.app_config import AppConfig
+            day_settings = AppConfig.get_day_trading_settings(timeframe)
+            
+            min_confidence = day_settings['min_confidence']
+            min_volume_ratio = day_settings['min_volume_ratio'] 
+            volatility_threshold = day_settings['volatility_filter']
+            min_adx_threshold = day_settings['min_adx']
+            
+            # Filtros específicos para day trading
+            current_hour = last_row.get('timestamp', pd.Timestamp.now()).hour
+            if day_settings.get('time_filters', {}).get('avoid_lunch', False):
+                if 12 <= current_hour <= 14:  # Horário almoço BR
+                    return "NEUTRO"
+            
+            if day_settings.get('time_filters', {}).get('peak_hours_only', False):
+                if not (9 <= current_hour <= 11 or 14 <= current_hour <= 16 or 20 <= current_hour <= 22):
+                    return "NEUTRO"
+                    
+        elif crypto_optimized:
             from config.app_config import AppConfig
             crypto_settings = AppConfig.get_crypto_timeframe_settings(timeframe)
 
             min_confidence = crypto_settings['min_confidence']
             min_volume_ratio = crypto_settings['min_volume_ratio']
             volatility_threshold = crypto_settings['volatility_filter']
+            min_adx_threshold = 28
 
             # Apply quality filters first
             if avoid_ranging and last_row.get('market_regime', 'trending') == 'ranging':
                 return "NEUTRO"
 
-            if require_trend and last_row.get('adx', 0) < 28:  # Mais restritivo para crypto
+            if require_trend and last_row.get('adx', 0) < min_adx_threshold:
                 return "NEUTRO"
 
             if require_volume and last_row.get('volume_ratio', 1) < min_volume_ratio:
