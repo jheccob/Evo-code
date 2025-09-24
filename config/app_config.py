@@ -3,9 +3,9 @@ class AppConfig:
     # Trading parameters - Optimized for maximum accuracy
     DEFAULT_SYMBOL = "XLM/USDT"
     DEFAULT_TIMEFRAME = "15m"  # Changed from 5m for better signal quality
-    DEFAULT_RSI_PERIOD = 14    # Changed from 9 to standard 14
-    DEFAULT_RSI_MIN = 25       # Changed from 20 for fewer false signals
-    DEFAULT_RSI_MAX = 75       # Changed from 80 for better precision
+    DEFAULT_RSI_PERIOD = 9     # RSI mais sensível para detecção precoce
+    DEFAULT_RSI_MIN = 20       # Mais agressivo com RSI 9
+    DEFAULT_RSI_MAX = 80       # Mais agressivo com RSI 9
     
     # Exchange configuration for Brazil
     DEFAULT_EXCHANGE = "bybit"  # Recommended for Brazil
@@ -93,49 +93,55 @@ class AppConfig:
     
     @classmethod
     def get_crypto_timeframe_settings(cls, timeframe="5m"):
-        """Configurações específicas por timeframe para crypto"""
+        """Configurações otimizadas para RSI 9 - mais sensível mas com filtros rigorosos"""
         settings = {
             "1m": {
-                "rsi_oversold": 20,  # Mais agressivo
-                "rsi_overbought": 80,
-                "min_confidence": 80,  # Mais restritivo
-                "min_volume_ratio": 2.0,
-                "volatility_filter": 0.12
+                "rsi_oversold": 15,  # Extremos para RSI 9
+                "rsi_overbought": 85,
+                "min_confidence": 85,  # Mais restritivo com RSI sensível
+                "min_volume_ratio": 2.5,  # Volume muito alto obrigatório
+                "volatility_filter": 0.10,
+                "rsi_period": 9
             },
             "5m": {
-                "rsi_oversold": 25,
+                "rsi_oversold": 20,  # Mais agressivo com RSI 9
+                "rsi_overbought": 80,
+                "min_confidence": 80,  # Confiança alta
+                "min_volume_ratio": 2.0,  # Volume alto
+                "volatility_filter": 0.08,
+                "rsi_period": 9
+            },
+            "15m": {
+                "rsi_oversold": 25,  # Balanceado para RSI 9
                 "rsi_overbought": 75,
                 "min_confidence": 75,
                 "min_volume_ratio": 1.8,
-                "volatility_filter": 0.10
+                "volatility_filter": 0.06,
+                "rsi_period": 9
             },
-            "15m": {
-                "rsi_oversold": 30,
+            "1h": {
+                "rsi_oversold": 30,  # RSI 9 em timeframe maior
                 "rsi_overbought": 70,
                 "min_confidence": 70,
                 "min_volume_ratio": 1.5,
-                "volatility_filter": 0.08
+                "volatility_filter": 0.05,
+                "rsi_period": 9
             },
-            "1h": {
-                "rsi_oversold": 35,
+            "4h": {
+                "rsi_oversold": 35,  # Conservador em timeframes longos
                 "rsi_overbought": 65,
                 "min_confidence": 65,
                 "min_volume_ratio": 1.3,
-                "volatility_filter": 0.06
-            },
-            "4h": {
-                "rsi_oversold": 40,
-                "rsi_overbought": 60,
-                "min_confidence": 60,
-                "min_volume_ratio": 1.2,
-                "volatility_filter": 0.05
+                "volatility_filter": 0.04,
+                "rsi_period": 9
             },
             "1d": {
-                "rsi_oversold": 45,
-                "rsi_overbought": 55,
-                "min_confidence": 55,
-                "min_volume_ratio": 1.1,
-                "volatility_filter": 0.04
+                "rsi_oversold": 30,  # RSI 14 para daily (mais estável)
+                "rsi_overbought": 70,
+                "min_confidence": 60,
+                "min_volume_ratio": 1.2,
+                "volatility_filter": 0.03,
+                "rsi_period": 14  # Daily usa RSI 14
             }
         }
         return settings.get(timeframe, settings["5m"])
