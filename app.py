@@ -83,15 +83,10 @@ st.set_page_config(
 # Sidebar configuration - Move this section before session state initialization
 st.sidebar.title("🔧 Configurações")
 
-# Exchange selection for Brazil
-st.sidebar.subheader("🌎 Exchange (Brasil)")
-available_exchanges = list(ExchangeConfig.SUPPORTED_EXCHANGES.keys())
-selected_exchange = st.sidebar.selectbox(
-    "Escolher Exchange:",
-    available_exchanges,
-    index=0,
-    help="Exchanges que funcionam no Brasil"
-)
+# Exchange fixo para o Brasil
+st.sidebar.subheader("🌎 Exchange")
+selected_exchange = 'okx'
+st.sidebar.info("🔹 **OKX** - Exchange único otimizado para o Brasil")
 
 # Initialize session state
 if 'trading_bot' not in st.session_state:
@@ -138,9 +133,9 @@ if 'backtest_results' not in st.session_state:
 # Continue with sidebar configuration
 
 # Test exchange connection
-if st.sidebar.button("🧪 Testar Conexão"):
-    with st.sidebar.spinner("Testando conexão..."):
-        success, message = ExchangeConfig.test_connection(selected_exchange)
+if st.sidebar.button("🧪 Testar Conexão OKX"):
+    with st.spinner("Testando conexão com OKX..."):
+        success, message = ExchangeConfig.test_connection('okx')
         if success:
             st.sidebar.success(message)
         else:
@@ -159,8 +154,8 @@ if st.sidebar.button("🧪 Testar Conexão"):
                 st.sidebar.error("❌ Sem acesso à internet")
 
 # Diagnóstico avançado
-if st.sidebar.button("🔍 Diagnóstico Completo"):
-    with st.sidebar.spinner("Executando diagnóstico..."):
+if st.sidebar.button("🔍 Diagnóstico OKX"):
+    with st.spinner("Executando diagnóstico OKX..."):
         st.sidebar.markdown("**🔍 Relatório de Diagnóstico:**")
         
         # Teste 1: Internet
@@ -171,30 +166,30 @@ if st.sidebar.button("🔍 Diagnóstico Completo"):
         except:
             st.sidebar.error("❌ Sem conexão com internet")
         
-        # Teste 2: DNS
+        # Teste 2: DNS OKX
         try:
             import socket
-            socket.gethostbyname('api.bybit.com')
-            st.sidebar.success("✅ DNS funcionando")
+            socket.gethostbyname('www.okx.com')
+            st.sidebar.success("✅ DNS OKX funcionando")
         except:
-            st.sidebar.error("❌ Problema de DNS")
+            st.sidebar.error("❌ Problema de DNS para OKX")
         
-        # Teste 3: Exchange específico
+        # Teste 3: OKX API
         try:
-            exchange = ExchangeConfig.get_exchange_instance(selected_exchange)
+            exchange = ExchangeConfig.get_exchange_instance('okx')
             markets = exchange.load_markets()
-            st.sidebar.success(f"✅ {selected_exchange} acessível")
+            st.sidebar.success(f"✅ OKX API acessível ({len(markets)} mercados)")
         except Exception as e:
-            st.sidebar.error(f"❌ {selected_exchange}: {str(e)[:50]}...")
+            st.sidebar.error(f"❌ OKX API: {str(e)[:50]}...")
 
 # Multi-symbol monitoring
 st.sidebar.subheader("📊 Pares de Moedas")
 enable_multi_symbol = st.sidebar.checkbox("🔀 Monitoramento Múltiplo", value=False)
 
 if enable_multi_symbol:
-    # Multi-symbol selection baseado no exchange selecionado
+    # Pares USDT disponíveis no OKX
     try:
-        available_pairs = ExchangeConfig.get_usdt_pairs(selected_exchange)[:20]  # Top 20 pares
+        available_pairs = ExchangeConfig.get_usdt_pairs('okx')[:20]  # Top 20 pares
     except:
         available_pairs = ["XLM/USDT", "BTC/USDT", "ETH/USDT", "ADA/USDT", "DOT/USDT", 
                           "MATIC/USDT", "LINK/USDT", "UNI/USDT", "SOL/USDT", "AVAX/USDT"]
@@ -207,15 +202,15 @@ if enable_multi_symbol:
     
     if not selected_symbols:
         st.sidebar.warning("⚠️ Selecione pelo menos um par")
-        selected_symbols = ["XLM-USD"]
+        selected_symbols = ["XLM-USDT"]
     
     # For multi-symbol mode, use the first selected as primary
-    symbol = selected_symbols[0] if selected_symbols else "XLM-USD"
+    symbol = selected_symbols[0] if selected_symbols else "XLM-USDT"
     
 else:
-    # Single symbol selection para exchanges que funcionam no Brasil
+    # Pares USDT populares no OKX
     try:
-        symbol_options = ExchangeConfig.get_usdt_pairs(selected_exchange)[:10]  # Top 10 pares
+        symbol_options = ExchangeConfig.get_usdt_pairs('okx')[:10]  # Top 10 pares
     except:
         symbol_options = ["XLM/USDT", "BTC/USDT", "ETH/USDT", "ADA/USDT", "DOT/USDT", "MATIC/USDT"]
     
