@@ -202,10 +202,10 @@ if enable_multi_symbol:
     
     if not selected_symbols:
         st.sidebar.warning("⚠️ Selecione pelo menos um par")
-        selected_symbols = ["XLM-USD"]
+        selected_symbols = ["XLM-USDT"]
     
     # For multi-symbol mode, use the first selected as primary
-    symbol = selected_symbols[0] if selected_symbols else "XLM-USD"
+    symbol = selected_symbols[0] if selected_symbols else "XLM-USDT"
     
 else:
     # Pares USDT populares no OKX
