@@ -7,20 +7,9 @@ from indicators import TechnicalIndicators
 
 class TradingBot:
     def __init__(self):
-        # Usar Bybit que funciona bem no Brasil
-        self.exchange = ccxt.bybit({
-            'enableRateLimit': True,
-            'sandbox': False,
-            'rateLimit': 1200,
-            'timeout': 30000,
-            'options': {
-                'defaultType': 'spot',  # Usar spot para dados públicos
-                'adjustForTimeDifference': True,
-            },
-            'headers': {
-                'User-Agent': 'Trading-Bot/1.0'
-            }
-        })
+        # Usar OKX que funciona bem no Brasil
+        from config.exchange_config import ExchangeConfig
+        self.exchange = ExchangeConfig.get_exchange_instance('okx', testnet=False)
         self.symbol = "XLM/USDT"
         self.timeframe = "5m"
         self.rsi_period = 14
