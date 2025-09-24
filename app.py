@@ -59,14 +59,14 @@ def _compare_timestamps(ts1, ts2):
         else:
             # If ts1 is already naive, use as is
             ts1_naive = ts1
-        
+
         if hasattr(ts2, 'tzinfo') and ts2.tzinfo is not None:
             # If ts2 is timezone-aware, convert to Brazil timezone then make naive
             ts2_naive = ts2.astimezone(BRAZIL_TZ).replace(tzinfo=None) if hasattr(ts2, 'astimezone') else ts2.replace(tzinfo=None)
         else:
             # If ts2 is already naive, use as is
             ts2_naive = ts2
-            
+
         return ts1_naive < ts2_naive
     except Exception:
         # If comparison fails, assume it's a new signal
@@ -140,7 +140,7 @@ if st.sidebar.button("🧪 Testar Conexão OKX"):
             st.sidebar.success(message)
         else:
             st.sidebar.error(message)
-            
+
             # Diagnóstico adicional
             st.sidebar.info("💡 Tentando diagnóstico...")
             try:
@@ -157,7 +157,7 @@ if st.sidebar.button("🧪 Testar Conexão OKX"):
 if st.sidebar.button("🔍 Diagnóstico OKX"):
     with st.spinner("Executando diagnóstico OKX..."):
         st.sidebar.markdown("**🔍 Relatório de Diagnóstico:**")
-        
+
         # Teste 1: Internet
         try:
             import requests
@@ -165,7 +165,7 @@ if st.sidebar.button("🔍 Diagnóstico OKX"):
             st.sidebar.success("✅ Conexão com internet OK")
         except:
             st.sidebar.error("❌ Sem conexão com internet")
-        
+
         # Teste 2: DNS OKX
         try:
             import socket
@@ -173,7 +173,7 @@ if st.sidebar.button("🔍 Diagnóstico OKX"):
             st.sidebar.success("✅ DNS OKX funcionando")
         except:
             st.sidebar.error("❌ Problema de DNS para OKX")
-        
+
         # Teste 3: OKX API
         try:
             exchange = ExchangeConfig.get_exchange_instance('okx')
@@ -193,27 +193,27 @@ if enable_multi_symbol:
     except:
         available_pairs = ["BTC/USDT", "ETH/USDT", "XLM/USDT", "ADA/USDT", "SOL/USDT", 
                           "DOGE/USDT", "LTC/USDT", "AVAX/USDT", "MATIC/USDT", "DOT/USDT"]
-    
+
     selected_symbols = st.sidebar.multiselect(
         "Selecionar pares para monitorar:",
         available_pairs,
         default=["XLM/USDT", "BTC/USDT", "ETH/USDT"]
     )
-    
+
     if not selected_symbols:
         st.sidebar.warning("⚠️ Selecione pelo menos um par")
         selected_symbols = ["XLM-USDT"]
-    
+
     # For multi-symbol mode, use the first selected as primary
     symbol = selected_symbols[0] if selected_symbols else "XLM-USDT"
-    
+
 else:
     # Pares USDT populares no OKX
     try:
         symbol_options = ExchangeConfig.get_usdt_pairs('okx')[:10]  # Top 10 pares
     except:
         symbol_options = ["BTC/USDT", "ETH/USDT", "XLM/USDT", "ADA/USDT", "SOL/USDT", "DOGE/USDT", "LTC/USDT", "AVAX/USDT"]
-    
+
     symbol = st.sidebar.selectbox(
         "Par de Trading",
         symbol_options,
@@ -237,28 +237,28 @@ rsi_max = st.sidebar.slider("RSI Máximo (Venda)", 60, 90, 75, help="75 aumenta 
 # Configurações Avançadas para Day Trading
 with st.sidebar.expander("📈 Day Trading Otimizado", expanded=True):
     st.markdown("**⚡ Configurações para Day Trader**")
-    
+
     # Modo Day Trading
     day_trading_mode = st.checkbox("🚀 Modo Day Trading", value=True, help="Configurações otimizadas para operações rápidas")
-    
+
     if day_trading_mode:
         from config.app_config import AppConfig
         day_settings = AppConfig.get_day_trading_settings(timeframe)
-        
+
         st.success(f"✅ **Day Trading {timeframe}**: RSI {day_settings['rsi_oversold']}-{day_settings['rsi_overbought']}")
         st.info(f"⚡ Confiança: {day_settings['min_confidence']}% | Volume: {day_settings['min_volume_ratio']}x")
-        
+
         # Aplicar configurações de day trading
         rsi_min = day_settings['rsi_oversold']
         rsi_max = day_settings['rsi_overbought']
         min_confidence = day_settings['min_confidence']
-        
+
         # Configurações específicas por timeframe
         if timeframe == "1m":
             st.warning("⚡ **SCALPING MODE** - Apenas para traders experientes")
         elif timeframe == "5m":
             st.success("🎯 **Configuração IDEAL para Day Trading**")
-        
+
     else:
         # Aplicar configurações automáticas baseadas no timeframe
         from config.app_config import AppConfig
@@ -267,11 +267,11 @@ with st.sidebar.expander("📈 Day Trading Otimizado", expanded=True):
 
 # Configurações Avançadas Gerais
 with st.sidebar.expander("⚙️ Configurações Avançadas", expanded=False):
-    
+
     # Permitir override manual (só se day trading mode estiver desabilitado)
     if not day_trading_mode:
         use_auto_config = st.checkbox("🤖 Usar Configuração Automática", value=True, help="Configuração otimizada para crypto + timeframe")
-        
+
         if use_auto_config:
             crypto_settings = AppConfig.get_crypto_timeframe_settings(timeframe)
             min_confidence = crypto_settings['min_confidence']
@@ -284,11 +284,11 @@ with st.sidebar.expander("⚙️ Configurações Avançadas", expanded=False):
     else:
         # Day Trading mode já configurou tudo
         st.markdown("**✅ Day Trading: Configurações Otimizadas Ativas**")
-    
+
     require_volume = st.checkbox("Exigir Volume Alto", value=True, help="Volume 80%+ acima da média")
     require_trend = st.checkbox("Exigir Tendência Clara", value=True, help="ADX > 28")
     avoid_ranging = st.checkbox("Evitar Mercados Laterais", value=True, help="Filtro anti-ranging")
-    
+
     # Filtros adicionais - ajustados para day trading
     if day_trading_mode:
         st.markdown("**⚡ Filtros Day Trading**")
@@ -296,12 +296,12 @@ with st.sidebar.expander("⚙️ Configurações Avançadas", expanded=False):
         require_stoch_confirmation = st.checkbox("Exigir StochRSI Extremo", value=True, help="StochRSI < 15 ou > 85")
         peak_hours_only = st.checkbox("Apenas Horários de Pico", value=True, help="9-11h, 14-16h, 20-22h BRT")
         avoid_lunch_time = st.checkbox("Evitar Horário Almoço", value=True, help="12-14h tem menos volume")
-        
+
         # Alertas específicos para day trading
         st.markdown("**🎯 Alertas Day Trading**")
         alert_volume_spike = st.checkbox("Alertar Picos de Volume", value=True, help="Volume > 3x média")
         alert_breakout = st.checkbox("Alertar Breakouts", value=True, help="Rompimento de Bollinger Bands")
-        
+
     else:
         st.markdown("**🚀 Filtros Especiais Crypto**")
         filter_extreme_volatility = st.checkbox("Filtrar Volatilidade Extrema", value=True, help="Evitar ATR > 8%")
@@ -325,16 +325,16 @@ st.sidebar.subheader("📱 Configuração Telegram")
 if TELEGRAM_AVAILABLE:
     # Status da configuração
     config_status = st.session_state.telegram_bot.get_config_status()
-    
+
     # Verificar se está configurado via Secrets
     has_secrets = bool(os.getenv("TELEGRAM_BOT_TOKEN") and os.getenv("TELEGRAM_CHAT_ID"))
-    
+
     if config_status['configured'] or has_secrets:
         if has_secrets:
             st.sidebar.success("✅ Telegram configurado via Replit Secrets!")
         else:
             st.sidebar.success("✅ Telegram configurado!")
-        
+
         # Opções para usuário configurado
         col1, col2 = st.sidebar.columns(2)
         with col1:
@@ -351,12 +351,12 @@ if TELEGRAM_AVAILABLE:
                         st.sidebar.error(msg)
                 except Exception as e:
                     st.sidebar.error(f"❌ Erro no teste: {str(e)}")
-        
+
         with col2:
             if st.sidebar.button("🗑️ Remover"):
                 st.session_state.telegram_bot.disable()
                 st.rerun()
-        
+
         # Checkbox para ativar notificações
         telegram_enabled = st.sidebar.checkbox(
             "Ativar notificações automáticas",
@@ -364,33 +364,33 @@ if TELEGRAM_AVAILABLE:
             help="Enviar sinais automaticamente via Telegram"
         )
         st.session_state.telegram_notifications = telegram_enabled
-        
+
     else:
         # Interface de configuração
         st.sidebar.info("🔧 Configure seu bot do Telegram:")
-        
+
         with st.sidebar.form("telegram_config"):
             st.markdown("""
             **Como obter suas credenciais:**
             1. **Token do Bot:** Fale com @BotFather no Telegram
             2. **Chat ID:** Envie /start para @userinfobot
             """)
-            
+
             bot_token = st.text_input(
                 "🤖 Token do Bot:",
                 type="password",
                 help="Obtido do @BotFather",
                 placeholder="123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11"
             )
-            
+
             chat_id = st.text_input(
                 "💬 Chat ID:",
                 help="Seu ID de chat pessoal",
                 placeholder="123456789"
             )
-            
+
             submitted = st.form_submit_button("💾 Salvar Configuração")
-            
+
             if submitted:
                 if bot_token and chat_id:
                     success, message = st.session_state.telegram_bot.configure(bot_token, chat_id)
@@ -401,7 +401,7 @@ if TELEGRAM_AVAILABLE:
                         st.sidebar.error(message)
                 else:
                     st.sidebar.warning("⚠️ Preencha todos os campos!")
-        
+
         telegram_enabled = False
         st.session_state.telegram_notifications = False
 else:
@@ -428,13 +428,13 @@ st.title("📈 Trading Signals Dashboard")
 if selected_exchange == 'binance' or 'binance' in str(st.session_state.trading_bot.exchange).lower():
     st.error("""
     ⚠️ **ATENÇÃO - BINANCE BLOQUEADA NO BRASIL**
-    
+
     A Binance bloqueou acesso do Brasil para mercado futuro devido a regulamentações.
     **Solução**: Use exchanges alternativos como Bybit, OKX ou KuCoin que funcionam perfeitamente no Brasil.
-    
+
     ✅ **Recomendado**: Bybit (já configurado como padrão)
     """)
-    
+
     if st.button("🔄 Trocar para Bybit Automaticamente"):
         st.session_state.current_exchange = 'bybit'
         st.rerun()
@@ -493,33 +493,33 @@ if 'default_tab' not in st.session_state:
 with tab1:
     st.subheader("🚀 Trading de Mercado Futuro")
     st.markdown("**Trade com alavancagem, posições long/short e gerenciamento avançado de risco**")
-    
+
     # Warning banner
     st.warning("⚠️ **ATENÇÃO:** Mercado futuro envolve alto risco. Nunca arrisque mais do que pode perder!")
-    
+
     # Configurações específicas de futuros na sidebar expandida
     st.sidebar.markdown("---")
     st.sidebar.subheader("🚀 Configurações Futuros")
-    
+
     futures_leverage = st.sidebar.selectbox(
         "Alavancagem",
         [1, 2, 3, 5, 10, 20, 25, 50],
         index=3,
         help="Multiplicador de posição"
     )
-    
+
     futures_mode = st.sidebar.selectbox(
         "Modo de Trading",
         ["Cross Margin", "Isolated Margin"],
         help="Cross: usa todo saldo | Isolated: limita risco por posição"
     )
-    
+
     risk_level = st.sidebar.selectbox(
         "Nível de Risco",
         ["Conservador", "Moderado", "Agressivo"],
         index=1
     )
-    
+
     # Tabs dentro da análise de futuros
     futures_tab1, futures_tab2, futures_tab3 = st.tabs([
         "🎯 Sinais & Análise", "⚖️ Calculadoras", "📊 Posições Simuladas"
@@ -528,32 +528,32 @@ with tab1:
 # Tab 1: Análise e Sinais para Futuros
     with futures_tab1:
         st.markdown("### 🎯 Análise Técnica para Futuros")
-        
+
         # Multi-Symbol Overview (if enabled) - with caching and performance optimization
         if enable_multi_symbol and len(selected_symbols) > 1:
             st.subheader("🔀 Overview - Múltiplos Pares")
-        
+
         # Initialize multi-symbol last signals tracking
         if 'multi_symbol_signals' not in st.session_state:
             st.session_state.multi_symbol_signals = {}
-        
+
         # Create overview table for all selected symbols
         overview_data = []
         current_time = now_brazil()
-        
+
         for sym in selected_symbols:
             # Initialize variables at the start of each iteration
             signal = "NEUTRO"
             last_candle = None
             sym_data = None
-            
+
             try:
                 # Check if we have cached data for this symbol that's less than 60 seconds old
                 cache_key = f"{sym}_{timeframe}"
                 should_refresh = True
                 cached_data = None
                 cache_age = 0
-                
+
                 if cache_key in st.session_state.multi_symbol_data:
                     cached_data = st.session_state.multi_symbol_data[cache_key]
                     cache_age = (current_time - cached_data['last_update']).total_seconds()
@@ -564,16 +564,16 @@ with tab1:
                         sym_data = cached_data['data']
                         signal = cached_data['signal']
                         last_candle = cached_data['last_candle']
-                
+
                 if should_refresh:
                     # Use shared trading bot instance
                     st.session_state.trading_bot.update_config(symbol=sym, timeframe=timeframe, rsi_period=rsi_period, rsi_min=rsi_min, rsi_max=rsi_max)
                     sym_data = st.session_state.trading_bot.get_market_data(limit=200)
-                    
+
                     if sym_data is not None and not sym_data.empty:
                         last_candle = sym_data.iloc[-1]
                         signal = st.session_state.trading_bot.check_signal(sym_data)
-                        
+
                         # Cache the data
                         st.session_state.multi_symbol_data[cache_key] = {
                             'data': sym_data,
@@ -583,22 +583,22 @@ with tab1:
                         }
                     else:
                         continue
-                
+
                 # Skip if we don't have valid data
                 if last_candle is None:
                     continue
-                
+
                 # Check for new signals to send alerts
                 if (signal not in ["NEUTRO"] and 
                     st.session_state.telegram_notifications and 
                     st.session_state.telegram_bot.is_configured()):
-                    
+
                     # Check if this is a new signal for this symbol
                     last_signal_key = f"{sym}_last_signal"
                     if (last_signal_key not in st.session_state.multi_symbol_signals or 
                         st.session_state.multi_symbol_signals[last_signal_key]['signal'] != signal or
                         (current_time - st.session_state.multi_symbol_signals[last_signal_key]['timestamp']).total_seconds() > 300):
-                        
+
                         # Send alert for this symbol
                         try:
                             loop = asyncio.new_event_loop()
@@ -613,7 +613,7 @@ with tab1:
                                     macd_signal=last_candle['macd_signal']
                                 )
                             )
-                            
+
                             # Update last signal tracking
                             st.session_state.multi_symbol_signals[last_signal_key] = {
                                 'signal': signal,
@@ -621,7 +621,7 @@ with tab1:
                             }
                         except Exception as e:
                             pass  # Silent fail for overview performance
-                    
+
                     # Add to signals history
                     st.session_state.signals_history.append({
                         'timestamp': current_time,
@@ -632,7 +632,7 @@ with tab1:
                         'macd_signal': last_candle['macd_signal'],
                         'signal': signal
                     })
-                
+
                 # Only add to overview if we have valid data
                 if last_candle is not None:
                     overview_data.append({
@@ -645,7 +645,7 @@ with tab1:
                         'Short Score': 'N/A',
                         'Variação': f"{((last_candle['close'] - last_candle['open']) / last_candle['open'] * 100):.2f}%"
                     })
-                    
+
             except Exception as e:
                 overview_data.append({
                     'Par': sym,
@@ -657,14 +657,14 @@ with tab1:
                     'Short Score': 'N/A',
                     'Variação': 'N/A'
                 })
-        
+
         # Trim signals history to last 50 across all symbols
         if len(st.session_state.signals_history) > 50:
             st.session_state.signals_history = st.session_state.signals_history[-50:]
-        
+
         if overview_data:
             overview_df = pd.DataFrame(overview_data)
-            
+
             # Style the dataframe
             def style_futures_signals(val):
                 if isinstance(val, str):
@@ -684,12 +684,12 @@ with tab1:
                     elif val <= 30:
                         return 'background-color: #FFB6C1'
                 return ''
-            
+
             styled_df = overview_df.style.map(style_futures_signals)
             st.dataframe(styled_df, width='stretch', hide_index=True)
-        
+
         st.markdown("---")
-        
+
         st.subheader(f"📈 Análise Detalhada de Futuros - {symbol}")
 
 # Helper function para calcular scores de futuros
@@ -697,7 +697,7 @@ def _calculate_futures_score(last_candle, position_type):
     """Calcular score específico para posições LONG/SHORT em futuros"""
     try:
         score = 0
-        
+
         # RSI scoring
         rsi = last_candle.get('rsi', 50)
         if position_type == 'LONG':
@@ -708,32 +708,32 @@ def _calculate_futures_score(last_candle, position_type):
             if rsi > 70: score += 30
             elif rsi > 60: score += 20
             elif rsi < 30: score -= 20
-        
+
         # MACD scoring
         macd = last_candle.get('macd', 0)
         macd_signal = last_candle.get('macd_signal', 0)
-        
+
         if position_type == 'LONG':
             if macd > macd_signal: score += 25
             if last_candle.get('macd_histogram', 0) > 0: score += 15
         else:  # SHORT
             if macd < macd_signal: score += 25
             if last_candle.get('macd_histogram', 0) < 0: score += 15
-        
+
         # Volume scoring
         volume_ratio = last_candle.get('volume_ratio', 1)
         if volume_ratio > 1.5: score += 15
         elif volume_ratio > 1.2: score += 10
-        
+
         # Trend scoring (simplified)
         sma_21 = last_candle.get('sma_21', last_candle['close'])
         if position_type == 'LONG':
             if last_candle['close'] > sma_21: score += 15
         else:  # SHORT
             if last_candle['close'] < sma_21: score += 15
-        
+
         return min(max(score, 0), 100)  # Normalize to 0-100
-        
+
     except Exception:
         return 0
 
@@ -742,9 +742,9 @@ has_secrets_main = bool(os.getenv("TELEGRAM_BOT_TOKEN") and os.getenv("TELEGRAM_
 if not st.session_state.telegram_bot.is_configured() and not has_secrets_main:
     with st.expander("📱 Configurar Notificações Telegram", expanded=False):
         st.markdown("Configure o bot do Telegram para receber alertas de sinais em tempo real!")
-        
+
         col1, col2 = st.columns(2)
-        
+
         with col1:
             telegram_token_main = st.text_input(
                 "🤖 Token do Bot",
@@ -753,7 +753,7 @@ if not st.session_state.telegram_bot.is_configured() and not has_secrets_main:
                 help="1. Acesse @BotFather no Telegram\n2. Digite /newbot\n3. Siga as instruções\n4. Cole o token aqui",
                 key="telegram_token_main"
             )
-        
+
         with col2:
             telegram_chat_id_main = st.text_input(
                 "💬 Chat ID",
@@ -761,9 +761,9 @@ if not st.session_state.telegram_bot.is_configured() and not has_secrets_main:
                 help="1. Adicione @userinfobot ao seu chat\n2. Digite /start\n3. Cole o Chat ID aqui",
                 key="telegram_chat_id_main"
             )
-        
+
         col1, col2, col3 = st.columns([1, 1, 2])
-        
+
         with col1:
             if st.button("✅ Configurar", key="config_telegram_main"):
                 if telegram_token_main and telegram_chat_id_main:
@@ -787,7 +787,7 @@ if not st.session_state.telegram_bot.is_configured() and not has_secrets_main:
                         st.error("❌ Erro na configuração")
                 else:
                     st.warning("⚠️ Preencha ambos os campos")
-        
+
         with col2:
             if telegram_token_main and telegram_chat_id_main:
                 if st.button("📤 Testar", key="test_telegram_main"):
@@ -805,7 +805,7 @@ if not st.session_state.telegram_bot.is_configured() and not has_secrets_main:
                                 st.error(f"❌ {message}")
                         except Exception as e:
                             st.error(f"❌ Erro: {str(e)}")
-        
+
         with col3:
             st.info("💡 **Como configurar:**\n1. Crie um bot no @BotFather\n2. Obtenha seu Chat ID no @userinfobot\n3. Configure aqui")
 
@@ -833,10 +833,10 @@ if should_update:
 if st.session_state.current_data is not None:
     data = st.session_state.current_data
     last_candle = data.iloc[-1]
-    
+
     # Calculate signal
     signal = st.session_state.trading_bot.check_signal(data)
-    
+
     # Store data for multi-symbol monitoring
     st.session_state.multi_symbol_data[symbol] = {
         'data': data,
@@ -844,7 +844,7 @@ if st.session_state.current_data is not None:
         'last_candle': last_candle,
         'last_update': st.session_state.last_update
     }
-    
+
     # Add signal to history if it's a new signal
     if signal not in ["NEUTRO"] and (
         not st.session_state.signals_history or 
@@ -868,7 +868,7 @@ if st.session_state.current_data is not None:
                 )
             except Exception as e:
                 st.sidebar.warning(f"⚠️ Erro ao enviar alerta: {str(e)}")
-        
+
         # Criar dados do sinal para salvar
         signal_data = {
             'timestamp': get_brazil_datetime_naive(),
@@ -883,16 +883,16 @@ if st.session_state.current_data is not None:
             'signal_strength': abs(last_candle['rsi'] - 50) / 50,  # Força do sinal baseada no RSI
             'volume': last_candle.get('volume', 0)
         }
-        
+
         # Salvar no banco de dados
         try:
             db.save_trading_signal(signal_data)
         except Exception as e:
             st.error(f"Erro ao salvar sinal no banco: {str(e)}")
-        
+
         # Manter no histórico da sessão também
         st.session_state.signals_history.append(signal_data)
-        
+
         # Keep only last 50 signals
         if len(st.session_state.signals_history) > 50:
             st.session_state.signals_history = st.session_state.signals_history[-50:]
@@ -911,7 +911,7 @@ if st.session_state.current_data is not None:
             rsi_color = "inverse"
         elif last_candle['rsi'] < rsi_min:
             rsi_color = "inverse"
-        
+
         st.metric(
             label="📊 RSI",
             value=f"{last_candle['rsi']:.2f}",
@@ -960,7 +960,7 @@ if st.session_state.current_data is not None:
 
     # Price, RSI and MACD Charts
     st.subheader("📈 Gráficos")
-    
+
     # Create subplots with 3 rows now
     fig = make_subplots(
         rows=3, cols=1,
@@ -1020,7 +1020,7 @@ if st.session_state.current_data is not None:
         # Strong buy signals (larger markers)
         strong_buys = buy_signals[buy_signals['signal'] == 'COMPRA']
         weak_buys = buy_signals[buy_signals['signal'] == 'COMPRA_FRACA']
-        
+
         if len(strong_buys) > 0:
             fig.add_trace(
                 go.Scatter(
@@ -1033,7 +1033,7 @@ if st.session_state.current_data is not None:
                 ),
                 row=1, col=1
             )
-        
+
         if len(weak_buys) > 0:
             fig.add_trace(
                 go.Scatter(
@@ -1051,7 +1051,7 @@ if st.session_state.current_data is not None:
         # Strong sell signals (larger markers)
         strong_sells = sell_signals[sell_signals['signal'] == 'VENDA']
         weak_sells = sell_signals[sell_signals['signal'] == 'VENDA_FRACA']
-        
+
         if len(strong_sells) > 0:
             fig.add_trace(
                 go.Scatter(
@@ -1064,7 +1064,7 @@ if st.session_state.current_data is not None:
                 ),
                 row=1, col=1
             )
-        
+
         if len(weak_sells) > 0:
             fig.add_trace(
                 go.Scatter(
@@ -1089,7 +1089,7 @@ if st.session_state.current_data is not None:
         ),
         row=3, col=1
     )
-    
+
     fig.add_trace(
         go.Scatter(
             x=data.index,
@@ -1100,7 +1100,7 @@ if st.session_state.current_data is not None:
         ),
         row=3, col=1
     )
-    
+
     fig.add_trace(
         go.Bar(
             x=data.index,
@@ -1110,7 +1110,7 @@ if st.session_state.current_data is not None:
         ),
         row=3, col=1
     )
-    
+
     # Add MACD zero line
     fig.add_shape(
         type="line", xref="x3", yref="y3",
@@ -1134,9 +1134,9 @@ if st.session_state.current_data is not None:
 
     # Current Analysis
     st.subheader("🔍 Análise Atual")
-    
+
     analysis_col1, analysis_col2 = st.columns(2)
-    
+
     with analysis_col1:
         st.info(f"""
         **Par:** {symbol}  
@@ -1148,7 +1148,7 @@ if st.session_state.current_data is not None:
         **Volume:** {last_candle['volume']:,.0f}  
         **Volume MA:** {last_candle['volume_ma']:,.0f}
         """)
-    
+
     with analysis_col2:
         if signal == "COMPRA":
             st.success(f"""
@@ -1210,7 +1210,7 @@ if show_source == "Banco de Dados (Persistente)":
             if 'created_at_br' in signals_df.columns:
                 signals_df['timestamp'] = pd.to_datetime(signals_df['created_at_br'], format='%d/%m/%Y %H:%M:%S', errors='coerce')
             signals_df = signals_df.sort_values('timestamp', ascending=False)
-            
+
             # Renomear colunas do banco para compatibilidade
             column_mapping = {
                 'signal_type': 'signal',
@@ -1233,18 +1233,18 @@ else:
         signals_df = None
 
 if signals_df is not None and len(signals_df) > 0:
-    
+
     # Format for display
     try:
         display_df = signals_df.copy()
-        
+
         # Remove duplicate columns if any
         display_df = display_df.loc[:, ~display_df.columns.duplicated()]
-        
+
         # Ensure we have the required columns
         required_cols = ['timestamp', 'symbol', 'price', 'rsi', 'signal']
         missing_cols = [col for col in required_cols if col not in display_df.columns]
-        
+
         if missing_cols:
             st.error(f"Colunas ausentes nos dados: {missing_cols}")
             display_df = None
@@ -1252,24 +1252,24 @@ if signals_df is not None and len(signals_df) > 0:
             # Converter para datetime se necessário, depois formatar
             if not pd.api.types.is_datetime64_any_dtype(display_df['timestamp']):
                 display_df['timestamp'] = pd.to_datetime(display_df['timestamp'], errors='coerce')
-            
+
             # Remove rows with invalid timestamps
             display_df = display_df.dropna(subset=['timestamp'])
-            
+
             if len(display_df) == 0:
-                st.warning("Nenhum dado válido encontrado após limpeza")
+                st.warning("Não foi possível exibir os dados do histórico devido a problemas na formatação.")
                 display_df = None
             else:
                 display_df['timestamp'] = display_df['timestamp'].dt.strftime('%Y-%m-%d %H:%M:%S')
                 display_df['price'] = display_df['price'].apply(lambda x: f"${x:.6f}" if pd.notna(x) else "N/A")
                 display_df['rsi'] = display_df['rsi'].apply(lambda x: f"{x:.2f}" if pd.notna(x) else "N/A")
-                
+
                 # Add MACD columns if they exist
                 if 'macd' in display_df.columns:
                     display_df['macd'] = display_df['macd'].apply(lambda x: f"{x:.4f}" if pd.notna(x) else "N/A")
                 if 'macd_signal' in display_df.columns:
                     display_df['macd_signal'] = display_df['macd_signal'].apply(lambda x: f"{x:.4f}" if pd.notna(x) else "N/A")
-                    
+
                 # Rename columns baseado nas colunas disponíveis
                 column_map = {
                     'timestamp': 'Data/Hora',
@@ -1281,22 +1281,22 @@ if signals_df is not None and len(signals_df) > 0:
                     'signal': 'Sinal',
                     'signal_type': 'Sinal'
                 }
-                
+
                 # Renomear apenas as colunas que existem
                 display_df = display_df.rename(columns=column_map)
-                
+
                 # Selecionar apenas as colunas que queremos mostrar
                 available_columns = []
                 for col in ['Data/Hora', 'Par', 'Preço', 'RSI', 'MACD', 'MACD Signal', 'Sinal']:
                     if col in display_df.columns:
                         available_columns.append(col)
-                
+
                 display_df = display_df[available_columns]
-                
+
     except Exception as e:
         st.error(f"Erro ao processar dados do histórico: {str(e)}")
         display_df = None
-    
+
     if display_df is not None and len(display_df) > 0:
         st.dataframe(
             display_df,
@@ -1305,14 +1305,14 @@ if signals_df is not None and len(signals_df) > 0:
         )
     else:
         st.warning("Não foi possível exibir os dados do histórico devido a problemas na formatação.")
-    
+
     # Clear history button
     col1, col2 = st.columns(2)
     with col1:
         if show_source == "Sessão Atual" and st.button("🗑️ Limpar Histórico"):
             st.session_state.signals_history = []
             st.rerun()
-    
+
     with col2:
         if show_source == "Banco de Dados (Persistente)":
             # Exibir estatísticas do banco
@@ -1324,56 +1324,58 @@ if signals_df is not None and len(signals_df) > 0:
 
 # Auto-refresh mechanism - throttled for performance  
 if auto_refresh:
-    # Only refresh every 30 seconds to reduce API calls
-    if st.session_state.last_update is None or (get_brazil_datetime_naive() - st.session_state.last_update).total_seconds() > 30:
-        time.sleep(1)
+    # Only refresh every 60 seconds to reduce API calls
+    if st.session_state.last_update is None or (get_brazil_datetime_naive() - st.session_state.last_update).total_seconds() > 60:
+        # Force data refresh after 60 seconds
+        st.session_state.last_update = None
+        time.sleep(5)  # Short delay to prevent rapid refreshes
         st.rerun()
     else:
-        time.sleep(1)
-        # Just rerun UI without data refresh
+        # Just wait and rerun without API calls
+        time.sleep(5)  # Check every 5 seconds if refresh is needed
         st.rerun()
 
 # Tab 2: Calculadoras
         with futures_tab2:
             st.markdown("### ⚖️ Calculadoras de Trading")
-            
+
             calc_tab1, calc_tab2, calc_tab3 = st.tabs([
                 "🧮 Calculadora de Posição", "💀 Preço de Liquidação", "💰 P&L Simulador"
             ])
-            
+
             with calc_tab1:
                 st.markdown("#### 🧮 Calculadora de Tamanho da Posição")
-                
+
                 col1, col2 = st.columns(2)
-                
+
                 with col1:
                     account_balance = st.number_input("Saldo da Conta ($)", value=10000.0, min_value=100.0)
                     risk_percent = st.slider("Risco por Trade (%)", 1, 10, 3)
                     leverage_calc = st.selectbox("Alavancagem Calc", [1, 2, 3, 5, 10, 20, 25, 50], index=3)
                     entry_price = st.number_input("Preço de Entrada ($)", value=float(st.session_state.current_data.iloc[-1]['close']) if st.session_state.current_data is not None else 1.0)
-                
+
                 with col2:
                     # Cálculos
                     risk_amount = account_balance * (risk_percent / 100)
                     position_size_usdt = risk_amount * leverage_calc
                     quantity = position_size_usdt / entry_price
                     margin_required = position_size_usdt / leverage_calc
-                    
+
                     st.metric("💰 Valor Arriscado", f"${risk_amount:.2f}")
                     st.metric("📊 Tamanho da Posição", f"${position_size_usdt:.2f}")
                     st.metric("🪙 Quantidade", f"{quantity:.6f}")
                     st.metric("🏦 Margem Necessária", f"${margin_required:.2f}")
-            
+
             with calc_tab2:
                 st.markdown("#### 💀 Calculadora de Preço de Liquidação")
-                
+
                 col1, col2 = st.columns(2)
-                
+
                 with col1:
                     entry_price_liq = st.number_input("Preço de Entrada Liq", value=1.0)
                     leverage_liq = st.selectbox("Alavancagem Liq", [1, 2, 3, 5, 10, 20, 25, 50], index=3)
                     position_side = st.radio("Lado da Posição", ["LONG", "SHORT"])
-                
+
                 with col2:
                     # Calcular liquidação (simplificado)
                     if position_side == "LONG":
@@ -1382,47 +1384,47 @@ if auto_refresh:
                     else:
                         liquidation_price = entry_price_liq * (1 + (0.9 / leverage_liq))
                         distance = ((liquidation_price - entry_price_liq) / entry_price_liq) * 100
-                    
+
                     st.metric("💀 Preço de Liquidação", f"${liquidation_price:.6f}")
                     st.metric("📏 Distância", f"{distance:.2f}%")
-                    
+
                     if distance < 5:
                         st.error("⚠️ ALTO RISCO DE LIQUIDAÇÃO!")
                     elif distance < 10:
                         st.warning("⚠️ Risco moderado de liquidação")
                     else:
                         st.success("✅ Distância segura da liquidação")
-            
+
             with calc_tab3:
                 st.markdown("#### 💰 Simulador de Profit & Loss")
-                
+
                 col1, col2 = st.columns(2)
-                
+
                 with col1:
                     entry_price_pnl = st.number_input("Preço de Entrada PnL", value=1.0)
                     position_size_pnl = st.number_input("Tamanho da Posição ($)", value=1000.0)
                     leverage_pnl = st.selectbox("Alavancagem PnL", [1, 2, 3, 5, 10, 20, 25, 50], index=3)
-                    
+
                     # Cenários de preço
                     st.markdown("**Cenários de Preço:**")
                     scenario_1 = st.number_input("Cenário 1 ($)", value=entry_price_pnl * 1.02)
                     scenario_2 = st.number_input("Cenário 2 ($)", value=entry_price_pnl * 1.05)
                     scenario_3 = st.number_input("Cenário 3 ($)", value=entry_price_pnl * 0.98)
-                
+
                 with col2:
                     st.markdown("**Resultados:**")
-                    
+
                     for i, price in enumerate([scenario_1, scenario_2, scenario_3], 1):
                         price_change_pct = ((price - entry_price_pnl) / entry_price_pnl)
                         pnl = position_size_pnl * price_change_pct * leverage_pnl
-                        
+
                         color = "🟢" if pnl > 0 else "🔴"
                         st.write(f"**Cenário {i}:** {color} ${pnl:+.2f} ({price_change_pct * leverage_pnl * 100:+.1f}%)")
-        
+
         # Tab 3: Posições (simuladas)
         with futures_tab3:
             st.markdown("### 📊 Gerenciamento de Posições Simuladas")
-            
+
             # Mock positions for demonstration
             mock_positions = [
                 {
@@ -1438,11 +1440,11 @@ if auto_refresh:
                     "Liquidação": f"${st.session_state.current_data.iloc[-1]['close'] * (1 - 0.9/futures_leverage):.6f}" if st.session_state.current_data is not None else "$0.900000"
                 }
             ]
-            
+
             if st.button("🔄 Simular Posições"):
                 positions_df = pd.DataFrame(mock_positions)
                 st.dataframe(positions_df, use_container_width=True)
-                
+
                 profit = 5000 * futures_leverage * 0.015
                 profit_pct = futures_leverage * 1.5
                 st.success(f"💰 PnL Total Simulado: +${profit:.2f} (+{profit_pct:.1f}%)")
@@ -1454,46 +1456,46 @@ if auto_refresh:
 # Backtesting Tab - Otimizado para foco em testes
 with tab2:
     st.header("🔬 Centro de Backtesting Avançado")
-    
+
     # Quick test presets
     st.markdown("### ⚡ Testes Rápidos")
     col1, col2, col3, col4 = st.columns(4)
-    
+
     with col1:
         if st.button("🚀 Teste Agressivo", help="RSI 15-85, 7 dias", use_container_width=True):
             st.session_state.bt_rsi_min = 15
             st.session_state.bt_rsi_max = 85
             st.session_state.bt_start_date = date.today() - timedelta(days=7)
-    
+
     with col2:
         if st.button("⚖️ Teste Balanceado", help="RSI 25-75, 14 dias", use_container_width=True):
             st.session_state.bt_rsi_min = 25
             st.session_state.bt_rsi_max = 75
             st.session_state.bt_start_date = date.today() - timedelta(days=14)
-    
+
     with col3:
         if st.button("🛡️ Teste Conservador", help="RSI 30-70, 30 dias", use_container_width=True):
             st.session_state.bt_rsi_min = 30
             st.session_state.bt_rsi_max = 70
             st.session_state.bt_start_date = date.today() - timedelta(days=30)
-    
+
     with col4:
         if st.button("🔄 Reset Padrão", help="Voltar configurações padrão", use_container_width=True):
             st.session_state.bt_rsi_min = 20
             st.session_state.bt_rsi_max = 80
             st.session_state.bt_start_date = date.today() - timedelta(days=30)
-    
+
     st.markdown("---")
-    
+
     # Main configuration in tabs
     config_tab1, config_tab2, config_tab3 = st.tabs(["📊 Básico", "⚙️ Avançado", "📈 Otimização"])
-    
+
     with config_tab1:
         col1, col2 = st.columns(2)
-        
+
         with col1:
             st.markdown("**🎯 Configuração Principal**")
-            
+
             bt_symbol = st.selectbox(
                 "Par de Trading:",
                 ["BTC/USDT", "ETH/USDT", "XLM/USDT", "ADA/USDT", "SOL/USDT", "DOGE/USDT", "LTC/USDT", "AVAX/USDT"],
@@ -1501,7 +1503,7 @@ with tab2:
                 help="Par de criptomoedas para testar",
                 key="bt_symbol"
             )
-            
+
             bt_timeframe = st.selectbox(
                 "Timeframe:",
                 ["1m", "5m", "15m", "30m", "1h", "4h", "1d"],
@@ -1509,7 +1511,7 @@ with tab2:
                 help="Intervalo dos candles - timeframes menores = mais sinais",
                 key="bt_timeframe"
             )
-            
+
             bt_initial_balance = st.number_input(
                 "Capital Inicial ($)", 
                 min_value=100.0, 
@@ -1519,20 +1521,20 @@ with tab2:
                 help="Quanto você investiria na estratégia",
                 key="bt_initial_balance"
             )
-        
+
         with col2:
             st.markdown("**📅 Período de Teste**")
-            
+
             # Presets de período
             period_preset = st.selectbox(
                 "Período Pré-definido:",
                 ["Personalizado", "Última Semana", "Últimas 2 Semanas", "Último Mês", "Últimos 3 Meses"],
                 help="Escolha um período comum ou customize"
             )
-            
+
             from datetime import date
             max_date = date.today()
-            
+
             if period_preset == "Última Semana":
                 default_start = max_date - timedelta(days=7)
             elif period_preset == "Últimas 2 Semanas":
@@ -1543,7 +1545,7 @@ with tab2:
                 default_start = max_date - timedelta(days=90)
             else:
                 default_start = max_date - timedelta(days=30)
-            
+
             bt_start_date = st.date_input(
                 "📅 Data Inicial", 
                 value=getattr(st.session_state, 'bt_start_date', default_start),
@@ -1558,18 +1560,18 @@ with tab2:
                 help="Fim do backtest",
                 key="bt_end_date"
             )
-            
+
             # Mostrar duração
             if bt_start_date < bt_end_date:
                 duration = (bt_end_date - bt_start_date).days
                 st.info(f"📊 Período: **{duration} dias**")
-    
+
     with config_tab2:
         col1, col2 = st.columns(2)
-        
+
         with col1:
             st.markdown("**🎛️ Indicadores RSI**")
-            
+
             bt_rsi_period = st.slider(
                 "Período RSI", 
                 5, 50, 
@@ -1577,7 +1579,7 @@ with tab2:
                 help="Janela de cálculo do RSI (14 é padrão)",
                 key="bt_rsi_period"
             )
-            
+
             bt_rsi_min = st.slider(
                 "RSI Compra (Sobrevenda)", 
                 10, 40, 
@@ -1585,7 +1587,7 @@ with tab2:
                 help="Nível para sinal de compra",
                 key="bt_rsi_min"
             )
-            
+
             bt_rsi_max = st.slider(
                 "RSI Venda (Sobrecompra)", 
                 60, 90, 
@@ -1593,23 +1595,23 @@ with tab2:
                 help="Nível para sinal de venda",
                 key="bt_rsi_max"
             )
-        
+
         with col2:
             st.markdown("**⚡ Configurações de Performance**")
-            
+
             # Opções de filtragem de sinais
             enable_volume_filter = st.checkbox(
                 "Filtrar por Volume",
                 value=False,
                 help="Apenas trades com volume acima da média"
             )
-            
+
             enable_trend_filter = st.checkbox(
                 "Filtrar por Tendência",
                 value=False,
                 help="Usar MACD como filtro adicional"
             )
-            
+
             stop_loss_pct = st.number_input(
                 "Stop Loss (%)",
                 min_value=0.0,
@@ -1618,7 +1620,7 @@ with tab2:
                 step=0.5,
                 help="0 = sem stop loss"
             )
-            
+
             take_profit_pct = st.number_input(
                 "Take Profit (%)",
                 min_value=0.0,
@@ -1627,39 +1629,39 @@ with tab2:
                 step=0.5,
                 help="0 = sem take profit"
             )
-    
+
     with config_tab3:
         st.markdown("**🔍 Otimização de Parâmetros**")
-        
+
         # Grid search para RSI
         enable_optimization = st.checkbox(
             "🚀 Modo Otimização Automática",
             help="Testa múltiplas combinações de RSI automaticamente"
         )
-        
+
         if enable_optimization:
             col1, col2 = st.columns(2)
-            
+
             with col1:
                 rsi_min_range = st.slider(
                     "Range RSI Mínimo",
                     10, 40, (15, 30),
                     help="Faixa para testar RSI mínimo"
                 )
-                
+
                 rsi_max_range = st.slider(
                     "Range RSI Máximo", 
                     60, 90, (70, 85),
                     help="Faixa para testar RSI máximo"
                 )
-            
+
             with col2:
                 optimization_metric = st.selectbox(
                     "Métrica de Otimização:",
                     ["Total Return", "Sharpe Ratio", "Win Rate", "Profit Factor"],
                     help="Qual métrica maximizar"
                 )
-                
+
                 max_tests = st.number_input(
                     "Máximo de Testes:",
                     min_value=5,
@@ -1667,24 +1669,24 @@ with tab2:
                     value=20,
                     help="Limite de combinações para testar"
                 )
-        
+
         # Comparação de timeframes
         compare_timeframes = st.checkbox(
             "📊 Comparar Timeframes",
             help="Testa a mesma estratégia em diferentes timeframes"
         )
-    
+
     # Validation and execution
     st.markdown("---")
     st.markdown("### 🚀 Executar Testes")
-    
+
     # Validation checks
     date_valid = bt_start_date < bt_end_date
     period_days = (bt_end_date - bt_start_date).days
-    
+
     # Status da configuração
     col1, col2 = st.columns(2)
-    
+
     with col1:
         if not date_valid:
             st.error("❌ Data inicial deve ser anterior à data final")
@@ -1694,16 +1696,16 @@ with tab2:
             st.error("❌ Período muito curto. Mínimo: 1 dia")
         else:
             st.success(f"✅ Configuração válida - {period_days} dias")
-    
+
     with col2:
         # Estimativa de tempo
         if date_valid and period_days > 0:
             estimated_time = max(5, min(period_days * 0.5, 60))
             st.info(f"⏱️ Tempo estimado: ~{estimated_time:.0f}s")
-    
+
     # Execution buttons
     col1, col2, col3 = st.columns(3)
-    
+
     with col1:
         bt_execute = st.button(
             "🚀 Executar Backtest", 
@@ -1712,7 +1714,7 @@ with tab2:
             use_container_width=True,
             key="bt_execute"
         )
-    
+
     with col2:
         if enable_optimization and st.button(
             "⚡ Otimização Automática",
@@ -1724,7 +1726,7 @@ with tab2:
             # Trigger optimization mode
             st.session_state.run_optimization = True
             bt_execute = True
-    
+
     with col3:
         if compare_timeframes and st.button(
             "📊 Comparar Timeframes",
@@ -1736,22 +1738,22 @@ with tab2:
             # Trigger comparison mode
             st.session_state.run_comparison = True
             bt_execute = True
-    
+
     if bt_execute and date_valid:
         with st.spinner("🔄 Executando backtest... Isso pode levar alguns minutos."):
             try:
                 # Convert dates to datetime
                 start_dt = datetime.combine(bt_start_date, datetime.min.time())
                 end_dt = datetime.combine(bt_end_date, datetime.max.time())
-                
+
                 # Validações adicionais
                 if period_days > 365:
                     st.error("❌ Período muito longo. Máximo recomendado: 1 ano")
                     st.stop()
-                
+
                 # Execute backtest
                 st.info(f"📊 Executando backtest para {bt_symbol} no período de {period_days} dias...")
-                
+
                 results = st.session_state.backtest_engine.run_backtest(
                     symbol=bt_symbol,
                     timeframe=bt_timeframe,
@@ -1762,18 +1764,18 @@ with tab2:
                     rsi_min=bt_rsi_min,
                     rsi_max=bt_rsi_max
                 )
-                
+
                 if results and 'stats' in results:
                     st.session_state.backtest_results = results
                     st.success("✅ Backtest concluído com sucesso!")
                     st.balloons()
                 else:
                     st.error("❌ Backtest não retornou resultados válidos")
-                
+
             except Exception as e:
                 error_msg = str(e)
                 st.error(f"❌ Erro durante o backtest: {error_msg}")
-                
+
                 # Mensagens de ajuda específicas
                 if "Dados insuficientes" in error_msg:
                     st.warning("⚠️ **Solução**: Tente um período maior (mínimo 7 dias) ou um timeframe menor")
@@ -1783,26 +1785,26 @@ with tab2:
                     st.warning("⚠️ **Solução**: Aguarde alguns minutos antes de tentar novamente")
                 else:
                     st.info("💡 **Dicas**:\n- Tente um período menor\n- Verifique se o par selecionado está disponível\n- Aguarde alguns segundos e tente novamente")
-                
+
                 # Log do erro para debug
                 with st.expander("🔍 Detalhes técnicos (para debug)"):
                     st.code(error_msg)
-    
+
     # Display results if available
     if st.session_state.backtest_results:
         results = st.session_state.backtest_results
         stats = results['stats']
-        
+
         st.markdown("---")
         st.subheader("📊 Resultados do Backtest")
-        
+
         # Performance Overview
         col1, col2, col3, col4 = st.columns(4)
-        
+
         # Color coding for metrics
         return_color = "normal" if stats['total_return_pct'] >= 0 else "inverse"
         winrate_color = "normal" if stats['win_rate'] >= 50 else "inverse"
-        
+
         with col1:
             st.metric(
                 "💰 Retorno Total", 
@@ -1815,7 +1817,7 @@ with tab2:
             st.metric("🎯 Taxa de Acerto", f"{stats['win_rate']:.1f}%")
         with col4:
             st.metric("📉 Max Drawdown", f"-{stats['max_drawdown']:.2f}%")
-        
+
         # Additional metrics row
         col1, col2, col3, col4 = st.columns(4)
         with col1:
@@ -1826,19 +1828,19 @@ with tab2:
             st.metric("✅ Trades Vencedores", stats['winning_trades'])
         with col4:
             st.metric("❌ Trades Perdedores", stats['losing_trades'])
-        
+
         # Detailed Performance Analysis
         st.markdown("---")
         st.subheader("📈 Análise Detalhada de Performance")
-        
+
         col1, col2 = st.columns(2)
-        
+
         with col1:
             # Financial metrics
             st.markdown("**💰 Métricas Financeiras**")
             profit_loss = stats['final_balance'] - stats['initial_balance']
             profit_color = "🟢" if profit_loss >= 0 else "🔴"
-            
+
             st.info(f"""
             **Saldo Inicial:** ${stats['initial_balance']:,.2f}  
             **Saldo Final:** ${stats['final_balance']:,.2f}  
@@ -1846,13 +1848,13 @@ with tab2:
             **Retorno Percentual:** {stats['total_return_pct']:.2f}%  
             **Sharpe Ratio:** {stats['sharpe_ratio']:.2f}
             """)
-        
+
         with col2:
             # Trading metrics
             st.markdown("**📊 Métricas de Trading**")
             avg_profit_color = "🟢" if stats['avg_profit'] > 0 else "🟡"
             avg_loss_color = "🔴" if stats['avg_loss'] > 0 else "🟡"
-            
+
             st.info(f"""
             **Trades Vencedores:** {stats['winning_trades']} ({stats['win_rate']:.1f}%)  
             **Trades Perdedores:** {stats['losing_trades']} ({100-stats['win_rate']:.1f}%)  
@@ -1860,14 +1862,14 @@ with tab2:
             **Perda Média:** {avg_loss_color} {stats['avg_loss']:.2f}%  
             **Máximo Drawdown:** {stats['max_drawdown']:.2f}%
             """)
-        
+
         # Performance interpretation with scoring
         st.markdown("**🎯 Análise Inteligente dos Resultados**")
-        
+
         # Calculate overall score
         score = 0
         max_score = 100
-        
+
         # Return score (40 points max)
         if stats['total_return_pct'] > 50:
             score += 40
@@ -1877,7 +1879,7 @@ with tab2:
             score += 20
         elif stats['total_return_pct'] > 0:
             score += 10
-        
+
         # Win rate score (25 points max)
         if stats['win_rate'] > 70:
             score += 25
@@ -1887,7 +1889,7 @@ with tab2:
             score += 15
         elif stats['win_rate'] > 40:
             score += 10
-        
+
         # Drawdown score (20 points max)
         if stats['max_drawdown'] < 5:
             score += 20
@@ -1897,7 +1899,7 @@ with tab2:
             score += 10
         elif stats['max_drawdown'] < 25:
             score += 5
-        
+
         # Sharpe ratio score (15 points max)
         if stats['sharpe_ratio'] > 2:
             score += 15
@@ -1905,10 +1907,10 @@ with tab2:
             score += 10
         elif stats['sharpe_ratio'] > 0.5:
             score += 5
-        
+
         # Display score and interpretation
         score_pct = (score / max_score) * 100
-        
+
         if score_pct >= 80:
             st.success(f"🏆 **ESTRATÉGIA EXCELENTE** - Score: {score_pct:.0f}/100")
             st.success("✅ Esta estratégia demonstra alta qualidade e pode ser considerada para trading real!")
@@ -1921,45 +1923,45 @@ with tab2:
         else:
             st.error(f"❌ **ESTRATÉGIA FRACA** - Score: {score_pct:.0f}/100")
             st.error("🚫 Não recomendada para trading real. Revise completamente a abordagem.")
-        
+
         # Specific recommendations
         st.markdown("**🎯 Recomendações Específicas:**")
         recommendations = []
-        
+
         if stats['total_return_pct'] < 0:
             recommendations.append("📉 **Retorno negativo**: Considere inverter a lógica ou usar timeframe maior")
-        
+
         if stats['win_rate'] < 50:
             recommendations.append("🎯 **Taxa de acerto baixa**: Teste RSI mais restritivo (ex: 15-85)")
-        
+
         if stats['max_drawdown'] > 20:
             recommendations.append("⚠️ **Alto risco**: Implemente stop-loss ou reduza tamanho das posições")
-        
+
         if stats['total_trades'] < 10:
             recommendations.append("📊 **Poucos trades**: Use timeframe menor ou período maior")
-        
+
         if stats['sharpe_ratio'] < 0.5:
             recommendations.append("📈 **Baixo Sharpe**: Estratégia inconsistente, revise parâmetros")
-        
+
         if stats.get('profit_factor', 0) < 1.2:
             recommendations.append("💰 **Profit Factor baixo**: Ajuste take-profit ou melhore timing de entrada")
-        
+
         if not recommendations:
             recommendations.append("🏆 **Excelente trabalho!** Esta estratégia está bem calibrada.")
-        
+
         for i, rec in enumerate(recommendations, 1):
             st.markdown(f"{i}. {rec}")
-        
+
         # Quick optimization suggestions
         st.markdown("**⚡ Testes Rápidos Sugeridos:**")
         opt_col1, opt_col2 = st.columns(2)
-        
+
         with opt_col1:
             if st.button("🔧 RSI Mais Restritivo", help="RSI 15-85"):
                 st.session_state.bt_rsi_min = 15
                 st.session_state.bt_rsi_max = 85
                 st.rerun()
-            
+
             if st.button("📈 Timeframe Maior", help="Mudar para timeframe superior"):
                 current_tf = st.session_state.get('bt_timeframe', '15m')
                 tf_hierarchy = ["1m", "5m", "15m", "30m", "1h", "4h", "1d"]
@@ -1968,27 +1970,27 @@ with tab2:
                     if current_idx < len(tf_hierarchy) - 1:
                         st.session_state.bt_timeframe = tf_hierarchy[current_idx + 1]
                         st.rerun()
-        
+
         with opt_col2:
             if st.button("⚖️ RSI Balanceado", help="RSI 25-75"):
                 st.session_state.bt_rsi_min = 25
                 st.session_state.bt_rsi_max = 75
                 st.rerun()
-            
+
             if st.button("🔄 Período Maior", help="Dobrar período de teste"):
                 current_days = (st.session_state.bt_end_date - st.session_state.bt_start_date).days
                 new_start = st.session_state.bt_end_date - timedelta(days=min(current_days * 2, 90))
                 st.session_state.bt_start_date = new_start
                 st.rerun()
-        
+
         # Portfolio evolution chart
         if results.get('portfolio_values'):
             st.markdown("---")
             st.subheader("📈 Evolução do Portfolio")
-            
+
             portfolio_df = pd.DataFrame(results['portfolio_values'])
             portfolio_df['timestamp'] = pd.to_datetime(portfolio_df['timestamp'])
-            
+
             fig_portfolio = go.Figure()
             fig_portfolio.add_trace(go.Scatter(
                 x=portfolio_df['timestamp'],
@@ -1997,7 +1999,7 @@ with tab2:
                 name='Valor do Portfolio',
                 line=dict(color='blue', width=2)
             ))
-            
+
             # Add initial balance line
             fig_portfolio.add_hline(
                 y=stats['initial_balance'], 
@@ -2005,21 +2007,21 @@ with tab2:
                 line_color="gray",
                 annotation_text="Saldo Inicial"
             )
-            
+
             fig_portfolio.update_layout(
                 title=f"Evolução do Portfolio - {bt_symbol}",
                 xaxis_title="Data",
                 yaxis_title="Valor do Portfolio ($)",
                 height=400
             )
-            
+
             st.plotly_chart(fig_portfolio, use_container_width=True)
-        
+
         # Trade history table
         if results['trades']:
             st.markdown("---")
             st.subheader("📋 Histórico de Trades")
-            
+
             trade_df = st.session_state.backtest_engine.get_trade_summary_df()
             if not trade_df.empty:
                 # Format trade data for display
@@ -2029,36 +2031,36 @@ with tab2:
                 trade_df_display['price'] = trade_df_display['price'].apply(lambda x: f"${x:.6f}")
                 trade_df_display['profit_loss_pct'] = trade_df_display['profit_loss_pct'].apply(lambda x: f"{x:.2f}%")
                 trade_df_display['profit_loss'] = trade_df_display['profit_loss'].apply(lambda x: f"${x:.2f}")
-                
+
                 # Rename columns
                 trade_df_display.columns = [
                     'Data/Hora', 'Preço Entrada', 'Preço Saída', 
                     'Retorno %', 'Lucro/Perda $', 'Sinal'
                 ]
-                
+
                 # Show last 20 trades by default
                 display_limit = min(20, len(trade_df_display))
                 st.info(f"📊 Mostrando os últimos {display_limit} trades de {len(trade_df_display)} total")
-                
+
                 st.dataframe(
                     trade_df_display.tail(display_limit), 
                     width='stretch', 
                     hide_index=True
                 )
-                
+
                 # Summary of all trades
                 if len(trade_df_display) > display_limit:
                     if st.button(f"📋 Ver todos os {len(trade_df_display)} trades", key="show_all_trades"):
                         st.dataframe(trade_df_display, width='stretch', hide_index=True)
-        
+
         # Test comparison and history
         st.markdown("---")
         st.subheader("📊 Histórico de Testes")
-        
+
         # Initialize test history
         if 'backtest_history' not in st.session_state:
             st.session_state.backtest_history = []
-        
+
         # Save current result to history
         if st.button("💾 Salvar Teste Atual", key="save_current_test"):
             test_record = {
@@ -2077,11 +2079,11 @@ with tab2:
             }
             st.session_state.backtest_history.append(test_record)
             st.success("✅ Teste salvo no histórico!")
-        
+
         # Display test history
         if st.session_state.backtest_history:
             history_df = pd.DataFrame(st.session_state.backtest_history)
-            
+
             # Style the dataframe
             def style_history(val):
                 if isinstance(val, (int, float)):
@@ -2090,35 +2092,35 @@ with tab2:
                     elif val < 0:
                         return 'color: red'
                 return ''
-            
+
             # Show last 10 tests
             display_history = history_df.tail(10).copy()
             display_history = display_history.round(2)
-            
+
             st.dataframe(
                 display_history.style.applymap(style_history, subset=['return_pct']),
                 use_container_width=True,
                 hide_index=True
             )
-            
+
             # Best test highlight
             if len(history_df) > 0:
                 best_test = history_df.loc[history_df['score'].idxmax()]
                 st.success(f"🏆 **Melhor Teste**: {best_test['symbol']} {best_test['timeframe']} - Score: {best_test['score']:.0f} - Retorno: {best_test['return_pct']:.2f}%")
-        
+
         # Action buttons
         col1, col2, col3 = st.columns(3)
-        
+
         with col1:
             if st.button("🗑️ Limpar Resultados", key="clear_backtest_results"):
                 st.session_state.backtest_results = None
                 st.rerun()
-        
+
         with col2:
             if st.button("📋 Limpar Histórico", key="clear_history"):
                 st.session_state.backtest_history = []
                 st.rerun()
-        
+
         with col3:
             if st.session_state.backtest_history:
                 history_csv = pd.DataFrame(st.session_state.backtest_history).to_csv(index=False)
@@ -2128,52 +2130,52 @@ with tab2:
                     file_name=f"backtest_history_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
                     mime="text/csv"
                 )
-    
+
     else:
         # Enhanced help section when no results
         st.markdown("---")
         st.markdown("### 📚 Guia de Backtesting")
-        
+
         # Quick start guide in columns
         guide_col1, guide_col2 = st.columns(2)
-        
+
         with guide_col1:
             st.markdown("""
             **🚀 Como Começar:**
-            
+
             1. **Escolha um par** (ex: BTC-USD para volatilidade)
             2. **Selecione timeframe** (15m é bom para iniciantes)
             3. **Configure período** (comece com 1-2 semanas)
             4. **Ajuste RSI** (20-80 é conservador)
             5. **Execute e analise**
-            
+
             **💡 Dicas de Performance:**
             - Timeframes menores = mais trades
             - RSI restritivo = menos trades, mais precisão
             - Períodos maiores = resultados mais confiáveis
             """)
-        
+
         with guide_col2:
             st.markdown("""
             **🎯 Métricas Importantes:**
-            
+
             - **Total Return**: Quanto ganhou/perdeu
             - **Win Rate**: % de trades vencedores
             - **Max Drawdown**: Maior perda consecutiva
             - **Sharpe Ratio**: Retorno vs risco
             - **Score**: Avaliação geral (0-100)
-            
+
             **⚠️ Interpretação:**
             - Score > 80: Estratégia excelente
             - Score 60-80: Boa estratégia
             - Score < 40: Precisa melhorar
             """)
-        
+
         # Sample configurations
         st.markdown("**🔧 Configurações Populares:**")
-        
+
         sample_col1, sample_col2, sample_col3 = st.columns(3)
-        
+
         with sample_col1:
             st.info("""
             **🔥 Scalping Agressivo**
@@ -2182,7 +2184,7 @@ with tab2:
             - Período: 1 semana
             - Para: traders ativos
             """)
-        
+
         with sample_col2:
             st.info("""
             **⚖️ Swing Trading**
@@ -2191,7 +2193,7 @@ with tab2:
             - Período: 1 mês
             - Para: trading moderado
             """)
-        
+
         with sample_col3:
             st.info("""
             **🛡️ Posição Longa**
@@ -2205,9 +2207,9 @@ with tab2:
 with tab3:
     st.subheader("⚙️ Exportar Dados")
     st.markdown("Exporte dados e sinais para análise externa")
-    
+
     col1, col2 = st.columns(2)
-    
+
     with col1:
         st.markdown("### 📊 Dados Atuais")
         if st.session_state.current_data is not None:
@@ -2221,7 +2223,7 @@ with tab3:
                 )
         else:
             st.info("Nenhum dado disponível para exportar")
-    
+
     with col2:
         st.markdown("### 🚨 Histórico de Sinais")
         if st.session_state.signals_history:
@@ -2236,13 +2238,13 @@ with tab3:
                 )
         else:
             st.info("Nenhum sinal disponível para exportar")
-    
+
     # Backtest results export
     if st.session_state.backtest_results:
         st.markdown("---")
         st.markdown("### 🔬 Resultados de Backtest")
         col1, col2 = st.columns(2)
-        
+
         with col1:
             if st.button("💾 Exportar Trades do Backtest"):
                 trade_df = st.session_state.backtest_engine.get_trade_summary_df()
@@ -2254,7 +2256,7 @@ with tab3:
                         file_name=f"backtest_trades_{format_brazil_time(fmt='%Y%m%d_%H%M%S')}.csv",
                         mime="text/csv"
                     )
-        
+
         with col2:
             if st.button("💾 Exportar Portfolio do Backtest"):
                 portfolio_df = pd.DataFrame(st.session_state.backtest_results['portfolio_values'])
@@ -2269,18 +2271,18 @@ with tab3:
 # Admin Panel Tab
 with tab4:
     st.subheader("👑 Painel Administrativo")
-    
+
     # Admin authentication
     admin_password = st.text_input("🔐 Senha de Admin", type="password", key="admin_pass")
-    
+
     if admin_password == "admin123":  # Change this password
         st.success("✅ Acesso autorizado!")
-        
+
         # Admin stats
         stats = st.session_state.user_manager.get_user_stats()
-        
+
         col1, col2, col3, col4 = st.columns(4)
-        
+
         with col1:
             st.metric("👥 Total Usuários", stats['total_users'])
         with col2:
@@ -2289,31 +2291,31 @@ with tab4:
             st.metric("💎 Usuários Premium", stats['premium_users'])
         with col4:
             st.metric("🔥 Ativos Hoje", stats['active_today'])
-        
+
         # User management
         st.markdown("---")
         st.subheader("👥 Gerenciamento de Usuários")
-        
+
         # List users
         users = st.session_state.user_manager.list_users(50)
         if users:
             users_df = pd.DataFrame(users)
-            
+
             # Format datetime columns
             if 'joined' in users_df.columns:
                 users_df['joined'] = pd.to_datetime(users_df['joined']).dt.strftime('%d/%m/%Y')
             if 'last_analysis' in users_df.columns:
                 users_df['last_analysis'] = users_df['last_analysis'].fillna('Nunca')
                 users_df.loc[users_df['last_analysis'] != 'Nunca', 'last_analysis'] = pd.to_datetime(users_df.loc[users_df['last_analysis'] != 'Nunca', 'last_analysis']).dt.strftime('%d/%m/%Y %H:%M')
-            
+
             st.dataframe(users_df, width='stretch', hide_index=True)
-        
+
         # User actions
         st.markdown("---")
         st.subheader("🔧 Ações de Usuário")
-        
+
         col1, col2 = st.columns(2)
-        
+
         with col1:
             user_id_upgrade = st.number_input("ID do Usuário para Upgrade", min_value=1, key="upgrade_user")
             if st.button("💎 Promover para Premium"):
@@ -2321,26 +2323,26 @@ with tab4:
                     st.success(f"✅ Usuário {user_id_upgrade} promovido para Premium!")
                 else:
                     st.error("❌ Usuário não encontrado")
-        
+
         with col2:
             new_admin_id = st.number_input("ID do Novo Admin", min_value=1, key="new_admin")
             if st.button("👑 Adicionar Admin"):
                 st.session_state.user_manager.add_admin(int(new_admin_id))
                 st.success(f"✅ Usuário {new_admin_id} adicionado como Admin!")
-        
+
         # Telegram Bot Configuration
         st.markdown("---")
         st.subheader("🤖 Configuração do Bot Telegram")
-        
+
         bot_token_admin = st.text_input(
             "Token do Bot Telegram",
             type="password",
             help="Token para o bot interativo do Telegram",
             key="bot_token_admin"
         )
-        
+
         col1, col2 = st.columns(2)
-        
+
         with col1:
             if st.button("🚀 Configurar Bot") and bot_token_admin:
                 if st.session_state.telegram_trading_bot.configure(bot_token_admin):
@@ -2348,7 +2350,7 @@ with tab4:
                     st.info("💡 O bot agora está pronto para receber comandos dos usuários!")
                 else:
                     st.error("❌ Erro na configuração do bot")
-        
+
         with col2:
             if st.button("📤 Testar Bot") and st.session_state.telegram_trading_bot.is_configured():
                 try:
@@ -2363,22 +2365,22 @@ with tab4:
                         st.error(f"❌ {message}")
                 except Exception as e:
                     st.error(f"❌ Erro: {str(e)}")
-        
+
         # Bot status
         if st.session_state.telegram_trading_bot.is_configured():
             st.success("🟢 Bot Telegram está ativo e pronto para uso!")
             st.info("💬 Os usuários podem usar comandos como /analise BTC/USDT")
         else:
             st.warning("🟡 Bot Telegram não configurado")
-        
+
         # Broadcast message
         st.markdown("---")
         st.subheader("📢 Enviar Comunicado")
-        
+
         broadcast_msg = st.text_area("Mensagem para todos os usuários", key="broadcast_msg")
         if st.button("📤 Enviar para Todos") and broadcast_msg:
             st.info("Funcionalidade de broadcast disponível via comando /broadcast no Telegram")
-        
+
     elif admin_password:
         st.error("❌ Senha incorreta")
     else:
