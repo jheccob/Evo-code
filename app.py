@@ -236,11 +236,35 @@ rsi_max = st.sidebar.slider("RSI Máximo (Venda)", 60, 90, 75, help="75 aumenta 
 
 # Configurações Avançadas para Acurácia
 with st.sidebar.expander("⚙️ Configurações Avançadas", expanded=False):
-    st.markdown("**Filtros de Qualidade de Sinal**")
-    min_confidence = st.slider("Confiança Mínima (%)", 50, 90, 70, help="Apenas sinais com alta confiança")
-    require_volume = st.checkbox("Exigir Volume Alto", value=True, help="Volume 50%+ acima da média")
-    require_trend = st.checkbox("Exigir Tendência Clara", value=True, help="ADX > 25")
+    st.markdown("**🎯 Configurações Otimizadas para Crypto**")
+    
+    # Aplicar configurações automáticas baseadas no timeframe
+    from config.app_config import AppConfig
+    crypto_settings = AppConfig.get_crypto_timeframe_settings(timeframe)
+    
+    st.info(f"📊 **Auto-Config {timeframe}**: RSI {crypto_settings['rsi_oversold']}-{crypto_settings['rsi_overbought']}, Confiança {crypto_settings['min_confidence']}%")
+    
+    # Permitir override manual
+    use_auto_config = st.checkbox("🤖 Usar Configuração Automática", value=True, help="Configuração otimizada para crypto + timeframe")
+    
+    if use_auto_config:
+        min_confidence = crypto_settings['min_confidence']
+        rsi_min = crypto_settings['rsi_oversold']
+        rsi_max = crypto_settings['rsi_overbought']
+        st.success(f"✅ Auto: RSI {rsi_min}-{rsi_max}, Confiança {min_confidence}%")
+    else:
+        st.markdown("**Filtros de Qualidade de Sinal**")
+        min_confidence = st.slider("Confiança Mínima (%)", 50, 90, 70, help="Apenas sinais com alta confiança")
+    
+    require_volume = st.checkbox("Exigir Volume Alto", value=True, help="Volume 80%+ acima da média")
+    require_trend = st.checkbox("Exigir Tendência Clara", value=True, help="ADX > 28")
     avoid_ranging = st.checkbox("Evitar Mercados Laterais", value=True, help="Filtro anti-ranging")
+    
+    # Filtros adicionais para crypto
+    st.markdown("**🚀 Filtros Especiais Crypto**")
+    filter_extreme_volatility = st.checkbox("Filtrar Volatilidade Extrema", value=True, help="Evitar ATR > 8%")
+    require_stoch_confirmation = st.checkbox("Exigir Confirmação StochRSI", value=True, help="StochRSI em extremos")
+    peak_hours_only = st.checkbox("Apenas Horários de Pico", value=False, help="8-16h e 20-23h BRT")
 
 # Auto refresh toggle
 auto_refresh = st.sidebar.checkbox("🔄 Atualização Automática", value=True)

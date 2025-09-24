@@ -379,22 +379,46 @@ class TradingBot:
         else:
             return "NEUTRO"
     
-    def check_signal(self, df, min_confidence=70, require_volume=True, require_trend=True, avoid_ranging=True):
+    def check_signal(self, df, min_confidence=70, require_volume=True, require_trend=True, avoid_ranging=True, 
+                    crypto_optimized=True, timeframe="5m"):
         """Check the current trading signal with enhanced quality filters"""
         if df is None or df.empty:
             return "NEUTRO"
         
         last_row = df.iloc[-1]
         
-        # Apply quality filters first
-        if avoid_ranging and last_row.get('market_regime', 'trending') == 'ranging':
-            return "NEUTRO"
-        
-        if require_trend and last_row.get('adx', 0) < 25:
-            return "NEUTRO"
-        
-        if require_volume and last_row.get('volume_ratio', 1) < 1.5:
-            return "NEUTRO"
+        # Aplicar configurações otimizadas para crypto se habilitado
+        if crypto_optimized:
+            from config.app_config import AppConfig
+            crypto_settings = AppConfig.get_crypto_timeframe_settings(timeframe)
+            
+            min_confidence = crypto_settings['min_confidence']
+            min_volume_ratio = crypto_settings['min_volume_ratio']
+            volatility_threshold = crypto_settings['volatility_filter']
+            
+            # Apply quality filters first
+            if avoid_ranging and last_row.get('market_regime', 'trending') == 'ranging':
+                return "NEUTRO"
+            
+            if require_trend and last_row.get('adx', 0) < 28:  # Mais restritivo para crypto
+                return "NEUTRO"
+            
+            if require_volume and last_row.get('volume_ratio', 1) < min_volume_ratio:
+                return "NEUTRO"
+        else:
+            # Configurações padrão
+            min_volume_ratio = 1.5
+            volatility_threshold = 0.08
+            
+            # Apply quality filters first
+            if avoid_ranging and last_row.get('market_regime', 'trending') == 'ranging':
+                return "NEUTRO"
+            
+            if require_trend and last_row.get('adx', 0) < 25:
+                return "NEUTRO"
+            
+            if require_volume and last_row.get('volume_ratio', 1) < min_volume_ratio:
+                return "NEUTRO"
         
         signal = self._generate_advanced_signal(last_row)
         confidence = self._calculate_signal_confidence(last_row)
@@ -405,8 +429,24 @@ class TradingBot:
         
         # Additional safety check - avoid signals in extreme volatility
         atr_pct = last_row.get('atr', 0) / last_row.get('close', 1) * 100
-        if atr_pct > 8:  # More than 8% daily volatility
+        if atr_pct > (volatility_threshold * 100):
             return "NEUTRO"
+        
+        # Filtros adicionais para crypto
+        if crypto_optimized:
+            # StochRSI extremos
+            stoch_rsi_k = last_row.get('stoch_rsi_k', 50)
+            if signal in ['COMPRA', 'COMPRA_FRACA'] and stoch_rsi_k > 25:
+                return "NEUTRO"  # Só compra em StochRSI muito baixo
+            if signal in ['VENDA', 'VENDA_FRACA'] and stoch_rsi_k < 75:
+                return "NEUTRO"  # Só vende em StochRSI muito alto
+            
+            # Williams %R extremos
+            williams_r = last_row.get('williams_r', -50)
+            if signal in ['COMPRA', 'COMPRA_FRACA'] and williams_r > -75:
+                return "NEUTRO"
+            if signal in ['VENDA', 'VENDA_FRACA'] and williams_r < -25:
+                return "NEUTRO"
         
         return signal
     

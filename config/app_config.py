@@ -59,11 +59,18 @@ class AppConfig:
         if asset_class == "crypto":
             return {
                 "rsi_period": 14,
-                "rsi_oversold": 25,
-                "rsi_overbought": 75,
-                "min_confidence": 75,
-                "min_volume_ratio": 1.8,
-                "min_adx": 28
+                "rsi_oversold": 25,  # Mais restritivo para crypto (era 30)
+                "rsi_overbought": 75,  # Mais restritivo para crypto (era 70)
+                "min_confidence": 75,  # Alta confiança para reduzir falsos sinais
+                "min_volume_ratio": 1.8,  # Volume 80% acima da média
+                "min_adx": 28,  # Tendência forte obrigatória
+                "stoch_rsi_extreme": {"low": 15, "high": 85},  # StochRSI extremos
+                "williams_r_extreme": {"low": -85, "high": -15},  # Williams %R extremos
+                "bb_squeeze_threshold": 0.12,  # Bollinger Bands squeeze
+                "macd_zero_line_bonus": True,  # Bonus para MACD acima/abaixo de zero
+                "trend_alignment_required": True,  # Exigir alinhamento de tendência
+                "volatility_filter": 0.08,  # ATR máximo 8% do preço
+                "time_of_day_filter": True  # Filtro por horário de maior liquidez
             }
         elif asset_class == "forex":
             return {
@@ -72,7 +79,63 @@ class AppConfig:
                 "rsi_overbought": 70,
                 "min_confidence": 70,
                 "min_volume_ratio": 1.3,
-                "min_adx": 25
+                "min_adx": 25,
+                "stoch_rsi_extreme": {"low": 20, "high": 80},
+                "williams_r_extreme": {"low": -80, "high": -20},
+                "bb_squeeze_threshold": 0.15,
+                "macd_zero_line_bonus": False,
+                "trend_alignment_required": False,
+                "volatility_filter": 0.05,
+                "time_of_day_filter": True
             }
         else:
             return cls.get_optimized_settings("crypto")
+    
+    @classmethod
+    def get_crypto_timeframe_settings(cls, timeframe="5m"):
+        """Configurações específicas por timeframe para crypto"""
+        settings = {
+            "1m": {
+                "rsi_oversold": 20,  # Mais agressivo
+                "rsi_overbought": 80,
+                "min_confidence": 80,  # Mais restritivo
+                "min_volume_ratio": 2.0,
+                "volatility_filter": 0.12
+            },
+            "5m": {
+                "rsi_oversold": 25,
+                "rsi_overbought": 75,
+                "min_confidence": 75,
+                "min_volume_ratio": 1.8,
+                "volatility_filter": 0.10
+            },
+            "15m": {
+                "rsi_oversold": 30,
+                "rsi_overbought": 70,
+                "min_confidence": 70,
+                "min_volume_ratio": 1.5,
+                "volatility_filter": 0.08
+            },
+            "1h": {
+                "rsi_oversold": 35,
+                "rsi_overbought": 65,
+                "min_confidence": 65,
+                "min_volume_ratio": 1.3,
+                "volatility_filter": 0.06
+            },
+            "4h": {
+                "rsi_oversold": 40,
+                "rsi_overbought": 60,
+                "min_confidence": 60,
+                "min_volume_ratio": 1.2,
+                "volatility_filter": 0.05
+            },
+            "1d": {
+                "rsi_oversold": 45,
+                "rsi_overbought": 55,
+                "min_confidence": 55,
+                "min_volume_ratio": 1.1,
+                "volatility_filter": 0.04
+            }
+        }
+        return settings.get(timeframe, settings["5m"])
