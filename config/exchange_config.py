@@ -80,6 +80,21 @@ class ExchangeConfig:
         return exchange_class(config)
     
     @classmethod
+    def is_valid_usdt_pair(cls, symbol):
+        """Validar se um símbolo USDT é válido"""
+        if not symbol or not isinstance(symbol, str):
+            return False
+        
+        # Lista de pares conhecidos como válidos no OKX
+        valid_pairs = {
+            "BTC/USDT", "ETH/USDT", "XLM/USDT", "ADA/USDT", "SOL/USDT",
+            "DOGE/USDT", "LTC/USDT", "AVAX/USDT", "MATIC/USDT", "DOT/USDT",
+            "LINK/USDT", "UNI/USDT", "ATOM/USDT", "FTM/USDT", "NEAR/USDT"
+        }
+        
+        return symbol in valid_pairs
+
+    @classmethod
     def get_usdt_pairs(cls, exchange_name='okx'):
         """Obter pares USDT disponíveis no OKX"""
         try:
@@ -96,21 +111,24 @@ class ExchangeConfig:
                     # Futuros USDT podem vir como BTC/USDT:USDT
                     if ':USDT' in symbol or (symbol.endswith('/USDT') and market.get('type') in ['future', 'swap']):
                         normalized = cls.normalize_symbol(symbol, market)
-                        if normalized['symbol'] not in normalized_symbols:
+                        # Validar se é um par conhecido
+                        if (normalized['symbol'] not in normalized_symbols and 
+                            cls.is_valid_usdt_pair(normalized['symbol'])):
                             pairs.append(normalized['symbol'])
                             normalized_symbols.add(normalized['symbol'])
                 # Incluir spot USDT apenas se não há future equivalente
                 elif (symbol.endswith('/USDT') and 
                       market.get('type') == 'spot' and
-                      symbol not in normalized_symbols):
+                      symbol not in normalized_symbols and
+                      cls.is_valid_usdt_pair(symbol)):
                     pairs.append(symbol)
                     normalized_symbols.add(symbol)
             
             return sorted(pairs)
         except Exception as e:
             print(f"Erro ao carregar pares OKX: {e}")
-            # Fallback com pares populares
-            return ["BTC/USDT", "ETH/USDT", "XLM/USDT", "ADA/USDT", "DOT/USDT", "MATIC/USDT", "LINK/USDT", "UNI/USDT"]
+            # Fallback com pares populares que realmente existem no OKX
+            return ["BTC/USDT", "ETH/USDT", "XLM/USDT", "ADA/USDT", "SOL/USDT", "DOGE/USDT", "LTC/USDT", "AVAX/USDT"]
     
     @classmethod
     def get_usdt_pairs_with_metadata(cls, exchange_name='okx'):
@@ -158,6 +176,8 @@ class ExchangeConfig:
             else:
                 fallback = ["BTC/USDT", "ETH/USDT", "XLM/USDT", "ADA/USDT", "DOT/USDT"]
             
+            # Fallback com pares que realmente existem
+            fallback = ["BTC/USDT", "ETH/USDT", "XLM/USDT", "ADA/USDT", "SOL/USDT", "DOGE/USDT", "LTC/USDT", "AVAX/USDT"]
             return {symbol: cls.normalize_symbol(symbol) for symbol in fallback}
     
     @classmethod

@@ -191,8 +191,8 @@ if enable_multi_symbol:
     try:
         available_pairs = ExchangeConfig.get_usdt_pairs('okx')[:20]  # Top 20 pares
     except:
-        available_pairs = ["XLM/USDT", "BTC/USDT", "ETH/USDT", "ADA/USDT", "DOT/USDT", 
-                          "MATIC/USDT", "LINK/USDT", "UNI/USDT", "SOL/USDT", "AVAX/USDT"]
+        available_pairs = ["BTC/USDT", "ETH/USDT", "XLM/USDT", "ADA/USDT", "SOL/USDT", 
+                          "DOGE/USDT", "LTC/USDT", "AVAX/USDT", "MATIC/USDT", "DOT/USDT"]
     
     selected_symbols = st.sidebar.multiselect(
         "Selecionar pares para monitorar:",
@@ -212,7 +212,7 @@ else:
     try:
         symbol_options = ExchangeConfig.get_usdt_pairs('okx')[:10]  # Top 10 pares
     except:
-        symbol_options = ["XLM/USDT", "BTC/USDT", "ETH/USDT", "ADA/USDT", "DOT/USDT", "MATIC/USDT"]
+        symbol_options = ["BTC/USDT", "ETH/USDT", "XLM/USDT", "ADA/USDT", "SOL/USDT", "DOGE/USDT", "LTC/USDT", "AVAX/USDT"]
     
     symbol = st.sidebar.selectbox(
         "Par de Trading",
@@ -1430,7 +1430,7 @@ with tab2:
             
             bt_symbol = st.selectbox(
                 "Par de Trading:",
-                ["XLM-USD", "BTC-USD", "ETH-USD", "ADA-USD", "DOT-USD", "MATIC-USD", "LINK-USD", "UNI-USD"],
+                ["BTC/USDT", "ETH/USDT", "XLM/USDT", "ADA/USDT", "SOL/USDT", "DOGE/USDT", "LTC/USDT", "AVAX/USDT"],
                 index=0,
                 help="Par de criptomoedas para testar",
                 key="bt_symbol"
