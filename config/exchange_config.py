@@ -3,7 +3,7 @@ import ccxt
 import os
 
 class ExchangeConfig:
-    """Configuração simplificada usando apenas OKX para o Brasil"""
+    """Configuração de exchanges com suporte a credenciais pessoais"""
     
     @classmethod
     def normalize_symbol(cls, symbol, market_info=None):
@@ -28,54 +28,88 @@ class ExchangeConfig:
                 'quote': 'USDT' if symbol.endswith('/USDT') else 'USD'
             }
     
-    # Exchange único recomendado para Brasil
+    # Exchanges suportados com credenciais
     SUPPORTED_EXCHANGES = {
+        'binance': {
+            'name': 'Binance',
+            'futures_supported': True,
+            'brazil_accessible': True,
+            'usdt_pairs': True,
+            'requires_credentials': True,
+            'description': 'Binance - Exchange global com futuros e spot (requer API Key)'
+        },
         'okx': {
             'name': 'OKX',
             'futures_supported': True,
             'brazil_accessible': True,
             'usdt_pairs': True,
-            'description': 'Exchange principal para trading no Brasil - futuros e spot USDT'
+            'requires_credentials': False,
+            'description': 'OKX - Exchange para dados públicos sem credenciais'
         }
     }
     
     @classmethod
-    def get_exchange_instance(cls, exchange_name='okx', testnet=False):
-        """Criar instância do OKX configurado para Brasil"""
-        
-        # Forçar uso do OKX apenas
-        exchange_name = 'okx'
+    def get_exchange_instance(cls, exchange_name='binance', testnet=False):
+        """Criar instância do exchange configurado"""
         
         if exchange_name not in cls.SUPPORTED_EXCHANGES:
             raise ValueError(f"Exchange {exchange_name} não suportado")
         
         exchange_class = getattr(ccxt, exchange_name)
         
+        # Configuração base
         config = {
             'enableRateLimit': True,
             'sandbox': testnet,
-            'rateLimit': 1200,
             'timeout': 30000,
-            'options': {
-                'defaultType': 'swap',  # Para futuros perpétuos
-                'adjustForTimeDifference': True,
-                'recvWindow': 10000,
-            },
             'headers': {
-                'User-Agent': 'TradingBot-Brazil/1.0'
+                'User-Agent': 'TradingBot-Professional/1.0'
             }
         }
         
-        # Adicionar credenciais se disponíveis
-        api_key = os.getenv('OKX_API_KEY')
-        secret = os.getenv('OKX_SECRET')
-        passphrase = os.getenv('OKX_PASSPHRASE')
-        
-        if api_key and secret:
-            config['apiKey'] = api_key
-            config['secret'] = secret
-            if passphrase:
-                config['password'] = passphrase
+        # Configurações específicas por exchange
+        if exchange_name == 'binance':
+            config.update({
+                'rateLimit': 1200,
+                'options': {
+                    'defaultType': 'future',  # Garantir que usa futuros
+                    'adjustForTimeDifference': True,
+                    'recvWindow': 10000,
+                }
+            })
+            
+            # Credenciais da Binance via Secrets
+            api_key = os.getenv('BINANCE_API_KEY')
+            secret = os.getenv('BINANCE_SECRET')
+            
+            if api_key and secret:
+                config['apiKey'] = api_key
+                config['secret'] = secret
+                print(f"✅ Binance configurada com credenciais (API Key: {api_key[:10]}...)")
+            else:
+                print("⚠️  Credenciais Binance não encontradas nos Secrets")
+                print("💡 Configure BINANCE_API_KEY e BINANCE_SECRET nos Secrets")
+                
+        elif exchange_name == 'okx':
+            config.update({
+                'rateLimit': 1200,
+                'options': {
+                    'defaultType': 'swap',  # Para futuros perpétuos
+                    'adjustForTimeDifference': True,
+                    'recvWindow': 10000,
+                }
+            })
+            
+            # Credenciais OKX (opcionais)
+            api_key = os.getenv('OKX_API_KEY')
+            secret = os.getenv('OKX_SECRET')
+            passphrase = os.getenv('OKX_PASSPHRASE')
+            
+            if api_key and secret:
+                config['apiKey'] = api_key
+                config['secret'] = secret
+                if passphrase:
+                    config['password'] = passphrase
         
         return exchange_class(config)
     
@@ -195,48 +229,94 @@ class ExchangeConfig:
         return display_symbol  # Fallback
     
     @classmethod
-    def test_connection(cls, exchange_name='okx'):
-        """Testar conexão com OKX"""
+    def test_connection(cls, exchange_name='binance'):
+        """Testar conexão com exchange"""
         try:
-            exchange = cls.get_exchange_instance('okx')
+            exchange = cls.get_exchange_instance(exchange_name)
+            
+            # Test market data access
             markets = exchange.load_markets()
             
-            # Procurar por futuros BTC/USDT no OKX
+            # Procurar por BTC/USDT
+            test_symbols = ['BTC/USDT', 'BTCUSDT']
             future_symbol = None
             spot_symbol = None
             
-            for symbol, market in markets.items():
-                if market.get('active', False):
-                    if 'BTC' in symbol and 'USDT' in symbol:
+            for symbol in test_symbols:
+                if symbol in markets:
+                    market = markets[symbol]
+                    if market.get('active', False):
                         if market.get('type') in ['future', 'swap']:
                             future_symbol = symbol
                             break
                         elif market.get('type') == 'spot':
                             spot_symbol = symbol
             
-            # Testar future primeiro
-            if future_symbol:
-                try:
-                    ticker = exchange.fetch_ticker(future_symbol)
-                    normalized = cls.normalize_symbol(future_symbol)
-                    return True, f"✅ OKX funcionando! BTC/USDT Futuros: ${ticker['last']:.2f} (par: {normalized['symbol']})"
-                except Exception as e:
-                    print(f"Erro no future {future_symbol}: {e}")
+            # Test future first
+            test_symbol = future_symbol or spot_symbol or 'BTC/USDT'
             
-            # Fallback para spot
-            if spot_symbol:
-                try:
-                    ticker = exchange.fetch_ticker(spot_symbol)
-                    return True, f"✅ OKX funcionando! BTC/USDT Spot: ${ticker['last']:.2f}"
-                except Exception as e:
-                    print(f"Erro no spot {spot_symbol}: {e}")
-            
-            return False, f"❌ Nenhum par BTC/USDT encontrado no OKX"
+            try:
+                ticker = exchange.fetch_ticker(test_symbol)
+                
+                # Check if we have credentials
+                has_credentials = bool(exchange.apiKey and exchange.secret)
+                
+                if exchange_name == 'binance':
+                    if has_credentials:
+                        # Test account access
+                        try:
+                            balance = exchange.fetch_balance()
+                            return True, f"✅ Binance funcionando com credenciais! BTC/USDT: ${ticker['last']:.2f} | Saldo USDT: ${balance.get('USDT', {}).get('total', 0):.2f}"
+                        except Exception as e:
+                            return True, f"✅ Binance conectado! BTC/USDT: ${ticker['last']:.2f} | ⚠️ Erro na conta: {str(e)[:50]}"
+                    else:
+                        return False, f"❌ Binance precisa de credenciais. Configure BINANCE_API_KEY e BINANCE_SECRET"
+                else:
+                    return True, f"✅ {cls.SUPPORTED_EXCHANGES[exchange_name]['name']} funcionando! BTC/USDT: ${ticker['last']:.2f}"
+                    
+            except Exception as e:
+                return False, f"❌ Erro ao buscar dados do mercado: {str(e)}"
                 
         except Exception as e:
-            return False, f"❌ Erro ao conectar com OKX: {str(e)}"
+            return False, f"❌ Erro ao conectar com {exchange_name}: {str(e)}"
     
     @classmethod
     def get_recommended_for_brazil(cls):
-        """Retornar exchange único para Brasil"""
+        """Retornar exchange recomendado para Brasil"""
+        # Verificar se há credenciais Binance
+        if os.getenv('BINANCE_API_KEY') and os.getenv('BINANCE_SECRET'):
+            return 'binance'
         return 'okx'
+    
+    @classmethod
+    def get_binance_example_config(cls):
+        """Retorna exemplo de configuração para Binance"""
+        return """
+# === Configuração Binance Futuros ===
+# Configure no Replit Secrets (🔒):
+# 
+# BINANCE_API_KEY = "sua_api_key_aqui"
+# BINANCE_SECRET = "seu_api_secret_aqui"
+#
+# Exemplo de código:
+import ccxt
+import os
+
+exchange = ccxt.binance({
+    "apiKey": os.getenv('BINANCE_API_KEY'),
+    "secret": os.getenv('BINANCE_SECRET'),
+    "enableRateLimit": True,
+    "options": {
+        "defaultType": "future"  # Garantir que é Futuros
+    }
+})
+
+# Testar conexão
+try:
+    markets = exchange.load_markets()
+    balance = exchange.fetch_balance()
+    print("✅ Binance conectada com sucesso!")
+    print(f"Saldo USDT: {balance.get('USDT', {}).get('total', 0)}")
+except Exception as e:
+    print(f"❌ Erro: {e}")
+"""

@@ -7,15 +7,25 @@ from indicators import TechnicalIndicators
 
 class TradingBot:
     def __init__(self):
-        # Usar OKX que funciona bem no Brasil
+        # Usar exchange recomendado (Binance se tiver credenciais, senão OKX)
         from config.exchange_config import ExchangeConfig
-        self.exchange = ExchangeConfig.get_exchange_instance('okx', testnet=False)
-        self.symbol = "XLM/USDT"
+        recommended_exchange = ExchangeConfig.get_recommended_for_brazil()
+        self.exchange = ExchangeConfig.get_exchange_instance(recommended_exchange, testnet=False)
+        self.exchange_name = recommended_exchange
+        self.symbol = "BTC/USDT"  # Símbolo padrão mais popular
         self.timeframe = "5m"
-        self.rsi_period = 9  # Padrão corrigido para 9
+        self.rsi_period = 14  # Padrão RSI
         self.rsi_min = 20
         self.rsi_max = 80
         self.indicators = TechnicalIndicators()
+        
+        print(f"🚀 TradingBot inicializado com {recommended_exchange.upper()}")
+        if recommended_exchange == 'binance' and self.exchange.apiKey:
+            print(f"✅ Binance configurada com API Key: {self.exchange.apiKey[:10]}...")
+        elif recommended_exchange == 'binance':
+            print("⚠️ Binance selecionada mas sem credenciais")
+        else:
+            print(f"📊 Usando {recommended_exchange.upper()} para dados públicos")
 
     def update_config(self, symbol=None, timeframe=None, rsi_period=None, rsi_min=None, rsi_max=None):
         """Update bot configuration parameters"""

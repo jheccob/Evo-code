@@ -83,10 +83,39 @@ st.set_page_config(
 # Sidebar configuration - Move this section before session state initialization
 st.sidebar.title("🔧 Configurações")
 
-# Exchange fixo para o Brasil
+# Exchange selection
 st.sidebar.subheader("🌎 Exchange")
-selected_exchange = 'okx'
-st.sidebar.info("🔹 **OKX** - Exchange único otimizado para o Brasil")
+from config.exchange_config import ExchangeConfig
+
+# Verificar exchanges disponíveis
+available_exchanges = list(ExchangeConfig.SUPPORTED_EXCHANGES.keys())
+recommended = ExchangeConfig.get_recommended_for_brazil()
+
+# Mostrar status das credenciais
+has_binance_creds = bool(os.getenv('BINANCE_API_KEY') and os.getenv('BINANCE_SECRET'))
+
+if has_binance_creds:
+    st.sidebar.success("✅ **Binance** - Configurada com suas credenciais")
+    default_exchange = 'binance'
+else:
+    st.sidebar.info("🔹 **Configure credenciais Binance nos Secrets para acesso completo**")
+    default_exchange = 'okx'
+
+selected_exchange = st.sidebar.selectbox(
+    "Exchange:",
+    available_exchanges,
+    index=available_exchanges.index(default_exchange),
+    help="Binance requer API Key configurada nos Secrets"
+)
+
+# Status do exchange selecionado
+exchange_info = ExchangeConfig.SUPPORTED_EXCHANGES[selected_exchange]
+if selected_exchange == 'binance' and not has_binance_creds:
+    st.sidebar.warning("⚠️ Binance sem credenciais - apenas dados públicos")
+elif selected_exchange == 'binance' and has_binance_creds:
+    st.sidebar.success(f"🔐 Binance com suas credenciais")
+else:
+    st.sidebar.info(f"📊 {exchange_info['description']}")
 
 # Initialize session state
 if 'trading_bot' not in st.session_state:
