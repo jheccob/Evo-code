@@ -1,4 +1,3 @@
-
 class AppConfig:
     # Trading parameters - Optimized for maximum accuracy
     DEFAULT_SYMBOL = "XLM/USDT"
@@ -6,34 +5,34 @@ class AppConfig:
     DEFAULT_RSI_PERIOD = 9     # RSI mais sensível para detecção precoce
     DEFAULT_RSI_MIN = 20       # Mais agressivo com RSI 9
     DEFAULT_RSI_MAX = 80       # Mais agressivo com RSI 9
-    
+
     # Exchange configuration for Brazil
     DEFAULT_EXCHANGE = "bybit"  # Recommended for Brazil
     BRAZIL_SUPPORTED_EXCHANGES = ["bybit", "okx", "kucoin", "mexc"]
-    
+
     # Enhanced signal quality filters
     MIN_SIGNAL_CONFIDENCE = 70  # Increased from 60
     HIGH_CONFIDENCE_THRESHOLD = 85  # Increased from 80
     MIN_VOLUME_RATIO = 1.5     # Minimum volume for signals
     MIN_ADX_TREND = 25         # Minimum ADX for trend confirmation
     MAX_ATR_PCT = 8           # Maximum ATR% for volatility filter
-    
+
     # API limits
     MAX_CANDLES = 1000
     UPDATE_INTERVAL = 60  # seconds
-    
+
     # Backtest settings
     DEFAULT_INITIAL_BALANCE = 10000
     MAX_BACKTEST_DAYS = 90
-    
+
     # Database settings
     DB_PATH = "data/trading_bot.db"
     MAX_SIGNALS_HISTORY = 1000
-    
+
     # UI settings
     CHART_HEIGHT = 800
     MAX_MULTI_SYMBOLS = 10
-    
+
     # Optimized indicator periods
     MACD_FAST = 12
     MACD_SLOW = 26
@@ -43,16 +42,16 @@ class AppConfig:
     ADX_PERIOD = 14
     STOCH_RSI_PERIOD = 14
     WILLIAMS_R_PERIOD = 14
-    
+
     @classmethod
     def get_supported_pairs(cls):
         return ["XLM/USDT", "BTC/USDT", "ETH/USDT", "ADA/USDT", "DOT/USDT", 
                 "MATIC/USDT", "LINK/USDT", "UNI/USDT", "SOL/USDT", "AVAX/USDT"]
-    
+
     @classmethod
     def get_supported_timeframes(cls):
         return ["5m", "15m", "30m", "1h", "4h", "1d"]
-    
+
     @classmethod
     def get_optimized_settings(cls, asset_class="crypto"):
         """Get optimized settings for different asset classes"""
@@ -90,25 +89,25 @@ class AppConfig:
             }
         else:
             return cls.get_optimized_settings("crypto")
-    
+
     @classmethod
     def get_crypto_timeframe_settings(cls, timeframe="5m"):
         """Configurações otimizadas para RSI 9 - mais sensível mas com filtros rigorosos"""
         settings = {
             "1m": {
-                "rsi_oversold": 15,  # Extremos para RSI 9 - Day Trading
-                "rsi_overbought": 85,
-                "min_confidence": 85,  # Mais restritivo com RSI sensível
-                "min_volume_ratio": 2.5,  # Volume muito alto obrigatório
-                "volatility_filter": 0.10,
+                "rsi_oversold": 20,  # RSI 9 otimizado
+                "rsi_overbought": 80,
+                "min_confidence": 85,
+                "min_volume_ratio": 2.5,
+                "volatility_filter": 0.08,
                 "rsi_period": 9
             },
             "5m": {
-                "rsi_oversold": 20,  # Ideal para Day Trading com RSI 9
-                "rsi_overbought": 80,
-                "min_confidence": 80,  # Confiança alta
-                "min_volume_ratio": 2.0,  # Volume alto
-                "volatility_filter": 0.08,
+                "rsi_oversold": 22,  # Otimizado para crypto
+                "rsi_overbought": 78,
+                "min_confidence": 80,
+                "min_volume_ratio": 2.0,
+                "volatility_filter": 0.07,
                 "rsi_period": 9
             },
             "15m": {
@@ -145,7 +144,7 @@ class AppConfig:
             }
         }
         return settings.get(timeframe, settings["5m"])
-    
+
     @classmethod
     def get_day_trading_settings(cls, timeframe="5m"):
         """Configurações otimizadas especificamente para Day Trading"""
@@ -209,8 +208,8 @@ class AppConfig:
             }
         }
         return day_trading_config.get(timeframe, day_trading_config["5m"])
-    
-    @classmethod 
+
+    @classmethod
     def get_scalping_settings(cls):
         """Configurações extremas para scalping (1m)"""
         return {

@@ -412,7 +412,14 @@ else:
 
 # Telegram configuration completed - previous duplicate code removed
 
-# Update bot configuration
+# Update bot configuration - forçar RSI 9 se configurado
+if day_trading_mode:
+    rsi_period = 9  # Forçar RSI 9 para day trading
+elif crypto_optimized:
+    from config.app_config import AppConfig
+    crypto_settings = AppConfig.get_crypto_timeframe_settings(timeframe)
+    rsi_period = crypto_settings.get('rsi_period', 9)  # Padrão 9
+
 st.session_state.trading_bot.update_config(
     symbol=symbol,
     timeframe=timeframe,
@@ -1142,7 +1149,7 @@ if st.session_state.current_data is not None:
         **Par:** {symbol}  
         **Timeframe:** {timeframe}  
         **Preço Atual:** ${last_candle['close']:.6f}  
-        **RSI:** {last_candle['rsi']:.2f}  
+        **RSI({st.session_state.trading_bot.rsi_period}):** {last_candle['rsi']:.2f}  
         **MACD:** {last_candle['macd']:.4f}  
         **MACD Signal:** {last_candle['macd_signal']:.4f}  
         **Volume:** {last_candle['volume']:,.0f}  

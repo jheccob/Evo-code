@@ -12,7 +12,7 @@ class TradingBot:
         self.exchange = ExchangeConfig.get_exchange_instance('okx', testnet=False)
         self.symbol = "XLM/USDT"
         self.timeframe = "5m"
-        self.rsi_period = 14
+        self.rsi_period = 9  # Padrão corrigido para 9
         self.rsi_min = 20
         self.rsi_max = 80
         self.indicators = TechnicalIndicators()
@@ -68,6 +68,7 @@ class TradingBot:
     def calculate_indicators(self, df):
         """Calculate comprehensive technical indicators for the dataframe"""
         # Basic indicators
+        print(f"DEBUG: Calculando RSI com período {self.rsi_period}")
         df['rsi'] = self.indicators.calculate_rsi(df['close'], self.rsi_period)
 
         # Multiple moving averages for trend analysis
