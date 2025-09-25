@@ -476,14 +476,8 @@ st.title("📈 Trading Signals Dashboard")
 # Aviso sobre Binance Brasil
 if selected_exchange == 'binance' or 'binance' in str(st.session_state.trading_bot.exchange).lower():
     st.error("""
-    ⚠️ **ATENÇÃO - BINANCE BLOQUEADA NO BRASIL**
 
-    A Binance bloqueou acesso do Brasil para mercado futuro devido a regulamentações.
-    **Solução**: Use exchanges alternativos como Bybit, OKX ou KuCoin que funcionam perfeitamente no Brasil.
-
-    ✅ **Recomendado**: Bybit (já configurado como padrão)
-    """)
-
+    
     if st.button("🔄 Trocar para Bybit Automaticamente"):
         st.session_state.current_exchange = 'bybit'
         st.rerun()
