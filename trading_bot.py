@@ -19,16 +19,35 @@ class TradingBot:
 
     def update_config(self, symbol=None, timeframe=None, rsi_period=None, rsi_min=None, rsi_max=None):
         """Update bot configuration parameters"""
+        print(f"DEBUG update_config: Recebendo configurações:")
+        print(f"  symbol: {symbol}")
+        print(f"  timeframe: {timeframe}")
+        print(f"  rsi_period: {rsi_period}")
+        print(f"  rsi_min: {rsi_min}")
+        print(f"  rsi_max: {rsi_max}")
+        
         if symbol:
             self.symbol = symbol
+            print(f"  ✓ Symbol atualizado para: {self.symbol}")
         if timeframe:
             self.timeframe = timeframe
-        if rsi_period:
+            print(f"  ✓ Timeframe atualizado para: {self.timeframe}")
+        if rsi_period is not None:  # Usar 'is not None' para aceitar 0
             self.rsi_period = rsi_period
-        if rsi_min:
+            print(f"  ✓ RSI Period atualizado para: {self.rsi_period}")
+        if rsi_min is not None:
             self.rsi_min = rsi_min
-        if rsi_max:
+            print(f"  ✓ RSI Min atualizado para: {self.rsi_min}")
+        if rsi_max is not None:
             self.rsi_max = rsi_max
+            print(f"  ✓ RSI Max atualizado para: {self.rsi_max}")
+            
+        print(f"DEBUG: Configuração final do bot:")
+        print(f"  Symbol: {self.symbol}")
+        print(f"  Timeframe: {self.timeframe}")
+        print(f"  RSI Period: {self.rsi_period}")
+        print(f"  RSI Min: {self.rsi_min}")
+        print(f"  RSI Max: {self.rsi_max}")
 
     def get_market_data(self, limit=200):
         """Fetch OHLCV data from exchange"""
@@ -199,27 +218,36 @@ class TradingBot:
         bb_lower = row.get('bb_lower', price)
         bb_position = (price - bb_lower) / (bb_upper - bb_lower) if bb_upper != bb_lower else 0.5
 
-        # Enhanced scoring system otimizado para RSI 9
+        # Enhanced scoring system - usar SEMPRE as configurações do dashboard
         bullish_score = 0
         bearish_score = 0
         confidence_multiplier = 1.0
-
-        # RSI 9 scoring - extremos mais agressivos para maior sensibilidade
-        if rsi < 15:  # Extremo oversold para RSI 9
+        
+        # Usar os thresholds configurados no dashboard
+        rsi_oversold_threshold = self.rsi_min if hasattr(self, 'rsi_min') else 20
+        rsi_overbought_threshold = self.rsi_max if hasattr(self, 'rsi_max') else 80
+        
+        # RSI scoring baseado nas configurações do usuário
+        oversold_extreme = rsi_oversold_threshold - 5  # 5 pontos abaixo do configurado
+        oversold_strong = rsi_oversold_threshold + 5   # 5 pontos acima do configurado
+        overbought_extreme = rsi_overbought_threshold + 5  # 5 pontos acima do configurado
+        overbought_strong = rsi_overbought_threshold - 5   # 5 pontos abaixo do configurado
+        
+        if rsi <= oversold_extreme:  # Extremo oversold (usuário definiu)
             bullish_score += 5
             confidence_multiplier += 0.3
-        elif rsi < 25:  # Strong oversold
+        elif rsi <= rsi_oversold_threshold:  # Oversold configurado pelo usuário
             bullish_score += 4
             confidence_multiplier += 0.2
-        elif rsi < 35:  # Mild oversold
+        elif rsi <= oversold_strong:  # Próximo ao oversold
             bullish_score += 2
-        elif rsi > 85:  # Extremo overbought para RSI 9
+        elif rsi >= overbought_extreme:  # Extremo overbought (usuário definiu)
             bearish_score += 5
             confidence_multiplier += 0.3
-        elif rsi > 75:  # Strong overbought
+        elif rsi >= rsi_overbought_threshold:  # Overbought configurado pelo usuário
             bearish_score += 4
             confidence_multiplier += 0.2
-        elif rsi > 65:  # Mild overbought
+        elif rsi >= overbought_strong:  # Próximo ao overbought
             bearish_score += 2
 
         # Enhanced Stochastic RSI (more sensitive)
@@ -390,6 +418,13 @@ class TradingBot:
 
         last_row = df.iloc[-1]
 
+        # SEMPRE usar as configurações atuais do bot (definidas no dashboard)
+        actual_rsi_min = self.rsi_min
+        actual_rsi_max = self.rsi_max
+        actual_rsi_period = self.rsi_period
+        
+        print(f"DEBUG check_signal: Usando RSI configurado - período: {actual_rsi_period}, min: {actual_rsi_min}, max: {actual_rsi_max}")
+
         # Aplicar configurações otimizadas
         if day_trading_mode:
             from config.app_config import AppConfig
@@ -399,6 +434,9 @@ class TradingBot:
             min_volume_ratio = day_settings['min_volume_ratio'] 
             volatility_threshold = day_settings['volatility_filter']
             min_adx_threshold = day_settings['min_adx']
+            
+            # Para day trading, usar configurações do dashboard (mais importante que config automática)
+            print(f"DEBUG: Day Trading - mantendo RSI do dashboard: {actual_rsi_min}-{actual_rsi_max}")
             
             # Filtros específicos para day trading
             current_hour = last_row.get('timestamp', pd.Timestamp.now()).hour
@@ -418,6 +456,9 @@ class TradingBot:
             min_volume_ratio = crypto_settings['min_volume_ratio']
             volatility_threshold = crypto_settings['volatility_filter']
             min_adx_threshold = 28
+
+            # Manter RSI configurado manualmente no dashboard
+            print(f"DEBUG: Crypto otimizado - usando RSI do dashboard: {actual_rsi_min}-{actual_rsi_max}")
 
             # Apply quality filters first
             if avoid_ranging and last_row.get('market_regime', 'trending') == 'ranging':
@@ -443,6 +484,7 @@ class TradingBot:
             if require_volume and last_row.get('volume_ratio', 1) < min_volume_ratio:
                 return "NEUTRO"
 
+        # Usar configurações do próprio bot
         signal = self._generate_advanced_signal(last_row)
         confidence = self._calculate_signal_confidence(last_row)
 
@@ -455,22 +497,36 @@ class TradingBot:
         if atr_pct > (volatility_threshold * 100):
             return "NEUTRO"
 
-        # Filtros adicionais para crypto
+        # Validação final: verificar se o sinal está de acordo com as configurações do RSI do dashboard
+        rsi_atual = last_row.get('rsi', 50)
+        
+        # Se for sinal de compra, verificar se RSI está abaixo do limite configurado
+        if signal in ['COMPRA', 'COMPRA_FRACA'] and rsi_atual > actual_rsi_min:
+            print(f"DEBUG: Sinal de compra rejeitado - RSI {rsi_atual:.1f} acima do limite {actual_rsi_min}")
+            return "NEUTRO"
+            
+        # Se for sinal de venda, verificar se RSI está acima do limite configurado  
+        if signal in ['VENDA', 'VENDA_FRACA'] and rsi_atual < actual_rsi_max:
+            print(f"DEBUG: Sinal de venda rejeitado - RSI {rsi_atual:.1f} abaixo do limite {actual_rsi_max}")
+            return "NEUTRO"
+
+        # Filtros adicionais para crypto (usando thresholds mais conservadores)
         if crypto_optimized:
-            # StochRSI extremos
+            # StochRSI extremos (mais restritivo)
             stoch_rsi_k = last_row.get('stoch_rsi_k', 50)
-            if signal in ['COMPRA', 'COMPRA_FRACA'] and stoch_rsi_k > 25:
-                return "NEUTRO"  # Só compra em StochRSI muito baixo
-            if signal in ['VENDA', 'VENDA_FRACA'] and stoch_rsi_k < 75:
-                return "NEUTRO"  # Só vende em StochRSI muito alto
+            if signal in ['COMPRA', 'COMPRA_FRACA'] and stoch_rsi_k > 30:
+                return "NEUTRO"  # Só compra em StochRSI baixo
+            if signal in ['VENDA', 'VENDA_FRACA'] and stoch_rsi_k < 70:
+                return "NEUTRO"  # Só vende em StochRSI alto
 
-            # Williams %R extremos
+            # Williams %R extremos (mais restritivo)
             williams_r = last_row.get('williams_r', -50)
-            if signal in ['COMPRA', 'COMPRA_FRACA'] and williams_r > -75:
+            if signal in ['COMPRA', 'COMPRA_FRACA'] and williams_r > -70:
                 return "NEUTRO"
-            if signal in ['VENDA', 'VENDA_FRACA'] and williams_r < -25:
+            if signal in ['VENDA', 'VENDA_FRACA'] and williams_r < -30:
                 return "NEUTRO"
 
+        print(f"DEBUG: Sinal final aprovado: {signal} com RSI {rsi_atual:.1f}")
         return signal
 
     def get_signal_with_confidence(self, df):

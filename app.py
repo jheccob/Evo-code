@@ -412,13 +412,17 @@ else:
 
 # Telegram configuration completed - previous duplicate code removed
 
-# Update bot configuration - forçar RSI 9 se configurado
-if day_trading_mode:
-    rsi_period = 9  # Forçar RSI 9 para day trading
-elif crypto_optimized:
-    from config.app_config import AppConfig
-    crypto_settings = AppConfig.get_crypto_timeframe_settings(timeframe)
-    rsi_period = crypto_settings.get('rsi_period', 9)  # Padrão 9
+# Update bot configuration - SEMPRE usar configurações do dashboard
+print(f"=== CONFIGURAÇÕES APLICADAS AO BOT ===")
+print(f"Símbolo: {symbol}")
+print(f"Timeframe: {timeframe}")
+print(f"RSI Período: {rsi_period}")
+print(f"RSI Mínimo (Compra): {rsi_min}")
+print(f"RSI Máximo (Venda): {rsi_max}")
+print(f"Day Trading Mode: {day_trading_mode}")
+if 'crypto_optimized' in locals():
+    print(f"Crypto Otimizado: {crypto_optimized}")
+print("=====================================")
 
 st.session_state.trading_bot.update_config(
     symbol=symbol,
@@ -427,6 +431,15 @@ st.session_state.trading_bot.update_config(
     rsi_min=rsi_min,
     rsi_max=rsi_max
 )
+
+# Verificar se a configuração foi aplicada corretamente
+bot_config = st.session_state.trading_bot
+print(f"VERIFICAÇÃO - Bot configurado com:")
+print(f"  RSI Período: {bot_config.rsi_period}")
+print(f"  RSI Min: {bot_config.rsi_min}")
+print(f"  RSI Max: {bot_config.rsi_max}")
+print(f"  Símbolo: {bot_config.symbol}")
+print(f"  Timeframe: {bot_config.timeframe}")
 
 # Main dashboard
 st.title("📈 Trading Signals Dashboard")
