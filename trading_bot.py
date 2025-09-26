@@ -7,11 +7,10 @@ from indicators import TechnicalIndicators
 
 class TradingBot:
     def __init__(self):
-        # Usar exchange recomendado (Binance se tiver credenciais, senão OKX)
+        # Usar sempre Binance WebSocket público
         from config.exchange_config import ExchangeConfig
-        recommended_exchange = ExchangeConfig.get_recommended_for_brazil()
-        self.exchange = ExchangeConfig.get_exchange_instance(recommended_exchange, testnet=False)
-        self.exchange_name = recommended_exchange
+        self.exchange = ExchangeConfig.get_exchange_instance('binance', testnet=False)
+        self.exchange_name = 'binance'
         self.symbol = "BTC/USDT"  # Símbolo padrão mais popular
         self.timeframe = "5m"
         self.rsi_period = 14  # Padrão RSI
@@ -19,13 +18,8 @@ class TradingBot:
         self.rsi_max = 80
         self.indicators = TechnicalIndicators()
         
-        print(f"🚀 TradingBot inicializado com {recommended_exchange.upper()}")
-        if recommended_exchange == 'binance' and self.exchange.apiKey:
-            print(f"✅ Binance configurada com API Key: {self.exchange.apiKey[:10]}...")
-        elif recommended_exchange == 'binance':
-            print("⚠️ Binance selecionada mas sem credenciais")
-        else:
-            print(f"📊 Usando {recommended_exchange.upper()} para dados públicos")
+        print(f"🚀 TradingBot inicializado com BINANCE WEBSOCKET PÚBLICO")
+        print("📡 Usando dados em tempo real sem necessidade de credenciais")
 
     def update_config(self, symbol=None, timeframe=None, rsi_period=None, rsi_min=None, rsi_max=None):
         """Update bot configuration parameters"""

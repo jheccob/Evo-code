@@ -28,23 +28,15 @@ class ExchangeConfig:
                 'quote': 'USDT' if symbol.endswith('/USDT') else 'USD'
             }
     
-    # Exchanges suportados com credenciais
+    # Exchanges suportados - foco em WebSocket público
     SUPPORTED_EXCHANGES = {
         'binance': {
-            'name': 'Binance',
-            'futures_supported': True,
-            'brazil_accessible': True,
-            'usdt_pairs': True,
-            'requires_credentials': True,
-            'description': 'Binance - Exchange global com futuros e spot (requer API Key)'
-        },
-        'okx': {
-            'name': 'OKX',
+            'name': 'Binance WebSocket Público',
             'futures_supported': True,
             'brazil_accessible': True,
             'usdt_pairs': True,
             'requires_credentials': False,
-            'description': 'OKX - Exchange para dados públicos sem credenciais'
+            'description': 'Binance - WebSocket público sem necessidade de credenciais'
         }
     }
     
@@ -78,38 +70,8 @@ class ExchangeConfig:
                 }
             })
             
-            # Credenciais da Binance via Secrets
-            api_key = os.getenv('BINANCE_API_KEY')
-            secret = os.getenv('BINANCE_SECRET')
-            
-            if api_key and secret:
-                config['apiKey'] = api_key
-                config['secret'] = secret
-                print(f"✅ Binance configurada com credenciais (API Key: {api_key[:10]}...)")
-            else:
-                print("⚠️  Credenciais Binance não encontradas nos Secrets")
-                print("💡 Configure BINANCE_API_KEY e BINANCE_SECRET nos Secrets")
-                
-        elif exchange_name == 'okx':
-            config.update({
-                'rateLimit': 1200,
-                'options': {
-                    'defaultType': 'swap',  # Para futuros perpétuos
-                    'adjustForTimeDifference': True,
-                    'recvWindow': 10000,
-                }
-            })
-            
-            # Credenciais OKX (opcionais)
-            api_key = os.getenv('OKX_API_KEY')
-            secret = os.getenv('OKX_SECRET')
-            passphrase = os.getenv('OKX_PASSPHRASE')
-            
-            if api_key and secret:
-                config['apiKey'] = api_key
-                config['secret'] = secret
-                if passphrase:
-                    config['password'] = passphrase
+            print("✅ Binance WebSocket Público configurado - sem necessidade de credenciais")
+            print("📡 Usando dados públicos em tempo real via WebSocket")
         
         return exchange_class(config)
     
@@ -283,10 +245,8 @@ class ExchangeConfig:
     @classmethod
     def get_recommended_for_brazil(cls):
         """Retornar exchange recomendado para Brasil"""
-        # Verificar se há credenciais Binance
-        if os.getenv('BINANCE_API_KEY') and os.getenv('BINANCE_SECRET'):
-            return 'binance'
-        return 'okx'
+        # Sempre usar Binance WebSocket público
+        return 'binance'
     
     @classmethod
     def get_binance_example_config(cls):

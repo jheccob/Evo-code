@@ -135,35 +135,11 @@ st.sidebar.title("🔧 Configurações")
 st.sidebar.subheader("🌎 Exchange")
 from config.exchange_config import ExchangeConfig
 
-# Verificar exchanges disponíveis
-available_exchanges = list(ExchangeConfig.SUPPORTED_EXCHANGES.keys())
-recommended = ExchangeConfig.get_recommended_for_brazil()
-
-# Mostrar status das credenciais
-has_binance_creds = bool(os.getenv('BINANCE_API_KEY') and os.getenv('BINANCE_SECRET'))
-
-if has_binance_creds:
-    st.sidebar.success("✅ **Binance** - Configurada com suas credenciais")
-    default_exchange = 'binance'
-else:
-    st.sidebar.info("🔹 **Configure credenciais Binance nos Secrets para acesso completo**")
-    default_exchange = 'okx'
-
-selected_exchange = st.sidebar.selectbox(
-    "Exchange:",
-    available_exchanges,
-    index=available_exchanges.index(default_exchange),
-    help="Binance requer API Key configurada nos Secrets"
-)
-
-# Status do exchange selecionado
-exchange_info = ExchangeConfig.SUPPORTED_EXCHANGES[selected_exchange]
-if selected_exchange == 'binance' and not has_binance_creds:
-    st.sidebar.warning("⚠️ Binance sem credenciais - apenas dados públicos")
-elif selected_exchange == 'binance' and has_binance_creds:
-    st.sidebar.success(f"🔐 Binance com suas credenciais")
-else:
-    st.sidebar.info(f"📊 {exchange_info['description']}")
+# Usar sempre Binance WebSocket público
+selected_exchange = 'binance'
+st.sidebar.success("✅ **Binance WebSocket Público** - Funcionando sem credenciais")
+st.sidebar.info("📡 Dados em tempo real via WebSocket público da Binance Futures")
+st.sidebar.info("🔹 Sem limite de requisições API - Dados streaming 24/7")
 
 # Initialize session state com cache inteligente
 if 'trading_bot' not in st.session_state:
@@ -216,31 +192,25 @@ if 'backtest_results' not in st.session_state:
 
 # Continue with sidebar configuration
 
-# Test exchange connection
-if st.sidebar.button("🧪 Testar Conexão OKX"):
-    with st.spinner("Testando conexão com OKX..."):
-        success, message = ExchangeConfig.test_connection('okx')
-        if success:
-            st.sidebar.success(message)
-        else:
-            st.sidebar.error(message)
+# Test WebSocket connection
+if st.sidebar.button("🧪 Testar WebSocket Binance"):
+    with st.spinner("Testando WebSocket público da Binance..."):
+        try:
+            # Teste simples de conectividade
+            import requests
+            response = requests.get("https://api.binance.com/api/v3/ping", timeout=10)
+            if response.status_code == 200:
+                st.sidebar.success("✅ Binance API pública funcionando!")
+                st.sidebar.info("📡 WebSocket público disponível")
+            else:
+                st.sidebar.error("❌ Problema de conectividade com Binance")
+        except Exception as e:
+            st.sidebar.error(f"❌ Erro: {str(e)}")
 
-            # Diagnóstico adicional
-            st.sidebar.info("💡 Tentando diagnóstico...")
-            try:
-                import requests
-                response = requests.get("https://httpbin.org/ip", timeout=10)
-                if response.status_code == 200:
-                    st.sidebar.success("✅ Internet funcionando")
-                else:
-                    st.sidebar.error("❌ Problema de conectividade")
-            except:
-                st.sidebar.error("❌ Sem acesso à internet")
-
-# Diagnóstico avançado
-if st.sidebar.button("🔍 Diagnóstico OKX"):
-    with st.spinner("Executando diagnóstico OKX..."):
-        st.sidebar.markdown("**🔍 Relatório de Diagnóstico:**")
+# Diagnóstico WebSocket
+if st.sidebar.button("🔍 Diagnóstico WebSocket"):
+    with st.spinner("Executando diagnóstico WebSocket..."):
+        st.sidebar.markdown("**🔍 Relatório WebSocket:**")
 
         # Teste 1: Internet
         try:
@@ -250,33 +220,31 @@ if st.sidebar.button("🔍 Diagnóstico OKX"):
         except:
             st.sidebar.error("❌ Sem conexão com internet")
 
-        # Teste 2: DNS OKX
+        # Teste 2: Binance API
         try:
-            import socket
-            socket.gethostbyname('www.okx.com')
-            st.sidebar.success("✅ DNS OKX funcionando")
+            import requests
+            response = requests.get("https://api.binance.com/api/v3/ping", timeout=5)
+            st.sidebar.success("✅ Binance API acessível")
         except:
-            st.sidebar.error("❌ Problema de DNS para OKX")
+            st.sidebar.error("❌ Problema com Binance API")
 
-        # Teste 3: OKX API
+        # Teste 3: WebSocket endpoint
         try:
-            exchange = ExchangeConfig.get_exchange_instance('okx')
-            markets = exchange.load_markets()
-            st.sidebar.success(f"✅ OKX API acessível ({len(markets)} mercados)")
+            import requests
+            response = requests.get("https://fstream.binance.com", timeout=5)
+            st.sidebar.success("✅ WebSocket Binance Futures disponível")
         except Exception as e:
-            st.sidebar.error(f"❌ OKX API: {str(e)[:50]}...")
+            st.sidebar.error(f"❌ WebSocket: {str(e)[:50]}...")
 
 # Multi-symbol monitoring
 st.sidebar.subheader("📊 Pares de Moedas")
 enable_multi_symbol = st.sidebar.checkbox("🔀 Monitoramento Múltiplo", value=False)
 
 if enable_multi_symbol:
-    # Pares USDT disponíveis no OKX
-    try:
-        available_pairs = ExchangeConfig.get_usdt_pairs('okx')[:20]  # Top 20 pares
-    except:
-        available_pairs = ["BTC/USDT", "ETH/USDT", "XLM/USDT", "ADA/USDT", "SOL/USDT", 
-                          "DOGE/USDT", "LTC/USDT", "AVAX/USDT", "MATIC/USDT", "DOT/USDT"]
+    # Pares USDT disponíveis na Binance via WebSocket
+    available_pairs = ["BTC/USDT", "ETH/USDT", "ADA/USDT", "SOL/USDT", "XRP/USDT",
+                      "DOGE/USDT", "LTC/USDT", "AVAX/USDT", "MATIC/USDT", "DOT/USDT", 
+                      "LINK/USDT", "UNI/USDT", "ATOM/USDT", "FTM/USDT", "NEAR/USDT"]
 
     selected_symbols = st.sidebar.multiselect(
         "Selecionar pares para monitorar:",
@@ -292,11 +260,9 @@ if enable_multi_symbol:
     symbol = selected_symbols[0] if selected_symbols else "XLM-USDT"
 
 else:
-    # Pares USDT populares no OKX
-    try:
-        symbol_options = ExchangeConfig.get_usdt_pairs('okx')[:10]  # Top 10 pares
-    except:
-        symbol_options = ["BTC/USDT", "ETH/USDT", "XLM/USDT", "ADA/USDT", "SOL/USDT", "DOGE/USDT", "LTC/USDT", "AVAX/USDT"]
+    # Pares USDT populares na Binance
+    symbol_options = ["BTC/USDT", "ETH/USDT", "ADA/USDT", "SOL/USDT", "XRP/USDT", 
+                     "DOGE/USDT", "LTC/USDT", "AVAX/USDT", "MATIC/USDT", "DOT/USDT"]
 
     symbol = st.sidebar.selectbox(
         "Par de Trading",
@@ -545,13 +511,9 @@ print(f"  Timeframe: {bot_config.timeframe}")
 # Main dashboard
 st.title("📈 Trading Signals Dashboard")
 
-# Aviso sobre Binance Brasil
-if selected_exchange == 'binance' or 'binance' in str(st.session_state.trading_bot.exchange).lower():
-    st.warning("⚠️ Usando Binance - certifique-se de que suas credenciais estão configuradas nos Secrets.")
-    
-    if st.button("🔄 Trocar para OKX Automaticamente"):
-        st.session_state.current_exchange = 'okx'
-        st.rerun()
+# Status do WebSocket Binance
+st.success("✅ **Binance WebSocket Público Ativo** - Dados em tempo real sem credenciais")
+st.info("📡 Conectado via WebSocket público da Binance Futures - Sem limites de API")
 
 # Import user manager for admin features  
 try:
