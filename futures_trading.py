@@ -13,10 +13,10 @@ class FuturesTrading(TradingBot):
     Suporte para alavancagem, posições short/long e gerenciamento de risco
     """
     
-    def __init__(self, exchange_name='bybit'):
+    def __init__(self, exchange_name='binance'):
         super().__init__()
         # Configurar exchange que funciona no Brasil
-        self.exchange = ExchangeConfig.get_exchange_instance(exchange_name, testnet=True)
+        self.exchange = ExchangeConfig.get_exchange_instance(exchange_name, testnet=False)
         self.exchange_name = exchange_name
         
         # Definir símbolo padrão em USDT
