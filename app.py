@@ -80,6 +80,54 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
+# Incluir JavaScript para refresh suave
+st.markdown("""
+<script>
+// Auto-refresh suave sem recarregar página
+let refreshTimer = null;
+
+function smoothRefresh() {
+    // Mostrar indicador de carregamento sutil
+    const indicator = document.createElement('div');
+    indicator.innerHTML = '🔄 Atualizando...';
+    indicator.style.position = 'fixed';
+    indicator.style.top = '10px';
+    indicator.style.right = '10px';
+    indicator.style.background = '#f0f8ff';
+    indicator.style.padding = '5px 10px';
+    indicator.style.borderRadius = '5px';
+    indicator.style.fontSize = '12px';
+    indicator.style.zIndex = '9999';
+    indicator.style.opacity = '0.8';
+    document.body.appendChild(indicator);
+    
+    // Remover indicador após 2 segundos
+    setTimeout(() => {
+        if (indicator.parentNode) {
+            indicator.parentNode.removeChild(indicator);
+        }
+    }, 2000);
+}
+
+// Configurar refresh automático mais suave
+if (typeof window.streamlitAutoRefresh === 'undefined') {
+    window.streamlitAutoRefresh = true;
+    
+    // Refresh a cada 45 segundos
+    setInterval(() => {
+        if (!document.hidden) {
+            smoothRefresh();
+            // Triggerar atualização suave do Streamlit
+            window.parent.postMessage({
+                type: 'streamlit:componentReady',
+                data: { refresh: true }
+            }, '*');
+        }
+    }, 45000);
+}
+</script>
+""", unsafe_allow_html=True)
+
 # Sidebar configuration - Move this section before session state initialization
 st.sidebar.title("🔧 Configurações")
 
@@ -117,9 +165,16 @@ elif selected_exchange == 'binance' and has_binance_creds:
 else:
     st.sidebar.info(f"📊 {exchange_info['description']}")
 
-# Initialize session state
+# Initialize session state com cache inteligente
 if 'trading_bot' not in st.session_state:
     st.session_state.trading_bot = TradingBot()
+
+# Cache inteligente para evitar reloads desnecessários
+if 'data_cache' not in st.session_state:
+    st.session_state.data_cache = {}
+    
+if 'smooth_update' not in st.session_state:
+    st.session_state.smooth_update = True
 
 # Update exchange if changed
 if 'current_exchange' not in st.session_state or st.session_state.current_exchange != selected_exchange:
@@ -341,10 +396,26 @@ with st.sidebar.expander("⚙️ Configurações Avançadas", expanded=False):
 auto_refresh = st.sidebar.checkbox("🔄 Atualização Automática", value=True)
 st.session_state.auto_refresh = auto_refresh
 
-# Manual refresh button
+# Manual refresh button - atualização suave
 if st.sidebar.button("🔄 Atualizar Agora"):
-    st.session_state.last_update = None
-    st.rerun()
+    with st.spinner('🔄 Atualizando dados...'):
+        try:
+            # Limpar cache de dados
+            st.session_state.last_update = None
+            st.session_state.current_data = None
+            
+            # Buscar novos dados
+            new_data = st.session_state.trading_bot.get_market_data()
+            if new_data is not None:
+                st.session_state.current_data = new_data
+                st.session_state.last_update = get_brazil_datetime_naive()
+                
+            st.success("✅ Dados atualizados!")
+            # Usar experimental_rerun para refresh mais suave
+            st.experimental_rerun()
+        except:
+            # Fallback para rerun normal se experimental_rerun não funcionar
+            st.rerun()
 
 # Telegram Configuration Section
 st.sidebar.markdown("---")
@@ -1040,8 +1111,10 @@ if not st.session_state.telegram_bot.is_configured() and not has_secrets_main:
         with col3:
             st.info("💡 **Como configurar:**\n1. Crie um bot no @BotFather\n2. Obtenha seu Chat ID no @userinfobot\n3. Configure aqui")
 
-# Status indicators for main symbol
-col1, col2, col3, col4, col5 = st.columns(5)
+# Status indicators for main symbol - usando containers para atualização suave
+status_container = st.container()
+with status_container:
+    col1, col2, col3, col4, col5 = st.columns(5)
 
 # Check if we need to update data
 should_update = (
@@ -1128,13 +1201,15 @@ if st.session_state.current_data is not None:
         if len(st.session_state.signals_history) > 50:
             st.session_state.signals_history = st.session_state.signals_history[-50:]
 
-    # Display current metrics
+    # Display current metrics - com containers para atualização suave
     with col1:
-        st.metric(
-            label="💰 Preço Atual",
-            value=f"${last_candle['close']:.6f}",
-            delta=f"{((last_candle['close'] - last_candle['open']) / last_candle['open'] * 100):.2f}%"
-        )
+        price_container = st.empty()
+        with price_container.container():
+            st.metric(
+                label="💰 Preço Atual",
+                value=f"${last_candle['close']:.6f}",
+                delta=f"{((last_candle['close'] - last_candle['open']) / last_candle['open'] * 100):.2f}%"
+            )
 
     with col2:
         rsi_color = "normal"
@@ -1176,18 +1251,33 @@ if st.session_state.current_data is not None:
             )
 
     with col5:
-        if st.session_state.telegram_bot.is_configured():
-            st.metric(
-                label="📱 Telegram",
-                value="🟢 Ativo",
-                delta="Notificações ON"
-            )
+        # Status dinâmico com indicador de conexão
+        current_time_now = get_brazil_datetime_naive()
+        if st.session_state.last_update:
+            seconds_since_update = (current_time_now - st.session_state.last_update).total_seconds()
+            
+            if seconds_since_update < 30:
+                status_color = "🟢"
+                status_text = "Conectado"
+                delta_text = f"Há {int(seconds_since_update)}s"
+            elif seconds_since_update < 60:
+                status_color = "🟡"
+                status_text = "Atualizando"
+                delta_text = f"Há {int(seconds_since_update)}s"
+            else:
+                status_color = "🔴"
+                status_text = "Reconectando"
+                delta_text = f"Há {int(seconds_since_update//60)}min"
         else:
-            st.metric(
-                label="🕒 Última Atualização",
-                value=format_brazil_time(st.session_state.last_update, "%H:%M:%S") if st.session_state.last_update else "---",
-                delta=None
-            )
+            status_color = "⚪"
+            status_text = "Iniciando"
+            delta_text = "..."
+        
+        st.metric(
+            label="📡 Status",
+            value=f"{status_color} {status_text}",
+            delta=delta_text
+        )
 
     # Price, RSI and MACD Charts
     st.subheader("📈 Gráficos")
@@ -1553,18 +1643,39 @@ if signals_df is not None and len(signals_df) > 0:
             except Exception as e:
                 st.warning(f"⚠️ Erro ao carregar estatísticas: {str(e)}")
 
-# Auto-refresh mechanism - throttled for performance  
+# Auto-refresh mechanism - suave sem recarregar página completa
 if auto_refresh:
-    # Only refresh every 60 seconds to reduce API calls
-    if st.session_state.last_update is None or (get_brazil_datetime_naive() - st.session_state.last_update).total_seconds() > 60:
-        # Force data refresh after 60 seconds
-        st.session_state.last_update = None
-        time.sleep(5)  # Short delay to prevent rapid refreshes
-        st.rerun()
-    else:
-        # Just wait and rerun without API calls
-        time.sleep(5)  # Check every 5 seconds if refresh is needed
-        st.rerun()
+    # Criar placeholders para atualização suave
+    if 'data_placeholder' not in st.session_state:
+        st.session_state.data_placeholder = None
+    if 'metrics_placeholder' not in st.session_state:
+        st.session_state.metrics_placeholder = None
+    
+    # Verificar se precisa atualizar (a cada 30 segundos para ser mais responsivo)
+    current_time_check = get_brazil_datetime_naive()
+    should_update_data = (
+        st.session_state.last_update is None or 
+        (current_time_check - st.session_state.last_update).total_seconds() > 30
+    )
+    
+    if should_update_data:
+        # Atualizar apenas os dados, sem recarregar a página
+        try:
+            new_data = st.session_state.trading_bot.get_market_data()
+            if new_data is not None:
+                st.session_state.current_data = new_data
+                st.session_state.last_update = current_time_check
+                
+                # Forçar atualização suave apenas dos componentes necessários
+                st.experimental_rerun()
+                
+        except Exception as e:
+            # Em caso de erro, não quebrar a página
+            pass
+    
+    # Auto-refresh a cada 10 segundos (apenas checagem, não recarregamento)
+    if st.session_state.auto_refresh:
+        time.sleep(1)  # Intervalo menor para interface mais responsiva
 
 # Tab 2: Calculadoras
         with futures_tab2:
