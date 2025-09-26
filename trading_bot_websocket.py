@@ -39,6 +39,7 @@ class StreamlinedTradingBot:
         self.current_signal = "NEUTRO"
         self.last_price = 0.0
         self.is_running = False
+        self._last_signal = "NEUTRO"  # Para rastreamento de mudanças
         
         print(f"🚀 StreamlinedTradingBot inicializado para {self.symbol} ({self.timeframe})")
         
