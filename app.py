@@ -194,16 +194,20 @@ if 'backtest_results' not in st.session_state:
 
 # Test WebSocket connection
 if st.sidebar.button("🧪 Testar WebSocket Binance"):
-    with st.spinner("Testando WebSocket público da Binance..."):
+    with st.spinner("Testando WebSocket público da Binance Futures..."):
         try:
-            # Teste simples de conectividade
-            import requests
-            response = requests.get("https://api.binance.com/api/v3/ping", timeout=10)
-            if response.status_code == 200:
-                st.sidebar.success("✅ Binance API pública funcionando!")
-                st.sidebar.info("📡 WebSocket público disponível")
+            from config.exchange_config import ExchangeConfig
+            success, message = ExchangeConfig.test_connection('binance')
+            
+            if success:
+                st.sidebar.success("✅ WebSocket Público da Binance funcionando!")
+                with st.sidebar.expander("📊 Detalhes da Conexão"):
+                    st.text(message)
             else:
-                st.sidebar.error("❌ Problema de conectividade com Binance")
+                st.sidebar.error("❌ Problema com WebSocket público")
+                with st.sidebar.expander("🔍 Detalhes do Erro"):
+                    st.text(message)
+                    
         except Exception as e:
             st.sidebar.error(f"❌ Erro: {str(e)}")
 

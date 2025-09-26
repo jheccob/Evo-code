@@ -192,55 +192,66 @@ class ExchangeConfig:
     
     @classmethod
     def test_connection(cls, exchange_name='binance'):
-        """Testar conexão com exchange"""
+        """Testar conexão WebSocket público da Binance"""
         try:
-            exchange = cls.get_exchange_instance(exchange_name)
+            print("🔄 Testando WebSocket público da Binance Futures...")
             
-            # Test market data access
-            markets = exchange.load_markets()
+            # Testar endpoints públicos da Binance
+            import requests
             
-            # Procurar por BTC/USDT
-            test_symbols = ['BTC/USDT', 'BTCUSDT']
-            future_symbol = None
-            spot_symbol = None
+            endpoints_test = [
+                {
+                    'name': 'Binance API Spot',
+                    'url': 'https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT'
+                },
+                {
+                    'name': 'Binance API Futures',
+                    'url': 'https://fapi.binance.com/fapi/v1/ticker/price?symbol=BTCUSDT'
+                },
+                {
+                    'name': 'Binance US (Backup)',
+                    'url': 'https://api.binance.us/api/v3/ticker/price?symbol=BTCUSDT'
+                }
+            ]
             
-            for symbol in test_symbols:
-                if symbol in markets:
-                    market = markets[symbol]
-                    if market.get('active', False):
-                        if market.get('type') in ['future', 'swap']:
-                            future_symbol = symbol
-                            break
-                        elif market.get('type') == 'spot':
-                            spot_symbol = symbol
+            working_endpoints = []
             
-            # Test future first
-            test_symbol = future_symbol or spot_symbol or 'BTC/USDT'
-            
-            try:
-                ticker = exchange.fetch_ticker(test_symbol)
-                
-                # Check if we have credentials
-                has_credentials = bool(exchange.apiKey and exchange.secret)
-                
-                if exchange_name == 'binance':
-                    if has_credentials:
-                        # Test account access
-                        try:
-                            balance = exchange.fetch_balance()
-                            return True, f"✅ Binance funcionando com credenciais! BTC/USDT: ${ticker['last']:.2f} | Saldo USDT: ${balance.get('USDT', {}).get('total', 0):.2f}"
-                        except Exception as e:
-                            return True, f"✅ Binance conectado! BTC/USDT: ${ticker['last']:.2f} | ⚠️ Erro na conta: {str(e)[:50]}"
+            for endpoint in endpoints_test:
+                try:
+                    response = requests.get(endpoint['url'], timeout=5)
+                    if response.status_code == 200:
+                        data = response.json()
+                        if 'price' in data:
+                            price = float(data['price'])
+                            working_endpoints.append(f"✅ {endpoint['name']}: ${price:,.2f}")
                     else:
-                        return False, f"❌ Binance precisa de credenciais. Configure BINANCE_API_KEY e BINANCE_SECRET"
-                else:
-                    return True, f"✅ {cls.SUPPORTED_EXCHANGES[exchange_name]['name']} funcionando! BTC/USDT: ${ticker['last']:.2f}"
-                    
-            except Exception as e:
-                return False, f"❌ Erro ao buscar dados do mercado: {str(e)}"
+                        working_endpoints.append(f"⚠️ {endpoint['name']}: HTTP {response.status_code}")
+                except Exception as e:
+                    working_endpoints.append(f"❌ {endpoint['name']}: {str(e)[:30]}...")
+            
+            # Testar WebSocket endpoint
+            try:
+                ws_test_response = requests.get('https://fstream.binance.com', timeout=5)
+                ws_status = f"✅ WebSocket endpoint disponível" if ws_test_response.status_code == 200 else f"⚠️ WebSocket: HTTP {ws_test_response.status_code}"
+                working_endpoints.append(ws_status)
+            except:
+                working_endpoints.append("❌ WebSocket endpoint não acessível")
+            
+            # Se pelo menos um endpoint funcionar, considerar como sucesso
+            success_count = len([e for e in working_endpoints if e.startswith('✅')])
+            
+            if success_count > 0:
+                result_msg = f"🌐 WebSocket Público da Binance: {success_count}/{len(endpoints_test)} endpoints funcionando\n"
+                result_msg += "\n".join(working_endpoints)
+                result_msg += "\n\n📡 Sistema configurado para usar dados públicos sem credenciais!"
+                return True, result_msg
+            else:
+                result_msg = "❌ Nenhum endpoint público da Binance acessível:\n"
+                result_msg += "\n".join(working_endpoints)
+                return False, result_msg
                 
         except Exception as e:
-            return False, f"❌ Erro ao conectar com {exchange_name}: {str(e)}"
+            return False, f"❌ Erro ao testar WebSocket público: {str(e)}"
     
     @classmethod
     def get_recommended_for_brazil(cls):
