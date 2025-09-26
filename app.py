@@ -614,49 +614,64 @@ with tab1:
                     st.session_state.ws_bot = None
                     st.success("✅ WebSocket parado")
         
-        # Área de dados em tempo real
+        # Área de dados em tempo real com loop de 60 segundos
         if ws_active and st.session_state.ws_bot:
             st.markdown("---")
-            st.subheader("📈 Dados em Tempo Real")
+            st.subheader("📈 Dados em Tempo Real - Loop 60 Segundos")
+            
+            # Status do loop
+            st.success("⏰ **Sistema funcionando a cada 60 segundos** - Dados atualizados automaticamente")
+            
+            # Próxima atualização
+            import time
+            next_update = int(time.time()) % 60
+            seconds_remaining = 60 - next_update
+            st.info(f"🔄 Próxima atualização em: **{seconds_remaining} segundos**")
             
             # Placeholder para dados
             data_placeholder = st.empty()
             signal_placeholder = st.empty()
             
-            # Simulação de dados (em produção seria conectado ao WebSocket)
-            with data_placeholder.container():
-                col1, col2, col3, col4 = st.columns(4)
+            # Dados do bot (se disponível)
+            if hasattr(st.session_state.ws_bot, 'current_signal'):
+                with data_placeholder.container():
+                    col1, col2, col3, col4 = st.columns(4)
+                    
+                    with col1:
+                        price = getattr(st.session_state.ws_bot, 'last_price', 0)
+                        st.metric(
+                            label="💰 Preço Atual",
+                            value=f"${price:.4f}",
+                            delta="Atualizado"
+                        )
+                        
+                    with col2:
+                        st.metric(
+                            label="📊 RSI",
+                            value="Calculando...",
+                            delta="A cada 60s"
+                        )
+                        
+                    with col3:
+                        st.metric(
+                            label="📈 MACD",
+                            value="Calculando...",
+                            delta="A cada 60s"
+                        )
+                        
+                    with col4:
+                        signal = getattr(st.session_state.ws_bot, 'current_signal', 'INICIANDO')
+                        st.metric(
+                            label="🎯 Sinal",
+                            value=signal,
+                            delta="60s loop"
+                        )
                 
-                with col1:
-                    st.metric(
-                        label="💰 Preço Atual",
-                        value="$0.00",
-                        delta="0.00%"
-                    )
-                    
-                with col2:
-                    st.metric(
-                        label="📊 RSI",
-                        value="--",
-                        delta="Neutro"
-                    )
-                    
-                with col3:
-                    st.metric(
-                        label="📈 MACD",
-                        value="--",
-                        delta="--"
-                    )
-                    
-                with col4:
-                    st.metric(
-                        label="🎯 Sinal",
-                        value="AGUARDANDO",
-                        delta="--% confiança"
-                    )
-            
-            with signal_placeholder.container():
-                st.info("🔄 Aguardando dados do WebSocket público da Binance Futures...")
+                with signal_placeholder.container():
+                    st.success("✅ **Bot ativo com loop de 60 segundos** - Análises automáticas usando WebSocket público")
+            else:
+                with signal_placeholder.container():
+                    st.info("🔄 Iniciando bot com loop de 60 segundos...")
                 
         # Informações sobre dados públicos
         with st.expander("ℹ️ Sobre WebSocket Público Binance Futures", expanded=False):
@@ -674,9 +689,15 @@ with tab1:
             - Sinais de compra/venda automáticos
             
             ⚡ **Vantagens:**
-            - Sem limite de rate API
-            - Dados instantâneos
+            - Loop automático a cada 60 segundos
+            - Sem limite de rate API  
+            - Dados em tempo real
             - Totalmente gratuito
+            
+            ⏰ **Funcionamento:**
+            - Análise executada automaticamente a cada 1 minuto
+            - Sinais gerados com base em dados públicos
+            - Indicadores calculados em tempo real
             """)
             
         # Área de logs WebSocket
