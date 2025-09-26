@@ -30,6 +30,10 @@ author = "agent"
 task = "workflow.run"
 args = "Trading Dashboard"
 
+[[workflows.workflow.tasks]]
+task = "workflow.run"
+args = "Telegram Bot"
+
 [[workflows.workflow]]
 name = "Trading Dashboard"
 author = "agent"
@@ -69,9 +73,24 @@ mode = "sequential"
 task = "shell.exec"
 args = "python run_telegram_bot.py"
 
+[[workflows.workflow]]
+name = "Telegram Bot"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "python start_telegram_bot.py"
+
+[workflows.workflow.metadata]
+outputType = "console"
+
 [[ports]]
 localPort = 5000
 externalPort = 80
+
+[[ports]]
+localPort = 37011
+externalPort = 3000
 
 [agent]
 expertMode = true

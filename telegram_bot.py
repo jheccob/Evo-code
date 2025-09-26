@@ -443,7 +443,7 @@ Entre em contato: @trading_support
         try:
             self.logger.info("🚀 Starting Telegram bot polling (async)...")
             
-            # Start polling directly (PTB v22.4 async style)
+            # Use the run_polling method which handles initialization and cleanup properly
             await self.application.run_polling(drop_pending_updates=True)
             
             return True
