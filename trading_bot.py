@@ -209,6 +209,13 @@ class TradingBot:
         # Basic indicators
         print(f"DEBUG: Calculando RSI com período {self.rsi_period}")
         df['rsi'] = self.indicators.calculate_rsi(df['close'], self.rsi_period)
+        
+        # Debug: Mostrar valores atuais do RSI
+        current_rsi = df['rsi'].iloc[-1] if not df['rsi'].empty else None
+        if current_rsi is not None and not pd.isna(current_rsi):
+            print(f"📊 RSI ATUAL: {current_rsi:.2f} (Min: {self.rsi_min}, Max: {self.rsi_max})")
+        else:
+            print("⚠️ RSI não calculado ou inválido")
 
         # Multiple moving averages for trend analysis
         smas = self.indicators.calculate_multiple_sma(df['close'], periods=[21, 50, 200])
@@ -347,11 +354,11 @@ class TradingBot:
         rsi_oversold_threshold = self.rsi_min if hasattr(self, 'rsi_min') else 20
         rsi_overbought_threshold = self.rsi_max if hasattr(self, 'rsi_max') else 80
         
-        # RSI scoring baseado nas configurações do usuário
-        oversold_extreme = rsi_oversold_threshold - 5  # 5 pontos abaixo do configurado
-        oversold_strong = rsi_oversold_threshold + 5   # 5 pontos acima do configurado
-        overbought_extreme = rsi_overbought_threshold + 5  # 5 pontos acima do configurado
-        overbought_strong = rsi_overbought_threshold - 5   # 5 pontos abaixo do configurado
+        # RSI scoring mais permissivo - expandir as zonas de trading
+        oversold_extreme = rsi_oversold_threshold - 5  # Zona extrema de compra
+        oversold_moderate = rsi_oversold_threshold + 15  # Zona moderada de compra (expandida)
+        overbought_moderate = rsi_overbought_threshold - 15  # Zona moderada de venda (expandida)
+        overbought_extreme = rsi_overbought_threshold + 5  # Zona extrema de venda
         
         if rsi <= oversold_extreme:  # Extremo oversold (usuário definiu)
             bullish_score += 5
@@ -359,16 +366,18 @@ class TradingBot:
         elif rsi <= rsi_oversold_threshold:  # Oversold configurado pelo usuário
             bullish_score += 4
             confidence_multiplier += 0.2
-        elif rsi <= oversold_strong:  # Próximo ao oversold
-            bullish_score += 2
+        elif rsi <= oversold_moderate:  # Zona moderada de compra (NOVA - mais permissiva)
+            bullish_score += 3
+            confidence_multiplier += 0.1
         elif rsi >= overbought_extreme:  # Extremo overbought (usuário definiu)
             bearish_score += 5
             confidence_multiplier += 0.3
         elif rsi >= rsi_overbought_threshold:  # Overbought configurado pelo usuário
             bearish_score += 4
             confidence_multiplier += 0.2
-        elif rsi >= overbought_strong:  # Próximo ao overbought
-            bearish_score += 2
+        elif rsi >= overbought_moderate:  # Zona moderada de venda (NOVA - mais permissiva)
+            bearish_score += 3
+            confidence_multiplier += 0.1
 
         # Enhanced Stochastic RSI (more sensitive)
         if not pd.isna(stoch_rsi_k):
@@ -594,22 +603,45 @@ class TradingBot:
             min_volume_ratio = 1.5
             volatility_threshold = 0.08
 
-            # Apply quality filters first
-            if avoid_ranging and last_row.get('market_regime', 'trending') == 'ranging':
+            # Apply quality filters first - MAIS PERMISSIVO
+            # Comentar filtro de ranging por enquanto para debug
+            # if avoid_ranging and last_row.get('market_regime', 'trending') == 'ranging':
+            #     print(f"  DEBUG: Rejeitado por market regime: {last_row.get('market_regime', 'trending')}")
+            #     return "NEUTRO"
+
+            # Reduzir threshold do ADX para ser menos restritivo
+            if require_trend and last_row.get('adx', 0) < 15:  # Reduzido de 25 para 15
+                print(f"  DEBUG: Rejeitado por ADX baixo: {last_row.get('adx', 0):.1f}")
                 return "NEUTRO"
 
-            if require_trend and last_row.get('adx', 0) < 25:
+            # Reduzir threshold de volume para ser menos restritivo
+            if require_volume and last_row.get('volume_ratio', 1) < 1.1:  # Reduzido para 1.1
                 return "NEUTRO"
 
-            if require_volume and last_row.get('volume_ratio', 1) < min_volume_ratio:
-                return "NEUTRO"
-
+        # Debug: Mostrar valores atuais antes de gerar sinal
+        rsi_atual = last_row.get('rsi', 50)
+        stoch_rsi_k = last_row.get('stoch_rsi_k', 50)
+        williams_r = last_row.get('williams_r', -50)
+        adx = last_row.get('adx', 0)
+        volume_ratio = last_row.get('volume_ratio', 1)
+        
+        print(f"📊 DEBUG INDICADORES:")
+        print(f"  RSI: {rsi_atual:.2f} (Config: {actual_rsi_min}-{actual_rsi_max})")
+        print(f"  StochRSI K: {stoch_rsi_k:.2f}")
+        print(f"  Williams %R: {williams_r:.2f}")
+        print(f"  ADX: {adx:.2f}")
+        print(f"  Volume Ratio: {volume_ratio:.2f}")
+        
         # Usar configurações do próprio bot
         signal = self._generate_advanced_signal(last_row)
         confidence = self._calculate_signal_confidence(last_row)
+        
+        print(f"  Sinal Inicial: {signal}")
+        print(f"  Confiança: {confidence:.1f}%")
 
-        # Enhanced confidence filter
-        if confidence < min_confidence:
+        # Enhanced confidence filter - MAIS PERMISSIVO
+        if confidence < (min_confidence - 15):  # Reduzir threshold em 15 pontos
+            print(f"  DEBUG: Rejeitado por confiança baixa: {confidence:.1f}% < {min_confidence-15}%")
             return "NEUTRO"
 
         # Additional safety check - allow more volatility for opportunities
@@ -620,32 +652,42 @@ class TradingBot:
             return "NEUTRO"
 
         # Validação final: verificar se o sinal está de acordo com as configurações do RSI do dashboard
+        # Lógica mais permissiva - usar os limites como orientação, não como filtro rígido
         rsi_atual = last_row.get('rsi', 50)
         
-        # Se for sinal de compra, verificar se RSI está abaixo do limite configurado
-        if signal in ['COMPRA', 'COMPRA_FRACA'] and rsi_atual > actual_rsi_min:
-            print(f"DEBUG: Sinal de compra rejeitado - RSI {rsi_atual:.1f} acima do limite {actual_rsi_min}")
-            return "NEUTRO"
+        # Permitir sinais próximos aos limites configurados (±10 pontos de tolerância)
+        tolerancia_rsi = 10
+        
+        # Se for sinal de compra forte, verificar se RSI não está muito alto
+        if signal == 'COMPRA' and rsi_atual > (actual_rsi_min + tolerancia_rsi * 2):
+            print(f"  DEBUG: Sinal COMPRA forte rejeitado - RSI {rsi_atual:.1f} muito acima do limite {actual_rsi_min}")
+            # Downgrade para compra fraca ao invés de rejeitar
+            signal = 'COMPRA_FRACA'
             
-        # Se for sinal de venda, verificar se RSI está acima do limite configurado  
-        if signal in ['VENDA', 'VENDA_FRACA'] and rsi_atual < actual_rsi_max:
-            print(f"DEBUG: Sinal de venda rejeitado - RSI {rsi_atual:.1f} abaixo do limite {actual_rsi_max}")
-            return "NEUTRO"
+        # Se for sinal de venda forte, verificar se RSI não está muito baixo  
+        if signal == 'VENDA' and rsi_atual < (actual_rsi_max - tolerancia_rsi * 2):
+            print(f"  DEBUG: Sinal VENDA forte rejeitado - RSI {rsi_atual:.1f} muito abaixo do limite {actual_rsi_max}")
+            # Downgrade para venda fraca ao invés de rejeitar
+            signal = 'VENDA_FRACA'
 
-        # Filtros adicionais para crypto (usando thresholds mais conservadores)
+        # Filtros adicionais para crypto (mais permissivos para gerar mais sinais)
         if crypto_optimized:
-            # StochRSI extremos (mais restritivo)
+            # StochRSI extremos (menos restritivo)
             stoch_rsi_k = last_row.get('stoch_rsi_k', 50)
-            if signal in ['COMPRA', 'COMPRA_FRACA'] and stoch_rsi_k > 30:
-                return "NEUTRO"  # Só compra em StochRSI baixo
-            if signal in ['VENDA', 'VENDA_FRACA'] and stoch_rsi_k < 70:
-                return "NEUTRO"  # Só vende em StochRSI alto
-
-            # Williams %R extremos (mais restritivo)
-            williams_r = last_row.get('williams_r', -50)
-            if signal in ['COMPRA', 'COMPRA_FRACA'] and williams_r > -70:
+            if signal in ['COMPRA', 'COMPRA_FRACA'] and stoch_rsi_k > 50:
+                print(f"  DEBUG: Sinal compra rejeitado por StochRSI {stoch_rsi_k:.1f} > 50")
                 return "NEUTRO"
-            if signal in ['VENDA', 'VENDA_FRACA'] and williams_r < -30:
+            if signal in ['VENDA', 'VENDA_FRACA'] and stoch_rsi_k < 50:
+                print(f"  DEBUG: Sinal venda rejeitado por StochRSI {stoch_rsi_k:.1f} < 50")
+                return "NEUTRO"
+
+            # Williams %R extremos (menos restritivo)
+            williams_r = last_row.get('williams_r', -50)
+            if signal in ['COMPRA', 'COMPRA_FRACA'] and williams_r > -50:
+                print(f"  DEBUG: Sinal compra rejeitado por Williams %R {williams_r:.1f} > -50")
+                return "NEUTRO"
+            if signal in ['VENDA', 'VENDA_FRACA'] and williams_r < -50:
+                print(f"  DEBUG: Sinal venda rejeitado por Williams %R {williams_r:.1f} < -50")
                 return "NEUTRO"
 
         print(f"DEBUG: Sinal final aprovado: {signal} com RSI {rsi_atual:.1f}")
