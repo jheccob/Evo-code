@@ -449,8 +449,9 @@ print(f"RSI Período: {rsi_period}")
 print(f"RSI Mínimo (Compra): {rsi_min}")
 print(f"RSI Máximo (Venda): {rsi_max}")
 print(f"Day Trading Mode: {day_trading_mode}")
-if 'crypto_optimized' in locals():
-    print(f"Crypto Otimizado: {crypto_optimized}")
+# Remove unused crypto_optimized reference
+# if 'crypto_optimized' in locals():
+#     print(f"Crypto Otimizado: {crypto_optimized}")
 print("=====================================")
 
 st.session_state.trading_bot.update_config(
@@ -475,11 +476,10 @@ st.title("📈 Trading Signals Dashboard")
 
 # Aviso sobre Binance Brasil
 if selected_exchange == 'binance' or 'binance' in str(st.session_state.trading_bot.exchange).lower():
-    st.error("""
-
+    st.warning("⚠️ Usando Binance - certifique-se de que suas credenciais estão configuradas nos Secrets.")
     
-    if st.button("🔄 Trocar para Bybit Automaticamente"):
-        st.session_state.current_exchange = 'bybit'
+    if st.button("🔄 Trocar para OKX Automaticamente"):
+        st.session_state.current_exchange = 'okx'
         st.rerun()
 
 # Import user manager for admin features  
@@ -515,6 +515,13 @@ if 'user_manager' not in st.session_state:
 if 'multi_symbol_data' not in st.session_state:
     st.session_state.multi_symbol_data = {}
 
+# Import WebSocket trading bot
+try:
+    from trading_bot_websocket import StreamlinedTradingBot
+    WEBSOCKET_AVAILABLE = True
+except ImportError:
+    WEBSOCKET_AVAILABLE = False
+
 # Import futures trading
 try:
     from futures_trading import FuturesTrading
@@ -522,18 +529,175 @@ try:
 except ImportError:
     FUTURES_AVAILABLE = False
 
-# Initialize futures trading if available
+# Initialize futures trading if available (with error handling)
 if 'futures_trading' not in st.session_state and FUTURES_AVAILABLE:
-    st.session_state.futures_trading = FuturesTrading()
+    try:
+        st.session_state.futures_trading = FuturesTrading()
+    except Exception as e:
+        st.sidebar.warning(f"⚠️ Futures trading não disponível: {str(e)}")
+        FUTURES_AVAILABLE = False
 
 # Create tabs for different sections
-tab1, tab2, tab3, tab4 = st.tabs(["🚀 Análise Mercado Futuro", "🔬 Backtesting", "⚙️ Exportar Dados", "👑 Admin Panel"])
+tab1, tab2, tab3, tab4, tab5 = st.tabs(["📡 WebSocket Binance", "🚀 Análise Mercado Futuro", "🔬 Backtesting", "⚙️ Exportar Dados", "👑 Admin Panel"])
+
+# Nova aba para WebSocket Binance Futures
+with tab1:
+    st.subheader("📡 Binance Futures WebSocket - Dados em Tempo Real")
+    st.markdown("**Análise otimizada com streaming de dados em tempo real da Binance**")
+    
+    if WEBSOCKET_AVAILABLE:
+        # Verificar credenciais Binance
+        has_binance_creds = bool(os.getenv('BINANCE_API_KEY') and os.getenv('BINANCE_SECRET'))
+        
+        if has_binance_creds:
+            st.success("✅ **Credenciais Binance configuradas** - WebSocket autenticado disponível")
+        else:
+            st.info("🔹 **Dados públicos WebSocket** - Configure credenciais nos Secrets para funcionalidades avançadas")
+            
+        # Configurações WebSocket
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            ws_symbol = st.selectbox(
+                "🪙 Símbolo Binance",
+                ["BTCUSDT", "ETHUSDT", "ADAUSDT", "SOLUSDT", "DOTUSDT", "XLMUSDT"],
+                index=0,
+                help="Símbolo para análise em tempo real"
+            )
+            
+        with col2:
+            ws_timeframe = st.selectbox(
+                "⏰ Timeframe",
+                ["1m", "3m", "5m", "15m", "30m", "1h"],
+                index=2,
+                help="Intervalo de tempo para análise"
+            )
+            
+        with col3:
+            ws_active = st.checkbox(
+                "🔄 Ativar WebSocket",
+                value=False,
+                help="Iniciar streaming de dados em tempo real"
+            )
+        
+        # Status do WebSocket
+        if 'ws_bot' not in st.session_state:
+            st.session_state.ws_bot = None
+            st.session_state.ws_data = None
+            st.session_state.ws_signals = []
+            
+        # Controles WebSocket
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            if st.button("🚀 Iniciar WebSocket", disabled=ws_active):
+                if st.session_state.ws_bot is None:
+                    st.session_state.ws_bot = StreamlinedTradingBot(ws_symbol, ws_timeframe)
+                    st.success(f"✅ WebSocket Bot criado para {ws_symbol}")
+                else:
+                    st.info("ℹ️ Bot já inicializado")
+                    
+        with col2:
+            if st.button("📊 Status Bot"):
+                if st.session_state.ws_bot:
+                    status = st.session_state.ws_bot.get_current_status()
+                    st.json(status)
+                else:
+                    st.warning("⚠️ Bot não inicializado")
+                    
+        with col3:
+            if st.button("🛑 Parar WebSocket"):
+                if st.session_state.ws_bot:
+                    st.session_state.ws_bot.stop()
+                    st.session_state.ws_bot = None
+                    st.success("✅ WebSocket parado")
+        
+        # Área de dados em tempo real
+        if ws_active and st.session_state.ws_bot:
+            st.markdown("---")
+            st.subheader("📈 Dados em Tempo Real")
+            
+            # Placeholder para dados
+            data_placeholder = st.empty()
+            signal_placeholder = st.empty()
+            
+            # Simulação de dados (em produção seria conectado ao WebSocket)
+            with data_placeholder.container():
+                col1, col2, col3, col4 = st.columns(4)
+                
+                with col1:
+                    st.metric(
+                        label="💰 Preço Atual",
+                        value="$0.00",
+                        delta="0.00%"
+                    )
+                    
+                with col2:
+                    st.metric(
+                        label="📊 RSI",
+                        value="--",
+                        delta="Neutro"
+                    )
+                    
+                with col3:
+                    st.metric(
+                        label="📈 MACD",
+                        value="--",
+                        delta="--"
+                    )
+                    
+                with col4:
+                    st.metric(
+                        label="🎯 Sinal",
+                        value="AGUARDANDO",
+                        delta="--% confiança"
+                    )
+            
+            with signal_placeholder.container():
+                st.info("🔄 Aguardando dados do WebSocket... Configure as credenciais Binance nos Secrets para ativação completa.")
+                
+        # Instruções de configuração
+        with st.expander("⚙️ Como Configurar Credenciais Binance", expanded=not has_binance_creds):
+            st.markdown("""
+            **Para ativar funcionalidades avançadas:**
+            
+            1. **Obter API Key da Binance:**
+               - Acesse [Binance API Management](https://www.binance.com/en/my/settings/api-management)
+               - Crie uma nova API Key
+               - Ative permissões para Futures
+               
+            2. **Configurar no Replit:**
+               - Vá para **Secrets** (ícone de cadeado na barra lateral)
+               - Adicione: `BINANCE_API_KEY` = sua_api_key
+               - Adicione: `BINANCE_SECRET` = seu_secret
+               
+            3. **Reiniciar Aplicação:**
+               - O sistema detectará automaticamente as credenciais
+               - WebSocket autenticado será ativado
+            """)
+            
+        # Área de logs WebSocket
+        with st.expander("📋 Logs WebSocket", expanded=False):
+            if 'ws_logs' not in st.session_state:
+                st.session_state.ws_logs = []
+                
+            if st.session_state.ws_logs:
+                for log in st.session_state.ws_logs[-10:]:  # Últimos 10 logs
+                    st.text(log)
+            else:
+                st.text("Nenhum log disponível")
+                
+    else:
+        st.error("❌ **WebSocket não disponível** - Módulo não carregado")
+        st.info("Verifique se todas as dependências estão instaladas")
+
+# Continuar com as abas existentes...
 
 # Set default tab to Backtesting if requested
 if 'default_tab' not in st.session_state:
     st.session_state.default_tab = 'backtest'
 
-with tab1:
+with tab2:
     st.subheader("🚀 Trading de Mercado Futuro")
     st.markdown("**Trade com alavancagem, posições long/short e gerenciamento avançado de risco**")
 
