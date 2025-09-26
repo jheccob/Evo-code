@@ -165,7 +165,9 @@ class BinanceFuturesWebSocket:
             'timestamp': datetime.fromtimestamp(int(ticker['E']) / 1000)
         }
         
-    # Removido - usar apenas dados públicos conforme solicitado pelo usuário
+    def removed_user_data_stream(self):
+        """Removido - usar apenas dados públicos conforme solicitado pelo usuário"""
+        pass
         
     def format_symbol(self, symbol: str) -> str:
         """Formata símbolo para padrão Binance (remove barra)"""

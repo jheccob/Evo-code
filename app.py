@@ -530,12 +530,15 @@ except ImportError:
     FUTURES_AVAILABLE = False
 
 # Initialize futures trading if available (with error handling)
-if 'futures_trading' not in st.session_state and FUTURES_AVAILABLE:
-    try:
-        st.session_state.futures_trading = FuturesTrading()
-    except Exception as e:
-        st.sidebar.warning(f"⚠️ Futures trading não disponível: {str(e)}")
-        FUTURES_AVAILABLE = False
+if 'futures_trading' not in st.session_state:
+    if FUTURES_AVAILABLE:
+        try:
+            st.session_state.futures_trading = FuturesTrading()
+        except Exception as e:
+            st.sidebar.warning(f"⚠️ Futures trading não disponível: {str(e)}")
+            FUTURES_AVAILABLE = False
+    else:
+        st.session_state.futures_trading = None
 
 # Create tabs for different sections
 tab1, tab2, tab3, tab4, tab5 = st.tabs(["📡 WebSocket Binance", "🚀 Análise Mercado Futuro", "🔬 Backtesting", "⚙️ Exportar Dados", "👑 Admin Panel"])
@@ -587,9 +590,12 @@ with tab1:
         
         with col1:
             if st.button("🚀 Iniciar WebSocket", disabled=ws_active):
-                if st.session_state.ws_bot is None:
-                    st.session_state.ws_bot = StreamlinedTradingBot(ws_symbol, ws_timeframe)
-                    st.success(f"✅ WebSocket Bot criado para {ws_symbol}")
+                if st.session_state.ws_bot is None and WEBSOCKET_AVAILABLE:
+                    try:
+                        st.session_state.ws_bot = StreamlinedTradingBot(ws_symbol, ws_timeframe)
+                        st.success(f"✅ WebSocket Bot criado para {ws_symbol}")
+                    except Exception as e:
+                        st.error(f"❌ Erro ao criar bot: {e}")
                 else:
                     st.info("ℹ️ Bot já inicializado")
                     

@@ -88,8 +88,8 @@ class FuturesTrading(TradingBot):
         return round(quantity, 6)
     
     def create_futures_order(self, symbol: str, side: str, quantity: float, 
-                           order_type: str = 'market', price: float = None,
-                           stop_loss: float = None, take_profit: float = None):
+                           order_type: str = 'market', price: Optional[float] = None,
+                           stop_loss: Optional[float] = None, take_profit: Optional[float] = None):
         """
         Criar ordem no mercado futuro com stop loss e take profit
         
