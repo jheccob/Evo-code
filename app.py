@@ -381,8 +381,8 @@ if st.sidebar.button("🔄 Atualizar Agora"):
                 st.session_state.last_update = get_brazil_datetime_naive()
                 
             st.success("✅ Dados atualizados!")
-            # Usar experimental_rerun para refresh mais suave
-            st.experimental_rerun()
+            # Usar st.rerun para refresh mais suave
+            st.rerun()
         except:
             # Fallback para rerun normal se experimental_rerun não funcionar
             st.rerun()
@@ -1633,7 +1633,7 @@ if auto_refresh:
                 st.session_state.last_update = current_time_check
                 
                 # Forçar atualização suave apenas dos componentes necessários
-                st.experimental_rerun()
+                st.rerun()
                 
         except Exception as e:
             # Em caso de erro, não quebrar a página
