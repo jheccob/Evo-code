@@ -19,8 +19,7 @@ class BinanceFuturesWebSocket:
     
     def __init__(self):
         self.base_url = "wss://fstream.binance.com/ws/"
-        self.api_key = os.getenv('BINANCE_API_KEY')
-        self.api_secret = os.getenv('BINANCE_SECRET')
+        # Usar apenas WebSocket público - sem credenciais necessárias
         self.connections = {}
         self.callbacks = {}
         
@@ -166,18 +165,7 @@ class BinanceFuturesWebSocket:
             'timestamp': datetime.fromtimestamp(int(ticker['E']) / 1000)
         }
         
-    async def get_user_data_stream(self):
-        """
-        Obtém stream de dados do usuário (posições, ordens, saldo)
-        Requer API Key e Secret configurados
-        """
-        if not self.api_key or not self.api_secret:
-            raise ValueError("API Key e Secret são necessários para stream de dados do usuário")
-            
-        # Implementar autenticação para user data stream
-        # Este é um endpoint mais complexo que requer listen key
-        print("🔐 Configurando stream de dados do usuário...")
-        # TODO: Implementar obtenção de listen key e conexão autenticada
+    # Removido - usar apenas dados públicos conforme solicitado pelo usuário
         
     def format_symbol(self, symbol: str) -> str:
         """Formata símbolo para padrão Binance (remove barra)"""

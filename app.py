@@ -546,13 +546,9 @@ with tab1:
     st.markdown("**Análise otimizada com streaming de dados em tempo real da Binance**")
     
     if WEBSOCKET_AVAILABLE:
-        # Verificar credenciais Binance
-        has_binance_creds = bool(os.getenv('BINANCE_API_KEY') and os.getenv('BINANCE_SECRET'))
-        
-        if has_binance_creds:
-            st.success("✅ **Credenciais Binance configuradas** - WebSocket autenticado disponível")
-        else:
-            st.info("🔹 **Dados públicos WebSocket** - Configure credenciais nos Secrets para funcionalidades avançadas")
+        # Usar apenas WebSocket público da Binance Futures
+        st.success("✅ **WebSocket Público Binance Futures** - Dados em tempo real sem credenciais")
+        st.info("🔹 **Modo Público:** Sinais gerados a partir de dados de mercado em tempo real")
             
         # Configurações WebSocket
         col1, col2, col3 = st.columns(3)
@@ -654,26 +650,27 @@ with tab1:
                     )
             
             with signal_placeholder.container():
-                st.info("🔄 Aguardando dados do WebSocket... Configure as credenciais Binance nos Secrets para ativação completa.")
+                st.info("🔄 Aguardando dados do WebSocket público da Binance Futures...")
                 
-        # Instruções de configuração
-        with st.expander("⚙️ Como Configurar Credenciais Binance", expanded=not has_binance_creds):
+        # Informações sobre dados públicos
+        with st.expander("ℹ️ Sobre WebSocket Público Binance Futures", expanded=False):
             st.markdown("""
-            **Para ativar funcionalidades avançadas:**
+            **🔗 Conexão WebSocket Pública:**
             
-            1. **Obter API Key da Binance:**
-               - Acesse [Binance API Management](https://www.binance.com/en/my/settings/api-management)
-               - Crie uma nova API Key
-               - Ative permissões para Futures
-               
-            2. **Configurar no Replit:**
-               - Vá para **Secrets** (ícone de cadeado na barra lateral)
-               - Adicione: `BINANCE_API_KEY` = sua_api_key
-               - Adicione: `BINANCE_SECRET` = seu_secret
-               
-            3. **Reiniciar Aplicação:**
-               - O sistema detectará automaticamente as credenciais
-               - WebSocket autenticado será ativado
+            ✅ **Sem credenciais necessárias**
+            - Dados de preço em tempo real
+            - Volume e estatísticas 24h
+            - Candlesticks (klines) ao vivo
+            
+            📊 **Análise Técnica:**
+            - RSI, MACD, Bollinger Bands
+            - Médias móveis (SMA, EMA)
+            - Sinais de compra/venda automáticos
+            
+            ⚡ **Vantagens:**
+            - Sem limite de rate API
+            - Dados instantâneos
+            - Totalmente gratuito
             """)
             
         # Área de logs WebSocket
