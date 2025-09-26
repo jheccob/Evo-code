@@ -366,10 +366,10 @@ class TradingBot:
         bullish_score = int(bullish_score * confidence_multiplier)
         bearish_score = int(bearish_score * confidence_multiplier)
 
-        # Enhanced signal generation with stricter thresholds
-        min_strong_signal = 12  # Increased from 8
-        min_weak_signal = 8    # Increased from 5
-        min_difference = 4     # Increased from 3
+        # Enhanced signal generation with more permissive thresholds
+        min_strong_signal = 8   # Reduzido de 12 para 8
+        min_weak_signal = 5     # Reduzido de 8 para 5
+        min_difference = 2      # Reduzido de 4 para 2
 
         if bullish_score >= min_strong_signal and bullish_score > bearish_score + min_difference:
             return "COMPRA"
@@ -502,9 +502,11 @@ class TradingBot:
         if confidence < min_confidence:
             return "NEUTRO"
 
-        # Additional safety check - avoid signals in extreme volatility
+        # Additional safety check - allow more volatility for opportunities
         atr_pct = last_row.get('atr', 0) / last_row.get('close', 1) * 100
-        if atr_pct > (volatility_threshold * 100):
+        # Aumentar threshold de volatilidade permitida
+        max_volatility = (volatility_threshold * 100) * 1.5  # 50% mais permissivo
+        if atr_pct > max_volatility:
             return "NEUTRO"
 
         # Validação final: verificar se o sinal está de acordo com as configurações do RSI do dashboard

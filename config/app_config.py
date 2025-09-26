@@ -10,12 +10,12 @@ class AppConfig:
     DEFAULT_EXCHANGE = "bybit"  # Recommended for Brazil
     BRAZIL_SUPPORTED_EXCHANGES = ["bybit", "okx", "kucoin", "mexc"]
 
-    # Enhanced signal quality filters
-    MIN_SIGNAL_CONFIDENCE = 70  # Increased from 60
-    HIGH_CONFIDENCE_THRESHOLD = 85  # Increased from 80
-    MIN_VOLUME_RATIO = 1.5     # Minimum volume for signals
-    MIN_ADX_TREND = 25         # Minimum ADX for trend confirmation
-    MAX_ATR_PCT = 8           # Maximum ATR% for volatility filter
+    # Enhanced signal quality filters - REDUZIDOS para capturar mais oportunidades
+    MIN_SIGNAL_CONFIDENCE = 55  # Reduzido de 70 para 55
+    HIGH_CONFIDENCE_THRESHOLD = 75  # Reduzido de 85 para 75
+    MIN_VOLUME_RATIO = 1.2     # Reduzido de 1.5 para 1.2
+    MIN_ADX_TREND = 18         # Reduzido de 25 para 18
+    MAX_ATR_PCT = 12          # Aumentado de 8 para 12 (permite mais volatilidade)
 
     # API limits
     MAX_CANDLES = 1000
@@ -58,11 +58,11 @@ class AppConfig:
         if asset_class == "crypto":
             return {
                 "rsi_period": 14,
-                "rsi_oversold": 25,  # Mais restritivo para crypto (era 30)
-                "rsi_overbought": 75,  # Mais restritivo para crypto (era 70)
-                "min_confidence": 75,  # Alta confiança para reduzir falsos sinais
-                "min_volume_ratio": 1.8,  # Volume 80% acima da média
-                "min_adx": 28,  # Tendência forte obrigatória
+                "rsi_oversold": 30,  # Menos restritivo - de 25 para 30
+                "rsi_overbought": 70,  # Menos restritivo - de 75 para 70
+                "min_confidence": 60,  # Reduzido de 75 para 60
+                "min_volume_ratio": 1.3,  # Reduzido de 1.8 para 1.3
+                "min_adx": 20,  # Reduzido de 28 para 20
                 "stoch_rsi_extreme": {"low": 15, "high": 85},  # StochRSI extremos
                 "williams_r_extreme": {"low": -85, "high": -15},  # Williams %R extremos
                 "bb_squeeze_threshold": 0.12,  # Bollinger Bands squeeze
@@ -103,11 +103,11 @@ class AppConfig:
                 "rsi_period": 9
             },
             "5m": {
-                "rsi_oversold": 22,  # Otimizado para crypto
-                "rsi_overbought": 78,
-                "min_confidence": 80,
-                "min_volume_ratio": 2.0,
-                "volatility_filter": 0.07,
+                "rsi_oversold": 28,  # Menos restritivo - de 22 para 28
+                "rsi_overbought": 72,  # Menos restritivo - de 78 para 72
+                "min_confidence": 65,  # Reduzido de 80 para 65
+                "min_volume_ratio": 1.4,  # Reduzido de 2.0 para 1.4
+                "volatility_filter": 0.10,  # Aumentado para permitir mais volatilidade
                 "rsi_period": 9
             },
             "15m": {
@@ -170,10 +170,10 @@ class AppConfig:
             },
             "5m": {
                 "rsi_period": 9,        # RSI sensível para day trading
-                "rsi_oversold": 18,     # Mais agressivo que swing
-                "rsi_overbought": 82,   # Mais agressivo que swing
-                "min_confidence": 82,   # Alta confiança
-                "min_volume_ratio": 2.2, # Volume alto
+                "rsi_oversold": 25,     # Menos agressivo - de 18 para 25
+                "rsi_overbought": 75,   # Menos agressivo - de 82 para 75
+                "min_confidence": 70,   # Reduzido de 82 para 70
+                "min_volume_ratio": 1.5, # Reduzido de 2.2 para 1.5
                 "volatility_filter": 0.09,
                 "macd_fast": 9,         # MACD otimizado para day trading
                 "macd_slow": 19,

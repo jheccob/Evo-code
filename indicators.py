@@ -427,9 +427,9 @@ class TechnicalIndicators:
         confidence = max(0, confidence)  # Ensure non-negative
         confidence = min(confidence, max_confidence)
         
-        # Quality threshold - only high-quality signals
-        if confidence < 50:
-            confidence *= 0.8  # Further reduce low-confidence signals
+        # Quality threshold - more permissive for signals
+        if confidence < 40:  # Reduzido de 50 para 40
+            confidence *= 0.9  # Menos penalização - de 0.8 para 0.9
         
         return int(confidence)
     
