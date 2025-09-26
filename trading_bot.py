@@ -54,10 +54,22 @@ class TradingBot:
         print(f"  RSI Max: {self.rsi_max}")
 
     def get_market_data(self, limit=200):
-        """Fetch OHLCV data using WebSocket público da Binance Futures"""
+        """Fetch OHLCV data using WebSocket público da Binance Futures com cache otimizado"""
+        
+        # Cache local para evitar múltiplas chamadas API
+        cache_key = f"{self.symbol}_{self.timeframe}_{limit}"
+        current_time = datetime.now()
+        
+        # Verificar cache local (60 segundos)
+        if hasattr(self, '_cache_data') and cache_key in self._cache_data:
+            cached_item = self._cache_data[cache_key]
+            cache_age = (current_time - cached_item['timestamp']).total_seconds()
+            if cache_age < 60:  # Cache válido por 60 segundos
+                print(f"📊 Usando dados em cache para {self.symbol} (cache: {cache_age:.1f}s)")
+                return cached_item['data']
+        
         try:
-            # Usar WebSocket público da Binance para contornar restrições geográficas
-            print(f"🔄 Usando WebSocket público da Binance Futures para {self.symbol}")
+            print(f"🔄 Buscando novos dados para {self.symbol}")
             
             # Simular dados de mercado usando WebSocket (implementação simplificada)
             # Em produção, isso conectaria ao WebSocket real da Binance Futures
@@ -198,6 +210,23 @@ class TradingBot:
             
             # Calculate technical indicators
             df = self.calculate_indicators(df)
+            
+            # Salvar no cache local
+            if not hasattr(self, '_cache_data'):
+                self._cache_data = {}
+            
+            cache_key = f"{self.symbol}_{self.timeframe}_{limit}"
+            self._cache_data[cache_key] = {
+                'data': df.copy(),
+                'timestamp': current_time
+            }
+            
+            # Limpar cache antigo (manter apenas últimos 5 itens)
+            if len(self._cache_data) > 5:
+                oldest_key = min(self._cache_data.keys(), 
+                               key=lambda k: self._cache_data[k]['timestamp'])
+                del self._cache_data[oldest_key]
+            
             return df
 
         except Exception as e:

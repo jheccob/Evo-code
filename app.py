@@ -845,23 +845,29 @@ with tab2:
                         last_candle = cached_data['last_candle']
 
                 if should_refresh:
-                    # Use shared trading bot instance
-                    st.session_state.trading_bot.update_config(symbol=sym, timeframe=timeframe, rsi_period=rsi_period, rsi_min=rsi_min, rsi_max=rsi_max)
-                    sym_data = st.session_state.trading_bot.get_market_data(limit=200)
+                    # Mostrar progresso para símbolos múltiplos
+                    with st.spinner(f'📡 Atualizando {sym}...'):
+                        try:
+                            # Use shared trading bot instance
+                            st.session_state.trading_bot.update_config(symbol=sym, timeframe=timeframe, rsi_period=rsi_period, rsi_min=rsi_min, rsi_max=rsi_max)
+                            sym_data = st.session_state.trading_bot.get_market_data(limit=200)
 
-                    if sym_data is not None and not sym_data.empty:
-                        last_candle = sym_data.iloc[-1]
-                        signal = st.session_state.trading_bot.check_signal(sym_data)
+                            if sym_data is not None and not sym_data.empty:
+                                last_candle = sym_data.iloc[-1]
+                                signal = st.session_state.trading_bot.check_signal(sym_data)
 
-                        # Cache the data
-                        st.session_state.multi_symbol_data[cache_key] = {
-                            'data': sym_data,
-                            'signal': signal,
-                            'last_candle': last_candle,
-                            'last_update': current_time
-                        }
-                    else:
-                        continue
+                                # Cache the data com timestamp
+                                st.session_state.multi_symbol_data[cache_key] = {
+                                    'data': sym_data,
+                                    'signal': signal,
+                                    'last_candle': last_candle,
+                                    'last_update': current_time
+                                }
+                            else:
+                                continue
+                        except Exception as e:
+                            st.warning(f"⚠️ Erro ao atualizar {sym}: {str(e)}")
+                            continue
 
                 # Skip if we don't have valid data
                 if last_candle is None:
@@ -1228,23 +1234,23 @@ if st.session_state.current_data is not None:
             )
 
     with col5:
-        # Status dinâmico com indicador de conexão
+        # Status dinâmico com indicador de cache otimizado
         current_time_now = get_brazil_datetime_naive()
         if st.session_state.last_update:
             seconds_since_update = (current_time_now - st.session_state.last_update).total_seconds()
             
-            if seconds_since_update < 30:
+            if seconds_since_update < 60:
                 status_color = "🟢"
-                status_text = "Conectado"
+                status_text = "Cache Ativo"
                 delta_text = f"Há {int(seconds_since_update)}s"
-            elif seconds_since_update < 60:
+            elif seconds_since_update < 90:
                 status_color = "🟡"
-                status_text = "Atualizando"
+                status_text = "Aguardando"
                 delta_text = f"Há {int(seconds_since_update)}s"
             else:
-                status_color = "🔴"
-                status_text = "Reconectando"
-                delta_text = f"Há {int(seconds_since_update//60)}min"
+                status_color = "🔵"
+                status_text = "Atualizando"
+                delta_text = "Em breve..."
         else:
             status_color = "⚪"
             status_text = "Iniciando"
@@ -1620,39 +1626,34 @@ if signals_df is not None and len(signals_df) > 0:
             except Exception as e:
                 st.warning(f"⚠️ Erro ao carregar estatísticas: {str(e)}")
 
-# Auto-refresh mechanism - suave sem recarregar página completa
+# Auto-refresh mechanism otimizado - cache inteligente
 if auto_refresh:
-    # Criar placeholders para atualização suave
-    if 'data_placeholder' not in st.session_state:
-        st.session_state.data_placeholder = None
-    if 'metrics_placeholder' not in st.session_state:
-        st.session_state.metrics_placeholder = None
-    
-    # Verificar se precisa atualizar (a cada 30 segundos para ser mais responsivo)
+    # Cache mais agressivo para melhor performance
     current_time_check = get_brazil_datetime_naive()
+    
+    # Usar cache de 90 segundos para reduzir chamadas API
+    cache_timeout = 90  # Aumentado de 30 para 90 segundos
+    
     should_update_data = (
         st.session_state.last_update is None or 
-        (current_time_check - st.session_state.last_update).total_seconds() > 30
+        (current_time_check - st.session_state.last_update).total_seconds() > cache_timeout
     )
     
     if should_update_data:
-        # Atualizar apenas os dados, sem recarregar a página
-        try:
-            new_data = st.session_state.trading_bot.get_market_data()
-            if new_data is not None:
-                st.session_state.current_data = new_data
-                st.session_state.last_update = current_time_check
-                
-                # Forçar atualização suave apenas dos componentes necessários
-                st.rerun()
-                
-        except Exception as e:
-            # Em caso de erro, não quebrar a página
-            pass
-    
-    # Auto-refresh a cada 10 segundos (apenas checagem, não recarregamento)
-    if st.session_state.auto_refresh:
-        time.sleep(1)  # Intervalo menor para interface mais responsiva
+        # Mostrar que está atualizando
+        with st.spinner('🔄 Atualizando dados do mercado...'):
+            try:
+                # Buscar novos dados apenas quando necessário
+                new_data = st.session_state.trading_bot.get_market_data()
+                if new_data is not None:
+                    st.session_state.current_data = new_data
+                    st.session_state.last_update = current_time_check
+                    st.success("✅ Dados atualizados!")
+                else:
+                    st.warning("⚠️ Não foi possível atualizar os dados")
+                    
+            except Exception as e:
+                st.error(f"❌ Erro na atualização: {str(e)}")
 
 # Tab 2: Calculadoras
         with futures_tab2:
