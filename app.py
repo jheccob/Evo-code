@@ -167,6 +167,17 @@ if 'current_exchange' not in st.session_state or st.session_state.current_exchan
 
 if 'telegram_bot' not in st.session_state:
     st.session_state.telegram_bot = SecureTelegramService()
+
+# Initialize Telegram Trading Bot for /start command functionality
+if 'telegram_trading_bot_started' not in st.session_state:
+    try:
+        # Import and start telegram bot in background
+        import start_telegram_bot
+        st.session_state.telegram_trading_bot_started = True
+        print("🚀 Bot Telegram inicializado em background")
+    except Exception as e:
+        print(f"⚠️ Erro ao inicializar bot Telegram: {e}")
+        st.session_state.telegram_trading_bot_started = False
     # Configuração será carregada automaticamente no __init__
 
 if 'signals_history' not in st.session_state:
