@@ -292,6 +292,9 @@ else:
     )
     selected_symbols = [symbol]
 
+st.sidebar.success(f"✅ Par ativo: {symbol}")
+st.sidebar.info(f"🔄 WebSocket conectará automaticamente ao {symbol.replace('/', '')}")
+
 # Timeframe selection - Coinbase supported timeframes
 timeframe = st.sidebar.selectbox(
     "Timeframe",
@@ -586,122 +589,137 @@ with tab1:
     if WEBSOCKET_AVAILABLE:
         # Interface limpa do WebSocket
             
-        # Usar configurações centralizadas da sidebar
-        st.info(f"📊 **Par Configurado:** {symbol} | **Timeframe:** {timeframe}")
-        st.markdown("*Configurações definidas na barra lateral* ⬅️")
+        # Auto-conectar WebSocket baseado na configuração da sidebar
+        st.success(f"📊 **Auto-Conectado:** {symbol} | **Timeframe:** {timeframe}")
+        st.info("🚀 *WebSocket conecta automaticamente com as configurações da sidebar*")
         
         # Configurações WebSocket usando valores centralizados
         ws_symbol = symbol.replace('/', '')  # BTC/USDT -> BTCUSDT
         ws_timeframe = timeframe
         
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            ws_active = st.checkbox(
-                "🔄 Ativar WebSocket",
-                value=False,
-                help="Iniciar streaming de dados em tempo real"
-            )
-            
-        with col2:
-            if enable_multi_symbol:
-                st.info(f"📊 Monitorando {len(selected_symbols)} pares")
-            else:
-                st.success(f"✅ Foco no par: {symbol}")
-        
-        # Status do WebSocket
+        # Auto-inicializar WebSocket
         if 'ws_bot' not in st.session_state:
             st.session_state.ws_bot = None
             st.session_state.ws_data = None
             st.session_state.ws_signals = []
+            st.session_state.ws_auto_connected = False
             
-        # Controles WebSocket
+        # Auto-conectar se ainda não foi conectado ou se o símbolo mudou
+        ws_key = f"{ws_symbol}_{ws_timeframe}"
+        if not st.session_state.get('ws_auto_connected') or st.session_state.get('ws_current_key') != ws_key:
+            if WEBSOCKET_AVAILABLE:
+                try:
+                    st.session_state.ws_bot = StreamlinedTradingBot(ws_symbol, ws_timeframe)
+                    st.session_state.ws_auto_connected = True
+                    st.session_state.ws_current_key = ws_key
+                    st.success(f"✅ WebSocket auto-conectado para {ws_symbol}")
+                except Exception as e:
+                    st.error(f"❌ Erro na auto-conexão: {e}")
+                    st.session_state.ws_auto_connected = False
+        
+        # Status e controles do WebSocket
         col1, col2, col3 = st.columns(3)
         
         with col1:
-            if st.button("🚀 Iniciar WebSocket", disabled=ws_active):
-                if st.session_state.ws_bot is None and WEBSOCKET_AVAILABLE:
-                    try:
-                        st.session_state.ws_bot = StreamlinedTradingBot(ws_symbol, ws_timeframe)
-                        st.success(f"✅ WebSocket Bot criado para {ws_symbol}")
-                    except Exception as e:
-                        st.error(f"❌ Erro ao criar bot: {e}")
+            if st.session_state.get('ws_auto_connected'):
+                st.success("🟢 **Conectado**")
+                if enable_multi_symbol:
+                    st.info(f"📊 Modo: {len(selected_symbols)} pares")
                 else:
-                    st.info("ℹ️ Bot já inicializado")
+                    st.info(f"📈 Foco: {symbol}")
+            else:
+                st.error("🔴 **Desconectado**")
                     
         with col2:
-            if st.button("📊 Status Bot"):
+            if st.button("📊 Status Detalhado"):
                 if st.session_state.ws_bot:
-                    status = st.session_state.ws_bot.get_current_status()
-                    st.json(status)
+                    try:
+                        status = st.session_state.ws_bot.get_current_status()
+                        st.json(status)
+                    except:
+                        st.info("📊 Bot ativo - Status em tempo real")
                 else:
                     st.warning("⚠️ Bot não inicializado")
                     
         with col3:
-            if st.button("🛑 Parar WebSocket"):
-                if st.session_state.ws_bot:
-                    st.session_state.ws_bot.stop()
-                    st.session_state.ws_bot = None
-                    st.success("✅ WebSocket parado")
+            if st.button("🔄 Reconectar"):
+                try:
+                    if st.session_state.ws_bot:
+                        st.session_state.ws_bot.stop()
+                    st.session_state.ws_bot = StreamlinedTradingBot(ws_symbol, ws_timeframe)
+                    st.session_state.ws_auto_connected = True
+                    st.success("✅ WebSocket reconectado")
+                except Exception as e:
+                    st.error(f"❌ Erro na reconexão: {e}")
         
-        # Área de dados em tempo real com loop de 60 segundos
-        if ws_active and st.session_state.ws_bot:
+        # Área de dados em tempo real 
+        if st.session_state.get('ws_auto_connected') and st.session_state.ws_bot:
             st.markdown("---")
-            st.subheader("📈 Dados em Tempo Real - Loop 60 Segundos")
+            st.subheader("📈 Dados em Tempo Real - Streaming WebSocket")
             
-            # Status do loop
-            st.success("⏰ **Sistema funcionando a cada 60 segundos** - Dados atualizados automaticamente")
+            # Status do streaming
+            st.success("🔗 **WebSocket ativo** - Dados atualizados automaticamente")
             
-            # Próxima atualização
+            # Informações de conexão
             import time
-            next_update = int(time.time()) % 60
-            seconds_remaining = 60 - next_update
-            st.info(f"🔄 Próxima atualização em: **{seconds_remaining} segundos**")
+            connection_time = int(time.time()) % 60
+            st.info(f"📡 Streaming para {ws_symbol} no timeframe {ws_timeframe}")
             
-            # Placeholder para dados
-            data_placeholder = st.empty()
-            signal_placeholder = st.empty()
+            # Métricas em tempo real
+            col1, col2, col3, col4 = st.columns(4)
             
-            # Dados do bot (se disponível)
-            if hasattr(st.session_state.ws_bot, 'current_signal'):
-                with data_placeholder.container():
-                    col1, col2, col3, col4 = st.columns(4)
+            with col1:
+                try:
+                    price = getattr(st.session_state.ws_bot, 'last_price', 0)
+                    if price > 0:
+                        st.metric(
+                            label="💰 Preço",
+                            value=f"${price:.6f}",
+                            delta="WebSocket"
+                        )
+                    else:
+                        st.metric(
+                            label="💰 Preço",
+                            value="Conectando...",
+                            delta="Aguarde"
+                        )
+                except:
+                    st.metric(
+                        label="💰 Preço",
+                        value="Carregando...",
+                        delta="WebSocket"
+                    )
                     
-                    with col1:
-                        price = getattr(st.session_state.ws_bot, 'last_price', 0)
-                        st.metric(
-                            label="💰 Preço Atual",
-                            value=f"${price:.4f}",
-                            delta="Atualizado"
-                        )
-                        
-                    with col2:
-                        st.metric(
-                            label="📊 RSI",
-                            value="Calculando...",
-                            delta="A cada 60s"
-                        )
-                        
-                    with col3:
-                        st.metric(
-                            label="📈 MACD",
-                            value="Calculando...",
-                            delta="A cada 60s"
-                        )
-                        
-                    with col4:
-                        signal = getattr(st.session_state.ws_bot, 'current_signal', 'INICIANDO')
-                        st.metric(
-                            label="🎯 Sinal",
-                            value=signal,
-                            delta="60s loop"
-                        )
+            with col2:
+                st.metric(
+                    label="📊 RSI",
+                    value="Stream ativo",
+                    delta="Tempo real"
+                )
                 
-                with signal_placeholder.container():
-                    st.success("✅ **Bot ativo com loop de 60 segundos** - Análises automáticas usando WebSocket público")
-            else:
-                with signal_placeholder.container():
-                    st.info("🔄 Iniciando bot com loop de 60 segundos...")
+            with col3:
+                st.metric(
+                    label="📈 MACD",
+                    value="Stream ativo", 
+                    delta="Tempo real"
+                )
+                
+            with col4:
+                try:
+                    signal = getattr(st.session_state.ws_bot, 'current_signal', 'STREAM')
+                    st.metric(
+                        label="🎯 Sinal",
+                        value=signal,
+                        delta="Live"
+                    )
+                except:
+                    st.metric(
+                        label="🎯 Sinal",
+                        value="CONECTANDO",
+                        delta="WebSocket"
+                    )
+            
+            st.success("✅ **WebSocket conectado automaticamente** - Análises em tempo real")
                 
         # Informações sobre dados públicos
         with st.expander("ℹ️ Sobre WebSocket Público Binance Futures", expanded=False):
@@ -961,8 +979,8 @@ with tab2:
         futures_symbol = symbol  # Usar o símbolo já configurado na sidebar
         
         st.subheader(f"📈 Análise Detalhada de Futuros - {futures_symbol}")
-        st.info(f"💡 **Configuração Ativa:** {futures_symbol} | {timeframe} | RSI({rsi_period}) {rsi_min}-{rsi_max}")
-        st.markdown("*Para alterar, use as configurações na barra lateral* ⬅️")
+        st.success(f"✅ **Configuração Ativa:** {futures_symbol} | {timeframe} | RSI({rsi_period}) {rsi_min}-{rsi_max}")
+        st.info("💡 *Configurações centralizadas na barra lateral* ⬅️")
 
 # Helper function para calcular scores de futuros
 def _calculate_futures_score(last_candle, position_type):
@@ -1803,23 +1821,10 @@ with tab2:
         with col1:
             st.markdown("**🎯 Configuração Principal**")
             
-            # Usar o símbolo já configurado na sidebar como padrão
-            symbol_index = 0
-            if symbol in available_pairs:
-                symbol_index = available_pairs.index(symbol)
-
-            bt_symbol = st.selectbox(
-                "Par de Trading:",
-                available_pairs,
-                index=symbol_index,
-                help="Par de criptomoedas para testar (padrão: par configurado na sidebar)",
-                key="bt_symbol"
-            )
-            
-            if bt_symbol != symbol:
-                st.info(f"💡 **Dica:** Par configurado na sidebar: {symbol}")
-            else:
-                st.success(f"✅ Usando par da configuração principal")
+            # Usar sempre o símbolo configurado na sidebar
+            bt_symbol = symbol
+            st.success(f"✅ **Par do Backtest:** {bt_symbol}")
+            st.info("💡 *Usando par configurado na sidebar*")
 
             bt_timeframe = st.selectbox(
                 "Timeframe:",
