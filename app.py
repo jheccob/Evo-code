@@ -252,37 +252,43 @@ if st.sidebar.button("🔍 Diagnóstico WebSocket"):
             st.sidebar.error(f"❌ WebSocket: {str(e)[:50]}...")
 
 # Multi-symbol monitoring
-st.sidebar.subheader("📊 Pares de Moedas")
-enable_multi_symbol = st.sidebar.checkbox("🔀 Monitoramento Múltiplo", value=False)
+st.sidebar.subheader("📊 Configuração de Pares")
 
-if enable_multi_symbol:
-    # Pares USDT disponíveis na Binance via WebSocket
-    available_pairs = ["BTC/USDT", "ETH/USDT", "ADA/USDT", "SOL/USDT", "XRP/USDT",
-                      "DOGE/USDT", "LTC/USDT", "AVAX/USDT", "MATIC/USDT", "DOT/USDT", 
-                      "LINK/USDT", "UNI/USDT", "ATOM/USDT", "FTM/USDT", "NEAR/USDT"]
+# Pares USDT disponíveis na Binance via WebSocket
+available_pairs = ["BTC/USDT", "ETH/USDT", "ADA/USDT", "SOL/USDT", "XRP/USDT",
+                  "DOGE/USDT", "LTC/USDT", "AVAX/USDT", "MATIC/USDT", "DOT/USDT", 
+                  "LINK/USDT", "UNI/USDT", "ATOM/USDT", "FTM/USDT", "NEAR/USDT"]
 
+# Escolha do modo de operação
+trading_mode = st.sidebar.radio(
+    "Modo de Análise:",
+    ["Par Único", "Múltiplos Pares"],
+    help="Escolha analisar um par ou monitorar vários simultaneamente"
+)
+
+if trading_mode == "Múltiplos Pares":
+    enable_multi_symbol = True
     selected_symbols = st.sidebar.multiselect(
-        "Selecionar pares para monitorar:",
+        "📊 Selecionar pares para monitorar:",
         available_pairs,
-        default=["XLM/USDT", "BTC/USDT", "ETH/USDT"]
+        default=["BTC/USDT", "ETH/USDT", "ADA/USDT"],
+        help="Escolha até 10 pares para análise simultânea"
     )
 
     if not selected_symbols:
         st.sidebar.warning("⚠️ Selecione pelo menos um par")
-        selected_symbols = ["XLM-USDT"]
+        selected_symbols = ["BTC/USDT"]
 
     # For multi-symbol mode, use the first selected as primary
-    symbol = selected_symbols[0] if selected_symbols else "XLM-USDT"
+    symbol = selected_symbols[0] if selected_symbols else "BTC/USDT"
 
 else:
-    # Pares USDT populares na Binance
-    symbol_options = ["BTC/USDT", "ETH/USDT", "ADA/USDT", "SOL/USDT", "XRP/USDT", 
-                     "DOGE/USDT", "LTC/USDT", "AVAX/USDT", "MATIC/USDT", "DOT/USDT"]
-
+    enable_multi_symbol = False
     symbol = st.sidebar.selectbox(
-        "Par de Trading",
-        symbol_options,
-        index=0
+        "📈 Par Principal de Trading:",
+        available_pairs,
+        index=0,
+        help="Par principal para análise detalhada"
     )
     selected_symbols = [symbol]
 
@@ -580,31 +586,28 @@ with tab1:
     if WEBSOCKET_AVAILABLE:
         # Interface limpa do WebSocket
             
-        # Configurações WebSocket
-        col1, col2, col3 = st.columns(3)
+        # Usar configurações centralizadas da sidebar
+        st.info(f"📊 **Par Configurado:** {symbol} | **Timeframe:** {timeframe}")
+        st.markdown("*Configurações definidas na barra lateral* ⬅️")
+        
+        # Configurações WebSocket usando valores centralizados
+        ws_symbol = symbol.replace('/', '')  # BTC/USDT -> BTCUSDT
+        ws_timeframe = timeframe
+        
+        col1, col2 = st.columns(2)
         
         with col1:
-            ws_symbol = st.selectbox(
-                "🪙 Símbolo Binance",
-                ["BTCUSDT", "ETHUSDT", "ADAUSDT", "SOLUSDT", "DOTUSDT", "XLMUSDT"],
-                index=0,
-                help="Símbolo para análise em tempo real"
-            )
-            
-        with col2:
-            ws_timeframe = st.selectbox(
-                "⏰ Timeframe",
-                ["1m", "3m", "5m", "15m", "30m", "1h"],
-                index=2,
-                help="Intervalo de tempo para análise"
-            )
-            
-        with col3:
             ws_active = st.checkbox(
                 "🔄 Ativar WebSocket",
                 value=False,
                 help="Iniciar streaming de dados em tempo real"
             )
+            
+        with col2:
+            if enable_multi_symbol:
+                st.info(f"📊 Monitorando {len(selected_symbols)} pares")
+            else:
+                st.success(f"✅ Foco no par: {symbol}")
         
         # Status do WebSocket
         if 'ws_bot' not in st.session_state:
@@ -954,7 +957,12 @@ with tab2:
 
         st.markdown("---")
 
-        st.subheader(f"📈 Análise Detalhada de Futuros - {symbol}")
+        # Usar símbolo configurado centralmente
+        futures_symbol = symbol  # Usar o símbolo já configurado na sidebar
+        
+        st.subheader(f"📈 Análise Detalhada de Futuros - {futures_symbol}")
+        st.info(f"💡 **Configuração Ativa:** {futures_symbol} | {timeframe} | RSI({rsi_period}) {rsi_min}-{rsi_max}")
+        st.markdown("*Para alterar, use as configurações na barra lateral* ⬅️")
 
 # Helper function para calcular scores de futuros
 def _calculate_futures_score(last_candle, position_type):
@@ -1794,14 +1802,24 @@ with tab2:
 
         with col1:
             st.markdown("**🎯 Configuração Principal**")
+            
+            # Usar o símbolo já configurado na sidebar como padrão
+            symbol_index = 0
+            if symbol in available_pairs:
+                symbol_index = available_pairs.index(symbol)
 
             bt_symbol = st.selectbox(
                 "Par de Trading:",
-                ["BTC/USDT", "ETH/USDT", "XLM/USDT", "ADA/USDT", "SOL/USDT", "DOGE/USDT", "LTC/USDT", "AVAX/USDT"],
-                index=0,
-                help="Par de criptomoedas para testar",
+                available_pairs,
+                index=symbol_index,
+                help="Par de criptomoedas para testar (padrão: par configurado na sidebar)",
                 key="bt_symbol"
             )
+            
+            if bt_symbol != symbol:
+                st.info(f"💡 **Dica:** Par configurado na sidebar: {symbol}")
+            else:
+                st.success(f"✅ Usando par da configuração principal")
 
             bt_timeframe = st.selectbox(
                 "Timeframe:",
