@@ -169,11 +169,11 @@ class AppConfig:
                 }
             },
             "5m": {
-                "rsi_period": 9,        # RSI sensível para day trading
-                "rsi_oversold": 25,     # Menos agressivo - de 18 para 25
-                "rsi_overbought": 75,   # Menos agressivo - de 82 para 75
-                "min_confidence": 70,   # Reduzido de 82 para 70
-                "min_volume_ratio": 1.5, # Reduzido de 2.2 para 1.5
+                "rsi_period": 14,       # RSI 14 mais estável para 5m
+                "rsi_oversold": 20,     # Mais restritivo para melhor qualidade
+                "rsi_overbought": 80,   # Mais restritivo para melhor qualidade
+                "min_confidence": 75,   # Aumentado para filtrar melhor
+                "min_volume_ratio": 2.0, # Volume alto obrigatório para 5mido de 2.2 para 1.5
                 "volatility_filter": 0.09,
                 "macd_fast": 9,         # MACD otimizado para day trading
                 "macd_slow": 19,

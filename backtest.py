@@ -84,7 +84,7 @@ class BacktestEngine:
 
     def _simulate_trading(self, data, initial_balance):
         """
-        Simulate trading based on signals with improved logic
+        Simulate trading based on signals with improved logic and 5m optimization
         """
         balance = initial_balance
         position = 0  # 0 = no position, 1 = long position
@@ -93,6 +93,11 @@ class BacktestEngine:
         portfolio_values = []
 
         max_position_size = 0.95  # Use 95% of balance per trade
+        
+        # Filtros específicos para 5m
+        is_5m = getattr(self.trading_bot, 'timeframe', '5m') == '5m'
+        min_hold_periods = 3 if is_5m else 1  # Mínimo 3 candles (15min) para 5m
+        last_trade_index = -min_hold_periods
 
         for i in range(len(data)):
             current_candle = data.iloc[i]
@@ -116,11 +121,20 @@ class BacktestEngine:
                 'position': position
             })
 
-            # Trading logic with improved entry/exit
+            # Trading logic otimizada para 5m
             if signal in ['COMPRA', 'COMPRA_FRACA'] and position == 0 and balance > 0:
+                # Para 5m: só aceitar sinais COMPRA forte, ignorar fracos
+                if is_5m and signal == 'COMPRA_FRACA':
+                    continue
+                    
+                # Evitar trades muito próximos em 5m
+                if is_5m and i - last_trade_index < min_hold_periods:
+                    continue
+                
                 # Enter long position
                 position = 1
                 entry_price = current_price
+                last_trade_index = i
 
                 trades.append({
                     'timestamp': timestamp,
@@ -131,6 +145,13 @@ class BacktestEngine:
                 })
 
             elif signal in ['VENDA', 'VENDA_FRACA'] and position == 1:
+                # Para 5m: só aceitar sinais VENDA forte, ignorar fracos
+                if is_5m and signal == 'VENDA_FRACA':
+                    continue
+                
+                # Mínimo de hold em 5m
+                if is_5m and i - last_trade_index < min_hold_periods:
+                    continue
                 # Exit long position
                 # Calculate profit/loss
                 price_change_pct = (current_price - entry_price) / entry_price

@@ -327,27 +327,44 @@ class TradingBot:
         return df
 
     def _generate_advanced_signal(self, row):
-        """Generate optimized trading signal with better balance between quantity and quality"""
+        """Generate optimized trading signal with special 5m timeframe optimization"""
         # Skip if basic indicators are missing
         if pd.isna(row['rsi']) or pd.isna(row['macd']) or pd.isna(row['macd_signal']):
             return "NEUTRO"
 
-        # More permissive market regime filter - allow ranging markets
-        market_regime = row.get('market_regime', 'trending')
-        # Removido filtro de ranging market para permitir mais trades
-
-        # Relaxed ADX filter for more opportunities
-        adx = row.get('adx', 0)
-        if not pd.isna(adx) and adx < 18:  # Reduced from 25 to 18 for more trades
-            return "NEUTRO"
-
-        # More balanced volatility filter - allow moderate volatility
-        bb_width = row.get('bb_width', 0)
-        atr = row.get('atr', 0)
-        if not pd.isna(bb_width) and not pd.isna(atr):
-            # Allow higher volatility for crypto markets
-            if bb_width > 0.25 or atr > row.get('close', 1) * 0.08:  # Increased thresholds
+        # Otimização específica para 5m - filtros mais rigorosos
+        timeframe = getattr(self, 'timeframe', '5m')
+        
+        if timeframe == '5m':
+            # Para 5m, exigir condições mais específicas
+            market_regime = row.get('market_regime', 'trending')
+            if market_regime == 'ranging':
+                return "NEUTRO"  # Evitar mercados laterais em 5m
+            
+            # ADX mais restritivo para 5m
+            adx = row.get('adx', 0)
+            if not pd.isna(adx) and adx < 25:  # Aumentado de 18 para 25
                 return "NEUTRO"
+            
+            # Filtro de volatilidade mais restritivo para 5m
+            bb_width = row.get('bb_width', 0)
+            atr = row.get('atr', 0)
+            if not pd.isna(bb_width) and not pd.isna(atr):
+                # Tolerância menor para 5m
+                if bb_width > 0.15 or atr > row.get('close', 1) * 0.05:  # Mais restritivo
+                    return "NEUTRO"
+        else:
+            # Configurações originais para outros timeframes
+            market_regime = row.get('market_regime', 'trending')
+            adx = row.get('adx', 0)
+            if not pd.isna(adx) and adx < 18:
+                return "NEUTRO"
+            
+            bb_width = row.get('bb_width', 0)
+            atr = row.get('atr', 0)
+            if not pd.isna(bb_width) and not pd.isna(atr):
+                if bb_width > 0.25 or atr > row.get('close', 1) * 0.08:
+                    return "NEUTRO"
 
         # Core indicators with optimized thresholds
         rsi = row['rsi']
@@ -379,7 +396,7 @@ class TradingBot:
         bb_lower = row.get('bb_lower', price)
         bb_position = (price - bb_lower) / (bb_upper - bb_lower) if bb_upper != bb_lower else 0.5
 
-        # Enhanced scoring system - usar SEMPRE as configurações do dashboard
+        # Sistema de scoring otimizado especialmente para 5m
         bullish_score = 0
         bearish_score = 0
         confidence_multiplier = 1.0
@@ -387,6 +404,10 @@ class TradingBot:
         # Usar os thresholds configurados no dashboard
         rsi_oversold_threshold = self.rsi_min if hasattr(self, 'rsi_min') else 20
         rsi_overbought_threshold = self.rsi_max if hasattr(self, 'rsi_max') else 80
+        
+        # Multiplicador especial para 5m
+        if timeframe == '5m':
+            confidence_multiplier = 1.2  # Aumentar exigência base para 5m
 
         # RSI scoring mais permissivo - expandir as zonas de trading
         oversold_extreme = rsi_oversold_threshold - 5  # Zona extrema de compra
@@ -519,26 +540,34 @@ class TradingBot:
         bullish_score = int(bullish_score * confidence_multiplier)
         bearish_score = int(bearish_score * confidence_multiplier)
 
-        # Optimized signal generation for better win rate and more trades
-        min_strong_signal = 6   # Reduced further for more opportunities
-        min_weak_signal = 4     # Lower threshold for weak signals
-        min_difference = 2      # Keep difference for quality
+        # Thresholds otimizados por timeframe
+        if timeframe == '5m':
+            # Para 5m: menos trades, mais qualidade
+            min_strong_signal = 8    # Aumentado de 6 para 8
+            min_weak_signal = 6      # Aumentado de 4 para 6
+            min_difference = 3       # Aumentado de 2 para 3
+        else:
+            # Outros timeframes: configuração original
+            min_strong_signal = 6
+            min_weak_signal = 4
+            min_difference = 2
 
-        # Multi-tier signal system for better precision
-        if bullish_score >= min_strong_signal + 2 and bullish_score > bearish_score + min_difference + 1:
+        # Sistema multi-tier otimizado
+        if bullish_score >= min_strong_signal + 3 and bullish_score > bearish_score + min_difference + 2:
             return "COMPRA"  # High confidence buy
-        elif bearish_score >= min_strong_signal + 2 and bearish_score > bullish_score + min_difference + 1:
+        elif bearish_score >= min_strong_signal + 3 and bearish_score > bullish_score + min_difference + 2:
             return "VENDA"   # High confidence sell
         elif bullish_score >= min_strong_signal and bullish_score > bearish_score + min_difference:
             return "COMPRA_FRACA"  # Medium confidence buy
         elif bearish_score >= min_strong_signal and bearish_score > bullish_score + min_difference:
             return "VENDA_FRACA"   # Medium confidence sell
-        elif bullish_score >= min_weak_signal and bullish_score > bearish_score + 1:
-            return "COMPRA_FRACA"  # Low confidence but valid buy
-        elif bearish_score >= min_weak_signal and bearish_score > bullish_score + 1:
-            return "VENDA_FRACA"   # Low confidence but valid sell
-        else:
-            return "NEUTRO"
+        elif timeframe != '5m':  # Só permitir sinais fracos em outros timeframes
+            if bullish_score >= min_weak_signal and bullish_score > bearish_score + 1:
+                return "COMPRA_FRACA"
+            elif bearish_score >= min_weak_signal and bearish_score > bullish_score + 1:
+                return "VENDA_FRACA"
+        
+        return "NEUTRO"
 
     def _calculate_signal_confidence(self, row):
         """Calculate confidence score for the signal"""
@@ -580,7 +609,7 @@ class TradingBot:
 
     def check_signal(self, df, min_confidence=60, require_volume=True, require_trend=False, avoid_ranging=False,
                     crypto_optimized=True, timeframe="5m", day_trading_mode=False):
-        """Check trading signal with optimized balance between quantity and quality"""
+        """Check trading signal with special optimization for 5m timeframe"""
         if df is None or df.empty:
             return "NEUTRO"
 
@@ -590,6 +619,17 @@ class TradingBot:
         actual_rsi_min = self.rsi_min
         actual_rsi_max = self.rsi_max
         actual_rsi_period = self.rsi_period
+        
+        # Aplicar otimizações específicas para 5m
+        if timeframe == "5m" or self.timeframe == "5m":
+            try:
+                from config.timeframe_5m_config import TimeFrame5mConfig
+                signal = self._generate_advanced_signal(last_row)
+                current_hour = last_row.get('timestamp', pd.Timestamp.now()).hour if hasattr(last_row, 'get') else None
+                signal = TimeFrame5mConfig.apply_5m_filters(signal, last_row, current_hour)
+                return signal
+            except ImportError:
+                pass  # Continuar com lógica normal se config não existir
 
         # Configurações otimizadas para mais trades com melhor precisão
         if day_trading_mode:
