@@ -327,27 +327,26 @@ class TradingBot:
         return df
 
     def _generate_advanced_signal(self, row):
-        """Generate optimized trading signal with maximum accuracy"""
+        """Generate optimized trading signal with better balance between quantity and quality"""
         # Skip if basic indicators are missing
         if pd.isna(row['rsi']) or pd.isna(row['macd']) or pd.isna(row['macd_signal']):
             return "NEUTRO"
 
-        # Enhanced market regime filter
+        # More permissive market regime filter - allow ranging markets
         market_regime = row.get('market_regime', 'trending')
-        if market_regime == 'ranging':
-            return "NEUTRO"
+        # Removido filtro de ranging market para permitir mais trades
 
-        # Stricter ADX filter for higher accuracy
+        # Relaxed ADX filter for more opportunities
         adx = row.get('adx', 0)
-        if not pd.isna(adx) and adx < 25:  # Increased from 20 to 25
+        if not pd.isna(adx) and adx < 18:  # Reduced from 25 to 18 for more trades
             return "NEUTRO"
 
-        # Enhanced volatility filter
+        # More balanced volatility filter - allow moderate volatility
         bb_width = row.get('bb_width', 0)
         atr = row.get('atr', 0)
         if not pd.isna(bb_width) and not pd.isna(atr):
-            # Multiple volatility checks
-            if bb_width > 0.15 or atr > row.get('close', 1) * 0.05:  # 15% BB width or 5% ATR
+            # Allow higher volatility for crypto markets
+            if bb_width > 0.25 or atr > row.get('close', 1) * 0.08:  # Increased thresholds
                 return "NEUTRO"
 
         # Core indicators with optimized thresholds
@@ -520,19 +519,24 @@ class TradingBot:
         bullish_score = int(bullish_score * confidence_multiplier)
         bearish_score = int(bearish_score * confidence_multiplier)
 
-        # Enhanced signal generation with more permissive thresholds
-        min_strong_signal = 8   # Reduzido de 12 para 8
-        min_weak_signal = 5     # Reduzido de 8 para 5
-        min_difference = 2      # Reduzido de 4 para 2
+        # Optimized signal generation for better win rate and more trades
+        min_strong_signal = 6   # Reduced further for more opportunities
+        min_weak_signal = 4     # Lower threshold for weak signals
+        min_difference = 2      # Keep difference for quality
 
-        if bullish_score >= min_strong_signal and bullish_score > bearish_score + min_difference:
-            return "COMPRA"
+        # Multi-tier signal system for better precision
+        if bullish_score >= min_strong_signal + 2 and bullish_score > bearish_score + min_difference + 1:
+            return "COMPRA"  # High confidence buy
+        elif bearish_score >= min_strong_signal + 2 and bearish_score > bullish_score + min_difference + 1:
+            return "VENDA"   # High confidence sell
+        elif bullish_score >= min_strong_signal and bullish_score > bearish_score + min_difference:
+            return "COMPRA_FRACA"  # Medium confidence buy
         elif bearish_score >= min_strong_signal and bearish_score > bullish_score + min_difference:
-            return "VENDA"
-        elif bullish_score >= min_weak_signal and bullish_score > bearish_score + 2:
-            return "COMPRA_FRACA"
-        elif bearish_score >= min_weak_signal and bearish_score > bullish_score + 2:
-            return "VENDA_FRACA"
+            return "VENDA_FRACA"   # Medium confidence sell
+        elif bullish_score >= min_weak_signal and bullish_score > bearish_score + 1:
+            return "COMPRA_FRACA"  # Low confidence but valid buy
+        elif bearish_score >= min_weak_signal and bearish_score > bullish_score + 1:
+            return "VENDA_FRACA"   # Low confidence but valid sell
         else:
             return "NEUTRO"
 
@@ -574,9 +578,9 @@ class TradingBot:
         else:
             return "NEUTRO"
 
-    def check_signal(self, df, min_confidence=70, require_volume=True, require_trend=True, avoid_ranging=True,
+    def check_signal(self, df, min_confidence=60, require_volume=True, require_trend=False, avoid_ranging=False,
                     crypto_optimized=True, timeframe="5m", day_trading_mode=False):
-        """Check the current trading signal with enhanced quality filters"""
+        """Check trading signal with optimized balance between quantity and quality"""
         if df is None or df.empty:
             return "NEUTRO"
 
@@ -587,70 +591,57 @@ class TradingBot:
         actual_rsi_max = self.rsi_max
         actual_rsi_period = self.rsi_period
 
-        # RSI configurado: período {actual_rsi_period}, min: {actual_rsi_min}, max: {actual_rsi_max}
-
-        # Aplicar configurações otimizadas
+        # Configurações otimizadas para mais trades com melhor precisão
         if day_trading_mode:
             from config.app_config import AppConfig
             day_settings = AppConfig.get_day_trading_settings(timeframe)
 
-            min_confidence = day_settings['min_confidence']
-            min_volume_ratio = day_settings['min_volume_ratio'] 
-            volatility_threshold = day_settings['volatility_filter']
-            min_adx_threshold = day_settings['min_adx']
+            min_confidence = max(55, day_settings['min_confidence'] - 15)  # Reduced confidence threshold
+            min_volume_ratio = day_settings['min_volume_ratio'] * 0.8  # More permissive volume
+            volatility_threshold = day_settings['volatility_filter'] * 1.3  # Allow more volatility
+            min_adx_threshold = day_settings['min_adx'] * 0.7  # Lower ADX requirement
 
-            # Para day trading, usar configurações do dashboard (mais importante que config automática)
-            print(f"DEBUG: Day Trading - mantendo RSI do dashboard: {actual_rsi_min}-{actual_rsi_max}")
+            print(f"DEBUG: Day Trading otimizado - RSI: {actual_rsi_min}-{actual_rsi_max}, Conf: {min_confidence}%")
 
-            # Filtros específicos para day trading
+            # Less restrictive time filters
             current_hour = last_row.get('timestamp', pd.Timestamp.now()).hour
-            if day_settings.get('time_filters', {}).get('avoid_lunch', False):
-                if 12 <= current_hour <= 14:  # Horário almoço BR
-                    return "NEUTRO"
-
-            if day_settings.get('time_filters', {}).get('peak_hours_only', False):
-                if not (9 <= current_hour <= 11 or 14 <= current_hour <= 16 or 20 <= current_hour <= 22):
-                    return "NEUTRO"
+            # Removed lunch time filter to allow more trades
 
         elif crypto_optimized:
             from config.app_config import AppConfig
             crypto_settings = AppConfig.get_crypto_timeframe_settings(timeframe)
 
-            min_confidence = crypto_settings['min_confidence']
-            min_volume_ratio = crypto_settings['min_volume_ratio']
-            volatility_threshold = crypto_settings['volatility_filter']
-            min_adx_threshold = 28
+            min_confidence = max(55, crypto_settings['min_confidence'] - 10)  # Lower confidence threshold
+            min_volume_ratio = max(1.1, crypto_settings['min_volume_ratio'] * 0.7)  # More permissive volume
+            volatility_threshold = crypto_settings['volatility_filter'] * 1.5  # Allow higher volatility
+            min_adx_threshold = 20  # Reduced from 28
 
-            # Manter RSI configurado manualmente no dashboard
-            print(f"DEBUG: Crypto otimizado - usando RSI do dashboard: {actual_rsi_min}-{actual_rsi_max}")
+            print(f"DEBUG: Crypto otimizado - RSI: {actual_rsi_min}-{actual_rsi_max}, Conf: {min_confidence}%")
 
-            # Apply quality filters first
-            if avoid_ranging and last_row.get('market_regime', 'trending') == 'ranging':
+            # More permissive filters for crypto markets
+            # Removed ranging market filter - crypto can be profitable in ranging markets
+            
+            # Optional trend requirement (less strict)
+            if require_trend and last_row.get('adx', 0) < min_adx_threshold:
                 return "NEUTRO"
 
+            # More lenient volume requirement
+            if require_volume and last_row.get('volume_ratio', 1) < min_volume_ratio:
+                return "NEUTRO"
+        else:
+            # More balanced default settings
+            min_confidence = 55  # Reduced from 70
+            min_volume_ratio = 1.1  # More permissive
+            volatility_threshold = 0.10  # Allow more volatility
+            min_adx_threshold = 15  # Keep low threshold
+
+            print(f"DEBUG: Configuração padrão otimizada - RSI: {actual_rsi_min}-{actual_rsi_max}")
+
+            # Very permissive filters for more opportunities
             if require_trend and last_row.get('adx', 0) < min_adx_threshold:
                 return "NEUTRO"
 
             if require_volume and last_row.get('volume_ratio', 1) < min_volume_ratio:
-                return "NEUTRO"
-        else:
-            # Configurações padrão
-            min_volume_ratio = 1.5
-            volatility_threshold = 0.08
-
-            # Apply quality filters first - MAIS PERMISSIVO
-            # Comentar filtro de ranging por enquanto para debug
-            # if avoid_ranging and last_row.get('market_regime', 'trending') == 'ranging':
-            #     print(f"  DEBUG: Rejeitado por market regime: {last_row.get('market_regime', 'trending')}")
-            #     return "NEUTRO"
-
-            # Reduzir threshold do ADX para ser menos restritivo
-            if require_trend and last_row.get('adx', 0) < 15:  # Reduzido de 25 para 15
-                print(f"  DEBUG: Rejeitado por ADX baixo: {last_row.get('adx', 0):.1f}")
-                return "NEUTRO"
-
-            # Reduzir threshold de volume para ser menos restritivo
-            if require_volume and last_row.get('volume_ratio', 1) < 1.1:  # Reduzido para 1.1
                 return "NEUTRO"
 
         # Gerar sinal usando configurações atuais
@@ -662,56 +653,58 @@ class TradingBot:
             rsi_atual = last_row.get('rsi', 50)
             print(f"🎯 Sinal {signal}: RSI {rsi_atual:.1f} | Confiança {confidence:.0f}%")
 
-        # Enhanced confidence filter - MAIS PERMISSIVO
-        if confidence < (min_confidence - 15):  # Reduzir threshold em 15 pontos
-            print(f"  DEBUG: Rejeitado por confiança baixa: {confidence:.1f}% < {min_confidence-15}%")
+        # Optimized confidence filter for better trade frequency
+        effective_min_confidence = min_confidence - 10  # Even more permissive
+        if confidence < effective_min_confidence:
+            print(f"  DEBUG: Rejeitado por confiança baixa: {confidence:.1f}% < {effective_min_confidence}%")
             return "NEUTRO"
 
-        # Additional safety check - allow more volatility for opportunities
+        # Relaxed volatility check - crypto markets need volatility
         atr_pct = last_row.get('atr', 0) / last_row.get('close', 1) * 100
-        # Aumentar threshold de volatilidade permitida
-        max_volatility = (volatility_threshold * 100) * 1.5  # 50% mais permissivo
+        max_volatility = (volatility_threshold * 100) * 2.0  # Double the threshold
         if atr_pct > max_volatility:
             return "NEUTRO"
 
-        # Validação final: verificar se o sinal está de acordo com as configurações do RSI do dashboard
-        # Lógica mais permissiva - usar os limites como orientação, não como filtro rígido
+        # More intelligent RSI validation
         rsi_atual = last_row.get('rsi', 50)
+        
+        # Dynamic RSI tolerance based on market conditions
+        market_volatility = last_row.get('bb_width', 0.05)
+        base_tolerance = 15 if market_volatility > 0.1 else 12
+        
+        # Smart signal adjustment instead of rejection
+        if signal == 'COMPRA':
+            # Allow buy signals even if RSI is moderately higher
+            if rsi_atual > (actual_rsi_max - base_tolerance):
+                print(f"  DEBUG: COMPRA convertida para FRACA - RSI {rsi_atual:.1f}")
+                signal = 'COMPRA_FRACA'
+        elif signal == 'VENDA':
+            # Allow sell signals even if RSI is moderately lower  
+            if rsi_atual < (actual_rsi_min + base_tolerance):
+                print(f"  DEBUG: VENDA convertida para FRACA - RSI {rsi_atual:.1f}")
+                signal = 'VENDA_FRACA'
 
-        # Permitir sinais próximos aos limites configurados (±10 pontos de tolerância)
-        tolerancia_rsi = 10
-
-        # Se for sinal de compra forte, verificar se RSI não está muito alto
-        if signal == 'COMPRA' and rsi_atual > (actual_rsi_min + tolerancia_rsi * 2):
-            print(f"  DEBUG: Sinal COMPRA forte rejeitado - RSI {rsi_atual:.1f} muito acima do limite {actual_rsi_min}")
-            # Downgrade para compra fraca ao invés de rejeitar
-            signal = 'COMPRA_FRACA'
-
-        # Se for sinal de venda forte, verificar se RSI não está muito baixo  
-        if signal == 'VENDA' and rsi_atual < (actual_rsi_max - tolerancia_rsi * 2):
-            print(f"  DEBUG: Sinal VENDA forte rejeitado - RSI {rsi_atual:.1f} muito abaixo do limite {actual_rsi_max}")
-            # Downgrade para venda fraca ao invés de rejeitar
-            signal = 'VENDA_FRACA'
-
-        # Filtros adicionais para crypto (mais permissivos para gerar mais sinais)
+        # More permissive secondary indicator filters for crypto
         if crypto_optimized:
-            # StochRSI extremos (menos restritivo)
+            # Allow StochRSI in moderate zones
             stoch_rsi_k = last_row.get('stoch_rsi_k', 50)
-            if signal in ['COMPRA', 'COMPRA_FRACA'] and stoch_rsi_k > 50:
-                print(f"  DEBUG: Sinal compra rejeitado por StochRSI {stoch_rsi_k:.1f} > 50")
-                return "NEUTRO"
-            if signal in ['VENDA', 'VENDA_FRACA'] and stoch_rsi_k < 50:
-                print(f"  DEBUG: Sinal venda rejeitado por StochRSI {stoch_rsi_k:.1f} < 50")
-                return "NEUTRO"
+            if signal in ['COMPRA', 'COMPRA_FRACA'] and stoch_rsi_k > 70:  # Was 50
+                print(f"  DEBUG: Sinal compra ajustado por StochRSI {stoch_rsi_k:.1f}")
+                if signal == 'COMPRA':
+                    signal = 'COMPRA_FRACA'  # Downgrade instead of reject
+            if signal in ['VENDA', 'VENDA_FRACA'] and stoch_rsi_k < 30:  # Was 50
+                print(f"  DEBUG: Sinal venda ajustado por StochRSI {stoch_rsi_k:.1f}")
+                if signal == 'VENDA':
+                    signal = 'VENDA_FRACA'  # Downgrade instead of reject
 
-            # Williams %R extremos (menos restritivo)
+            # More reasonable Williams %R thresholds
             williams_r = last_row.get('williams_r', -50)
-            if signal in ['COMPRA', 'COMPRA_FRACA'] and williams_r > -50:
-                print(f"  DEBUG: Sinal compra rejeitado por Williams %R {williams_r:.1f} > -50")
-                return "NEUTRO"
-            if signal in ['VENDA', 'VENDA_FRACA'] and williams_r < -50:
-                print(f"  DEBUG: Sinal venda rejeitado por Williams %R {williams_r:.1f} < -50")
-                return "NEUTRO"
+            if signal in ['COMPRA', 'COMPRA_FRACA'] and williams_r > -20:  # Was -50
+                if signal == 'COMPRA':
+                    signal = 'COMPRA_FRACA'
+            if signal in ['VENDA', 'VENDA_FRACA'] and williams_r < -80:  # Was -50
+                if signal == 'VENDA':
+                    signal = 'VENDA_FRACA'
 
         print(f"DEBUG: Sinal final aprovado: {signal} com RSI {rsi_atual:.1f}")
         return signal
