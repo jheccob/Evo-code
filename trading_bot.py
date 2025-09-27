@@ -23,35 +23,40 @@ class TradingBot:
 
     def update_config(self, symbol=None, timeframe=None, rsi_period=None, rsi_min=None, rsi_max=None):
         """Update bot configuration parameters"""
-        print(f"DEBUG update_config: Recebendo configurações:")
-        print(f"  symbol: {symbol}")
-        print(f"  timeframe: {timeframe}")
-        print(f"  rsi_period: {rsi_period}")
-        print(f"  rsi_min: {rsi_min}")
-        print(f"  rsi_max: {rsi_max}")
         
-        if symbol:
+        # Verificar se alguma configuração realmente mudou
+        changed = False
+        
+        if symbol and symbol != self.symbol:
             self.symbol = symbol
-            print(f"  ✓ Symbol atualizado para: {self.symbol}")
-        if timeframe:
-            self.timeframe = timeframe
-            print(f"  ✓ Timeframe atualizado para: {self.timeframe}")
-        if rsi_period is not None:  # Usar 'is not None' para aceitar 0
-            self.rsi_period = rsi_period
-            print(f"  ✓ RSI Period atualizado para: {self.rsi_period}")
-        if rsi_min is not None:
-            self.rsi_min = rsi_min
-            print(f"  ✓ RSI Min atualizado para: {self.rsi_min}")
-        if rsi_max is not None:
-            self.rsi_max = rsi_max
-            print(f"  ✓ RSI Max atualizado para: {self.rsi_max}")
+            changed = True
+            print(f"✓ Symbol atualizado para: {self.symbol}")
             
-        print(f"DEBUG: Configuração final do bot:")
-        print(f"  Symbol: {self.symbol}")
-        print(f"  Timeframe: {self.timeframe}")
-        print(f"  RSI Period: {self.rsi_period}")
-        print(f"  RSI Min: {self.rsi_min}")
-        print(f"  RSI Max: {self.rsi_max}")
+        if timeframe and timeframe != self.timeframe:
+            self.timeframe = timeframe
+            changed = True
+            print(f"✓ Timeframe atualizado para: {self.timeframe}")
+            
+        if rsi_period is not None and rsi_period != self.rsi_period:
+            self.rsi_period = rsi_period
+            changed = True
+            print(f"✓ RSI Period atualizado para: {self.rsi_period}")
+            
+        if rsi_min is not None and rsi_min != self.rsi_min:
+            self.rsi_min = rsi_min
+            changed = True
+            print(f"✓ RSI Min atualizado para: {self.rsi_min}")
+            
+        if rsi_max is not None and rsi_max != self.rsi_max:
+            self.rsi_max = rsi_max
+            changed = True
+            print(f"✓ RSI Max atualizado para: {self.rsi_max}")
+            
+        # Só mostrar configuração final se algo mudou
+        if changed:
+            print(f"📊 Configuração atualizada: {self.symbol} {self.timeframe} RSI({self.rsi_period}) {self.rsi_min}-{self.rsi_max}")
+        
+        return changed
 
     def get_market_data(self, limit=200):
         """Fetch OHLCV data using WebSocket público da Binance Futures com cache otimizado"""
@@ -581,7 +586,7 @@ class TradingBot:
         actual_rsi_max = self.rsi_max
         actual_rsi_period = self.rsi_period
         
-        print(f"DEBUG check_signal: Usando RSI configurado - período: {actual_rsi_period}, min: {actual_rsi_min}, max: {actual_rsi_max}")
+        # RSI configurado: período {actual_rsi_period}, min: {actual_rsi_min}, max: {actual_rsi_max}
 
         # Aplicar configurações otimizadas
         if day_trading_mode:
@@ -647,26 +652,14 @@ class TradingBot:
             if require_volume and last_row.get('volume_ratio', 1) < 1.1:  # Reduzido para 1.1
                 return "NEUTRO"
 
-        # Debug: Mostrar valores atuais antes de gerar sinal
-        rsi_atual = last_row.get('rsi', 50)
-        stoch_rsi_k = last_row.get('stoch_rsi_k', 50)
-        williams_r = last_row.get('williams_r', -50)
-        adx = last_row.get('adx', 0)
-        volume_ratio = last_row.get('volume_ratio', 1)
-        
-        print(f"📊 DEBUG INDICADORES:")
-        print(f"  RSI: {rsi_atual:.2f} (Config: {actual_rsi_min}-{actual_rsi_max})")
-        print(f"  StochRSI K: {stoch_rsi_k:.2f}")
-        print(f"  Williams %R: {williams_r:.2f}")
-        print(f"  ADX: {adx:.2f}")
-        print(f"  Volume Ratio: {volume_ratio:.2f}")
-        
-        # Usar configurações do próprio bot
+        # Gerar sinal usando configurações atuais
         signal = self._generate_advanced_signal(last_row)
         confidence = self._calculate_signal_confidence(last_row)
         
-        print(f"  Sinal Inicial: {signal}")
-        print(f"  Confiança: {confidence:.1f}%")
+        # Log apenas sinais não-neutros
+        if signal != "NEUTRO":
+            rsi_atual = last_row.get('rsi', 50)
+            print(f"🎯 Sinal {signal}: RSI {rsi_atual:.1f} | Confiança {confidence:.0f}%")
 
         # Enhanced confidence filter - MAIS PERMISSIVO
         if confidence < (min_confidence - 15):  # Reduzir threshold em 15 pontos
