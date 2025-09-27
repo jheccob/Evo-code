@@ -509,9 +509,7 @@ if config_changed:
 # Main dashboard
 st.title("📈 Trading Signals Dashboard")
 
-# Status do WebSocket Binance
-st.success("✅ **Binance WebSocket Público Ativo** - Dados em tempo real sem credenciais")
-st.info("📡 Conectado via WebSocket público da Binance Futures - Sem limites de API")
+# Status do WebSocket Binance removido para interface mais limpa
 
 # Import user manager for admin features  
 try:
@@ -580,9 +578,7 @@ with tab1:
     st.markdown("**Análise otimizada com streaming de dados em tempo real da Binance**")
     
     if WEBSOCKET_AVAILABLE:
-        # Usar apenas WebSocket público da Binance Futures
-        st.success("✅ **WebSocket Público Binance Futures** - Dados em tempo real sem credenciais")
-        st.info("🔹 **Modo Público:** Sinais gerados a partir de dados de mercado em tempo real")
+        # Interface limpa do WebSocket
             
         # Configurações WebSocket
         col1, col2, col3 = st.columns(3)
