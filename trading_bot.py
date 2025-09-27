@@ -17,54 +17,54 @@ class TradingBot:
         self.rsi_min = 20
         self.rsi_max = 80
         self.indicators = TechnicalIndicators()
-        
+
         print(f"🚀 TradingBot inicializado com BINANCE WEBSOCKET PÚBLICO")
         print("📡 Usando dados em tempo real sem necessidade de credenciais")
 
     def update_config(self, symbol=None, timeframe=None, rsi_period=None, rsi_min=None, rsi_max=None):
         """Update bot configuration parameters"""
-        
+
         # Verificar se alguma configuração realmente mudou
         changed = False
-        
+
         if symbol and symbol != self.symbol:
             self.symbol = symbol
             changed = True
             print(f"✓ Symbol atualizado para: {self.symbol}")
-            
+
         if timeframe and timeframe != self.timeframe:
             self.timeframe = timeframe
             changed = True
             print(f"✓ Timeframe atualizado para: {self.timeframe}")
-            
+
         if rsi_period is not None and rsi_period != self.rsi_period:
             self.rsi_period = rsi_period
             changed = True
             print(f"✓ RSI Period atualizado para: {self.rsi_period}")
-            
+
         if rsi_min is not None and rsi_min != self.rsi_min:
             self.rsi_min = rsi_min
             changed = True
             print(f"✓ RSI Min atualizado para: {self.rsi_min}")
-            
+
         if rsi_max is not None and rsi_max != self.rsi_max:
             self.rsi_max = rsi_max
             changed = True
             print(f"✓ RSI Max atualizado para: {self.rsi_max}")
-            
+
         # Só mostrar configuração final se algo mudou
         if changed:
             print(f"📊 Configuração atualizada: {self.symbol} {self.timeframe} RSI({self.rsi_period}) {self.rsi_min}-{self.rsi_max}")
-        
+
         return changed
 
     def get_market_data(self, limit=200):
         """Fetch OHLCV data using WebSocket público da Binance Futures com cache otimizado"""
-        
+
         # Cache local para evitar múltiplas chamadas API
         cache_key = f"{self.symbol}_{self.timeframe}_{limit}"
         current_time = datetime.now()
-        
+
         # Verificar cache local (60 segundos)
         if hasattr(self, '_cache_data') and cache_key in self._cache_data:
             cached_item = self._cache_data[cache_key]
@@ -72,36 +72,36 @@ class TradingBot:
             if cache_age < 60:  # Cache válido por 60 segundos
                 print(f"📊 Usando dados em cache para {self.symbol} (cache: {cache_age:.1f}s)")
                 return cached_item['data']
-        
+
         try:
             print(f"🔄 Buscando novos dados para {self.symbol}")
-            
+
             # Simular dados de mercado usando WebSocket (implementação simplificada)
             # Em produção, isso conectaria ao WebSocket real da Binance Futures
             import requests
             from datetime import datetime, timedelta
-            
+
             # Tentar usar API pública alternativa primeiro
             try:
                 # Usar endpoint público da Binance que geralmente funciona
                 symbol_formatted = self.symbol.replace('/', '')  # BTC/USDT -> BTCUSDT
-                
+
                 # Mapear timeframes para Binance
                 timeframe_map = {
                     '1m': '1m', '3m': '3m', '5m': '5m', '15m': '15m', 
                     '30m': '30m', '1h': '1h', '2h': '2h', '4h': '4h',
                     '6h': '6h', '8h': '8h', '12h': '12h', '1d': '1d'
                 }
-                
+
                 binance_timeframe = timeframe_map.get(self.timeframe, '5m')
-                
+
                 # Usar diferentes endpoints públicos
                 endpoints = [
                     f"https://api.binance.com/api/v3/klines?symbol={symbol_formatted}&interval={binance_timeframe}&limit={limit}",
                     f"https://fapi.binance.com/fapi/v1/klines?symbol={symbol_formatted}&interval={binance_timeframe}&limit={limit}",
                     f"https://api.binance.us/api/v3/klines?symbol={symbol_formatted}&interval={binance_timeframe}&limit={limit}"
                 ]
-                
+
                 ohlcv_data = None
                 for endpoint in endpoints:
                     try:
@@ -116,7 +116,7 @@ class TradingBot:
                     except Exception as e:
                         print(f"⚠️ Endpoint falhou: {str(e)[:50]}")
                         continue
-                
+
                 if ohlcv_data:
                     # Converter dados para formato pandas
                     df_data = []
@@ -129,30 +129,30 @@ class TradingBot:
                             float(candle[4]),    # close
                             float(candle[5])     # volume
                         ])
-                    
+
                     df = pd.DataFrame(df_data)
                     df.columns = ['timestamp', 'open', 'high', 'low', 'close', 'volume']
-                    
+
                     # Convert timestamp to datetime
                     df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
                     df.set_index('timestamp', inplace=True)
-                    
+
                     print(f"📊 Dados obtidos via WebSocket público: {len(df)} candles")
-                    
+
                     # Calculate technical indicators
                     df = self.calculate_indicators(df)
                     return df
-                    
+
             except Exception as e:
                 print(f"⚠️ Erro nos endpoints públicos: {str(e)}")
-            
+
             # Fallback: Gerar dados simulados realistas para demonstração
             print("🎯 Usando dados simulados para demonstração (WebSocket simulado)")
-            
+
             # Gerar dados realistas baseados no símbolo
             import random
             import numpy as np
-            
+
             # Preços base por símbolo
             base_prices = {
                 'BTC/USDT': 65000,
@@ -165,31 +165,32 @@ class TradingBot:
                 'LTC/USDT': 85,
                 'AVAX/USDT': 35
             }
-            
+
             base_price = base_prices.get(self.symbol, 1.0)
-            
+
             # Gerar série temporal com movimento browniano
             timestamps = []
             prices = []
             volumes = []
-            
-            current_time = datetime.now()
+
+            from datetime import datetime as dt, timedelta as td
+            current_time = dt.now()
             current_price = base_price
-            
+
             for i in range(limit):
                 # Timestamp
-                timestamp = current_time - timedelta(minutes=(limit-i-1) * 5)
+                timestamp = current_time - td(minutes=(limit-i-1) * 5)
                 timestamps.append(timestamp)
-                
+
                 # Preço com movimento browniano
                 change_pct = random.normalvariate(0, 0.5) / 100  # Variação de ±0.5%
                 current_price = current_price * (1 + change_pct)
                 prices.append(current_price)
-                
+
                 # Volume realista
                 base_volume = random.uniform(1000000, 10000000)
                 volumes.append(base_volume)
-            
+
             # Criar DataFrame
             df_data = []
             for i in range(len(timestamps)):
@@ -198,7 +199,7 @@ class TradingBot:
                 close_price = prices[i] * random.uniform(0.995, 1.005)
                 high_price = max(open_price, close_price) * random.uniform(1.001, 1.01)
                 low_price = min(open_price, close_price) * random.uniform(0.99, 0.999)
-                
+
                 df_data.append({
                     'timestamp': timestamps[i],
                     'open': open_price,
@@ -207,31 +208,31 @@ class TradingBot:
                     'close': close_price,
                     'volume': volumes[i]
                 })
-            
+
             df = pd.DataFrame(df_data)
             df.set_index('timestamp', inplace=True)
-            
+
             print(f"📊 Dados simulados criados: {len(df)} candles para {self.symbol}")
-            
+
             # Calculate technical indicators
             df = self.calculate_indicators(df)
-            
+
             # Salvar no cache local
             if not hasattr(self, '_cache_data'):
                 self._cache_data = {}
-            
+
             cache_key = f"{self.symbol}_{self.timeframe}_{limit}"
             self._cache_data[cache_key] = {
                 'data': df.copy(),
                 'timestamp': current_time
             }
-            
+
             # Limpar cache antigo (manter apenas últimos 5 itens)
             if len(self._cache_data) > 5:
                 oldest_key = min(self._cache_data.keys(), 
                                key=lambda k: self._cache_data[k]['timestamp'])
                 del self._cache_data[oldest_key]
-            
+
             return df
 
         except Exception as e:
@@ -243,7 +244,7 @@ class TradingBot:
         # Basic indicators
         print(f"DEBUG: Calculando RSI com período {self.rsi_period}")
         df['rsi'] = self.indicators.calculate_rsi(df['close'], self.rsi_period)
-        
+
         # Debug: Mostrar valores atuais do RSI
         current_rsi = df['rsi'].iloc[-1] if not df['rsi'].empty else None
         if current_rsi is not None and not pd.isna(current_rsi):
@@ -383,17 +384,17 @@ class TradingBot:
         bullish_score = 0
         bearish_score = 0
         confidence_multiplier = 1.0
-        
+
         # Usar os thresholds configurados no dashboard
         rsi_oversold_threshold = self.rsi_min if hasattr(self, 'rsi_min') else 20
         rsi_overbought_threshold = self.rsi_max if hasattr(self, 'rsi_max') else 80
-        
+
         # RSI scoring mais permissivo - expandir as zonas de trading
         oversold_extreme = rsi_oversold_threshold - 5  # Zona extrema de compra
         oversold_moderate = rsi_oversold_threshold + 15  # Zona moderada de compra (expandida)
         overbought_moderate = rsi_overbought_threshold - 15  # Zona moderada de venda (expandida)
         overbought_extreme = rsi_overbought_threshold + 5  # Zona extrema de venda
-        
+
         if rsi <= oversold_extreme:  # Extremo oversold (usuário definiu)
             bullish_score += 5
             confidence_multiplier += 0.3
@@ -585,32 +586,32 @@ class TradingBot:
         actual_rsi_min = self.rsi_min
         actual_rsi_max = self.rsi_max
         actual_rsi_period = self.rsi_period
-        
+
         # RSI configurado: período {actual_rsi_period}, min: {actual_rsi_min}, max: {actual_rsi_max}
 
         # Aplicar configurações otimizadas
         if day_trading_mode:
             from config.app_config import AppConfig
             day_settings = AppConfig.get_day_trading_settings(timeframe)
-            
+
             min_confidence = day_settings['min_confidence']
             min_volume_ratio = day_settings['min_volume_ratio'] 
             volatility_threshold = day_settings['volatility_filter']
             min_adx_threshold = day_settings['min_adx']
-            
+
             # Para day trading, usar configurações do dashboard (mais importante que config automática)
             print(f"DEBUG: Day Trading - mantendo RSI do dashboard: {actual_rsi_min}-{actual_rsi_max}")
-            
+
             # Filtros específicos para day trading
             current_hour = last_row.get('timestamp', pd.Timestamp.now()).hour
             if day_settings.get('time_filters', {}).get('avoid_lunch', False):
                 if 12 <= current_hour <= 14:  # Horário almoço BR
                     return "NEUTRO"
-            
+
             if day_settings.get('time_filters', {}).get('peak_hours_only', False):
                 if not (9 <= current_hour <= 11 or 14 <= current_hour <= 16 or 20 <= current_hour <= 22):
                     return "NEUTRO"
-                    
+
         elif crypto_optimized:
             from config.app_config import AppConfig
             crypto_settings = AppConfig.get_crypto_timeframe_settings(timeframe)
@@ -655,7 +656,7 @@ class TradingBot:
         # Gerar sinal usando configurações atuais
         signal = self._generate_advanced_signal(last_row)
         confidence = self._calculate_signal_confidence(last_row)
-        
+
         # Log apenas sinais não-neutros
         if signal != "NEUTRO":
             rsi_atual = last_row.get('rsi', 50)
@@ -676,16 +677,16 @@ class TradingBot:
         # Validação final: verificar se o sinal está de acordo com as configurações do RSI do dashboard
         # Lógica mais permissiva - usar os limites como orientação, não como filtro rígido
         rsi_atual = last_row.get('rsi', 50)
-        
+
         # Permitir sinais próximos aos limites configurados (±10 pontos de tolerância)
         tolerancia_rsi = 10
-        
+
         # Se for sinal de compra forte, verificar se RSI não está muito alto
         if signal == 'COMPRA' and rsi_atual > (actual_rsi_min + tolerancia_rsi * 2):
             print(f"  DEBUG: Sinal COMPRA forte rejeitado - RSI {rsi_atual:.1f} muito acima do limite {actual_rsi_min}")
             # Downgrade para compra fraca ao invés de rejeitar
             signal = 'COMPRA_FRACA'
-            
+
         # Se for sinal de venda forte, verificar se RSI não está muito baixo  
         if signal == 'VENDA' and rsi_atual < (actual_rsi_max - tolerancia_rsi * 2):
             print(f"  DEBUG: Sinal VENDA forte rejeitado - RSI {rsi_atual:.1f} muito abaixo do limite {actual_rsi_max}")
