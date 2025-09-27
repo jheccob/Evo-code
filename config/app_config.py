@@ -17,9 +17,9 @@ class AppConfig:
     MIN_ADX_TREND = 18         # Reduzido de 25 para 18
     MAX_ATR_PCT = 12          # Aumentado de 8 para 12 (permite mais volatilidade)
 
-    # API limits
+    # API limits - otimizado para performance
     MAX_CANDLES = 1000
-    UPDATE_INTERVAL = 60  # seconds
+    UPDATE_INTERVAL = 90  # seconds - aumentado para reduzir calls
 
     # Backtest settings
     DEFAULT_INITIAL_BALANCE = 10000
