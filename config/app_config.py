@@ -19,7 +19,7 @@ class AppConfig:
 
     # API limits - otimizado para performance
     MAX_CANDLES = 1000
-    UPDATE_INTERVAL = 90  # seconds - aumentado para reduzir calls
+    UPDATE_INTERVAL = 30  # seconds - reduzido para melhor responsividade
 
     # Backtest settings
     DEFAULT_INITIAL_BALANCE = 10000

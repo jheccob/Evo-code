@@ -60,11 +60,11 @@ class TradingBot:
         cache_key = f"{self.symbol}_{self.timeframe}_{limit}"
         current_time = datetime.now()
         
-        # Verificar cache local (60 segundos)
+        # Verificar cache local (30 segundos para melhor responsividade)
         if hasattr(self, '_cache_data') and cache_key in self._cache_data:
             cached_item = self._cache_data[cache_key]
             cache_age = (current_time - cached_item['timestamp']).total_seconds()
-            if cache_age < 60:  # Cache válido por 60 segundos
+            if cache_age < 30:  # Cache válido por 30 segundos
                 print(f"📊 Usando dados em cache para {self.symbol} (cache: {cache_age:.1f}s)")
                 return cached_item['data']
         
@@ -163,27 +163,38 @@ class TradingBot:
             
             base_price = base_prices.get(self.symbol, 1.0)
             
-            # Gerar série temporal com movimento browniano
+            # Gerar série temporal com movimento browniano mais realista
             timestamps = []
             prices = []
             volumes = []
             
-            current_time = datetime.now()
-            current_price = base_price
+            # Usar timestamp mais preciso
+            end_time = datetime.now()
+            timeframe_minutes = {
+                '1m': 1, '3m': 3, '5m': 5, '15m': 15, '30m': 30, 
+                '1h': 60, '2h': 120, '4h': 240, '1d': 1440
+            }
+            tf_minutes = timeframe_minutes.get(self.timeframe, 5)
+            
+            # Preço base mais atualizado
+            current_price = base_price * random.uniform(0.98, 1.02)  # Variação inicial
             
             for i in range(limit):
-                # Timestamp
-                timestamp = current_time - timedelta(minutes=(limit-i-1) * 5)
+                # Timestamp preciso baseado no timeframe
+                timestamp = end_time - timedelta(minutes=(limit-i-1) * tf_minutes)
                 timestamps.append(timestamp)
                 
-                # Preço com movimento browniano
-                change_pct = random.normalvariate(0, 0.5) / 100  # Variação de ±0.5%
-                current_price = current_price * (1 + change_pct)
+                # Preço com movimento mais realista
+                trend = random.uniform(-0.1, 0.1)  # Tendência geral
+                noise = random.normalvariate(0, 0.3) / 100  # Ruído
+                change_pct = trend + noise
+                current_price = max(current_price * (1 + change_pct), base_price * 0.5)  # Evitar preços negativos
                 prices.append(current_price)
                 
-                # Volume realista
-                base_volume = random.uniform(1000000, 10000000)
-                volumes.append(base_volume)
+                # Volume mais realista com padrões
+                base_vol = random.uniform(500000, 8000000)
+                volume_spike = random.choice([1, 1, 1, 1, 1, 2, 3])  # 80% normal, 20% spike
+                volumes.append(base_vol * volume_spike)
             
             # Criar DataFrame
             df_data = []

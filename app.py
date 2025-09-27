@@ -113,17 +113,16 @@ function smoothRefresh() {
 if (typeof window.streamlitAutoRefresh === 'undefined') {
     window.streamlitAutoRefresh = true;
     
-    // Refresh a cada 45 segundos
+    // Refresh a cada 30 segundos para melhor responsividade
     setInterval(() => {
         if (!document.hidden) {
             smoothRefresh();
-            // Triggerar atualização suave do Streamlit
-            window.parent.postMessage({
-                type: 'streamlit:componentReady',
-                data: { refresh: true }
-            }, '*');
+            // Force reload em background
+            setTimeout(() => {
+                window.location.reload();
+            }, 1000);
         }
-    }, 45000);
+    }, 30000);
 }
 </script>
 """, unsafe_allow_html=True)
@@ -838,7 +837,7 @@ with tab2:
                     cache_age = (current_time - cached_data['last_update']).total_seconds()
                     # Cache mais agressivo para reduzir API calls
                     cache_timeout = 30 if len(selected_symbols) > 5 else 60
-                    if cached_data['last_update'] and cache_age < cache_timeout:
+                    if cached_data['last_update'] and cache_age < 25:  # Cache mais agressivo para multi-símbolo
                         should_refresh = False
                         sym_data = cached_data['data']
                         signal = cached_data['signal']
@@ -1099,10 +1098,10 @@ status_container = st.container()
 with status_container:
     col1, col2, col3, col4, col5 = st.columns(5)
 
-# Check if we need to update data
+# Check if we need to update data - mais responsivo
 should_update = (
     st.session_state.last_update is None or 
-    (get_brazil_datetime_naive() - st.session_state.last_update).total_seconds() > 60
+    (get_brazil_datetime_naive() - st.session_state.last_update).total_seconds() > 30
 )
 
 if should_update:
@@ -1239,18 +1238,18 @@ if st.session_state.current_data is not None:
         if st.session_state.last_update:
             seconds_since_update = (current_time_now - st.session_state.last_update).total_seconds()
             
-            if seconds_since_update < 60:
+            if seconds_since_update < 30:
                 status_color = "🟢"
-                status_text = "Cache Ativo"
+                status_text = "Dados Atuais"
                 delta_text = f"Há {int(seconds_since_update)}s"
-            elif seconds_since_update < 90:
+            elif seconds_since_update < 45:
                 status_color = "🟡"
-                status_text = "Aguardando"
+                status_text = "Atualizando"
                 delta_text = f"Há {int(seconds_since_update)}s"
             else:
-                status_color = "🔵"
-                status_text = "Atualizando"
-                delta_text = "Em breve..."
+                status_color = "🔄"
+                status_text = "Carregando"
+                delta_text = "Aguarde..."
         else:
             status_color = "⚪"
             status_text = "Iniciando"
@@ -1628,11 +1627,11 @@ if signals_df is not None and len(signals_df) > 0:
 
 # Auto-refresh mechanism otimizado - cache inteligente
 if auto_refresh:
-    # Cache mais agressivo para melhor performance
+    # Cache balanceado para boa performance
     current_time_check = get_brazil_datetime_naive()
     
-    # Usar cache de 90 segundos para reduzir chamadas API
-    cache_timeout = 90  # Aumentado de 30 para 90 segundos
+    # Usar cache de 30 segundos para melhor responsividade
+    cache_timeout = 30  # Reduzido para 30 segundos
     
     should_update_data = (
         st.session_state.last_update is None or 
