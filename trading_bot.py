@@ -79,7 +79,7 @@ class TradingBot:
             # Simular dados de mercado usando WebSocket (implementação simplificada)
             # Em produção, isso conectaria ao WebSocket real da Binance Futures
             import requests
-            from datetime import datetime, timedelta
+            from datetime import datetime as dt, timedelta as td
 
             # Tentar usar API pública alternativa primeiro
             try:
@@ -174,12 +174,12 @@ class TradingBot:
             volumes = []
 
             from datetime import datetime as dt, timedelta as td
-            current_time = dt.now()
+            current_dt = dt.now()
             current_price = base_price
 
             for i in range(limit):
                 # Timestamp
-                timestamp = current_time - td(minutes=(limit-i-1) * 5)
+                timestamp = current_dt - td(minutes=(limit-i-1) * 5)
                 timestamps.append(timestamp)
 
                 # Preço com movimento browniano
