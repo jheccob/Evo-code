@@ -9,7 +9,7 @@ redis==5.0.1
 aioredis==2.0.1
 
 # Telegram
-python-telegram-bot==13.15
+python-telegram-bot==22.4
 
 # Trading & Analysis
 ccxt==4.1.49

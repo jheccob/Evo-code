@@ -369,13 +369,22 @@ class TelegramBotConfig:
         return TelegramBotConfig.SIGNAL_EMOJIS.get(signal, "⚪")
 
 
+def _parse_admin_users(raw_value: str) -> list[int]:
+    admin_users = []
+    for user_id in raw_value.split(","):
+        user_id = user_id.strip()
+        if user_id.isdigit():
+            admin_users.append(int(user_id))
+    return admin_users or [1035830659]
+
+
 class ProductionConfig:
     # Somente variáveis de ambiente (fonte única de verdade)
-    TELEGRAM_BOT_TOKEN = "8454268048:AAHbPLZLML2VAtf9mt5i5xDw7GYJa-NvGis"
-    TELEGRAM_CHAT_ID = "2081890738"
+    TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+    TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "").strip()
 
-    # Mantém compatibilidade com permissões de administradores
-    ADMIN_USERS: list = [1035830659]
+    # Lista separada por vírgula: ADMIN_USERS=123,456
+    ADMIN_USERS: list = _parse_admin_users(os.getenv("ADMIN_USERS", "1035830659"))
 
     @classmethod
     def validate_config(cls) -> bool:
