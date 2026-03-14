@@ -3410,3 +3410,40 @@ NameError: name 'status' is not defined. Did you mean: 'stats'?
 2026-03-14 19:04:31,373 - config.config - INFO - Configuracoes do bot 24/7 validadas com sucesso
 2026-03-14 19:04:31,374 - config.config - ERROR - ❌ TELEGRAM_CHAT_ID não configurado
 2026-03-14 19:04:31,377 - services.rate_limiter - WARNING - RateLimiter usando fallback em memoria: aioredis nao esta instalado
+2026-03-14 19:09:06,583 - main_production - INFO - python-telegram-bot importado com sucesso
+2026-03-14 19:09:09,511 - telegram_bot - INFO - python-telegram-bot v22.6 importado com sucesso
+2026-03-14 19:09:35,251 - main_production - INFO - Serviços importados com sucesso
+2026-03-14 19:09:35,252 - main_production - INFO - Iniciando Trading Bot Professional
+2026-03-14 19:09:35,252 - config.config - INFO - Configuracoes do bot 24/7 validadas com sucesso
+2026-03-14 19:09:35,254 - config.config - INFO - ✅ Binance WebSocket Público configurado - sem necessidade de credenciais
+2026-03-14 19:09:35,282 - trading_bot - INFO - 🚀 TradingBot inicializado com BINANCE WEBSOCKET PÚBLICO
+2026-03-14 19:09:35,283 - trading_bot - INFO - 📡 Usando dados em tempo real sem necessidade de credenciais
+2026-03-14 19:09:35,283 - TelegramTradingBot - INFO - 🔧 Configurando bot Telegram...
+2026-03-14 19:09:41,422 - TelegramTradingBot - INFO - ✅ Todos os handlers configurados
+2026-03-14 19:09:41,423 - TelegramTradingBot - INFO - ✅ Bot configurado com sucesso
+2026-03-14 19:09:41,423 - TelegramTradingBot - INFO - ✅ Bot configurado automaticamente via secrets
+2026-03-14 19:09:41,424 - main_production - INFO - Bot Telegram inicializado com sucesso
+2026-03-14 19:09:41,425 - main_production - INFO - Trading Bot Professional - Modo Produção
+2026-03-14 19:09:41,426 - main_production - INFO - Bot pronto para receber comandos
+2026-03-14 19:09:41,427 - main_production - INFO - Digite /start no Telegram
+2026-03-14 19:09:41,427 - TelegramTradingBot - INFO - 🚀 Starting Telegram bot polling...
+2026-03-14 19:09:42,728 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot8454268048:AAHbPLZLML2VAtf9mt5i5xDw7GYJa-NvGis/getMe "HTTP/1.1 200 OK"
+2026-03-14 19:09:42,955 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot8454268048:AAHbPLZLML2VAtf9mt5i5xDw7GYJa-NvGis/deleteWebhook "HTTP/1.1 200 OK"
+2026-03-14 19:09:42,992 - telegram.ext.Application - INFO - Application started
+2026-03-14 19:09:53,891 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot8454268048:AAHbPLZLML2VAtf9mt5i5xDw7GYJa-NvGis/getUpdates "HTTP/1.1 200 OK"
+2026-03-14 19:10:04,084 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot8454268048:AAHbPLZLML2VAtf9mt5i5xDw7GYJa-NvGis/getUpdates "HTTP/1.1 200 OK"
+2026-03-14 19:10:08,284 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot8454268048:AAHbPLZLML2VAtf9mt5i5xDw7GYJa-NvGis/getUpdates "HTTP/1.1 200 OK"
+2026-03-14 19:10:08,292 - TelegramTradingBot - INFO - 📥 Comando /start recebido de 2081890738 (Khow🌱SEED)
+2026-03-14 19:10:09,232 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot8454268048:AAHbPLZLML2VAtf9mt5i5xDw7GYJa-NvGis/sendMessage "HTTP/1.1 200 OK"
+2026-03-14 19:10:09,241 - TelegramTradingBot - INFO - ✅ Usuário 2081890738 - comando /start processado com sucesso
+2026-03-14 19:10:18,501 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot8454268048:AAHbPLZLML2VAtf9mt5i5xDw7GYJa-NvGis/getUpdates "HTTP/1.1 200 OK"
+2026-03-14 19:10:28,699 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot8454268048:AAHbPLZLML2VAtf9mt5i5xDw7GYJa-NvGis/getUpdates "HTTP/1.1 200 OK"
+2026-03-14 19:10:38,889 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot8454268048:AAHbPLZLML2VAtf9mt5i5xDw7GYJa-NvGis/getUpdates "HTTP/1.1 200 OK"
+2026-03-14 19:10:49,089 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot8454268048:AAHbPLZLML2VAtf9mt5i5xDw7GYJa-NvGis/getUpdates "HTTP/1.1 200 OK"
+2026-03-14 19:10:59,282 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot8454268048:AAHbPLZLML2VAtf9mt5i5xDw7GYJa-NvGis/getUpdates "HTTP/1.1 200 OK"
+2026-03-14 19:11:09,469 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot8454268048:AAHbPLZLML2VAtf9mt5i5xDw7GYJa-NvGis/getUpdates "HTTP/1.1 200 OK"
+2026-03-14 19:11:19,659 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot8454268048:AAHbPLZLML2VAtf9mt5i5xDw7GYJa-NvGis/getUpdates "HTTP/1.1 200 OK"
+2026-03-14 19:11:29,847 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot8454268048:AAHbPLZLML2VAtf9mt5i5xDw7GYJa-NvGis/getUpdates "HTTP/1.1 200 OK"
+2026-03-14 19:11:40,035 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot8454268048:AAHbPLZLML2VAtf9mt5i5xDw7GYJa-NvGis/getUpdates "HTTP/1.1 200 OK"
+2026-03-14 19:11:50,230 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot8454268048:AAHbPLZLML2VAtf9mt5i5xDw7GYJa-NvGis/getUpdates "HTTP/1.1 200 OK"
+2026-03-14 19:12:00,416 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot8454268048:AAHbPLZLML2VAtf9mt5i5xDw7GYJa-NvGis/getUpdates "HTTP/1.1 200 OK"
