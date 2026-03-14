@@ -24,7 +24,7 @@ try:
 except ImportError as e:
     TELEGRAM_AVAILABLE = False
     logger.warning("Telegram library not available: %s", e)
-    logger.warning("Install with: pip install python-telegram-bot==22.4")
+    logger.warning("Install with: pip install python-telegram-bot==22.6")
 
     Bot = None
     Update = None
@@ -41,8 +41,9 @@ from config import TelegramBotConfig, ProductionConfig
 class TelegramTradingBot:
     """Bot Telegram para Trading - Versão Consolidada"""
     
-    def __init__(self, allow_simulated_data=True):
+    def __init__(self, allow_simulated_data=True, auto_configure_from_env=True):
         self.allow_simulated_data = allow_simulated_data
+        self.auto_configure_from_env = auto_configure_from_env
         self.ai_model = AIModel()
         self.logger = logging.getLogger(self.__class__.__name__)
         
@@ -70,8 +71,9 @@ class TelegramTradingBot:
             self.user_manager = None
             self.trading_bot = None
         
-        # Auto-configure from environment
-        self._auto_configure()
+        # Auto-configure from environment only when explicitly requested.
+        if self.auto_configure_from_env:
+            self._auto_configure()
         
     def _auto_configure(self):
         """Auto configure from environment variables"""
@@ -84,7 +86,7 @@ class TelegramTradingBot:
                     self.logger.error("❌ Erro na configuração automática")
             else:
                 if not token:
-                    self.logger.warning("⚠️ TELEGRAM_BOT_TOKEN não encontrado")
+                    self.logger.debug("TELEGRAM_BOT_TOKEN nao encontrado para auto-configuracao")
                     
         except Exception as e:
             self.logger.error(f"❌ Erro na configuração automática: {e}")

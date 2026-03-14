@@ -3324,3 +3324,89 @@ NameError: name 'status' is not defined. Did you mean: 'stats'?
 2026-03-14 16:39:43,055 - telegram_bot - INFO - python-telegram-bot v22.6 importado com sucesso
 2026-03-14 16:43:49,176 - main_production - INFO - Serviços importados com sucesso
 2026-03-14 16:43:49,294 - services.telegram_service - INFO - Telegram service usando v22.6
+2026-03-14 18:04:21,725 - main_production - INFO - python-telegram-bot importado com sucesso
+2026-03-14 18:04:21,746 - main_production - INFO - Serviços importados com sucesso
+2026-03-14 18:04:21,749 - services.rate_limiter - WARNING - RateLimiter usando fallback em memoria: aioredis nao esta instalado
+2026-03-14 18:04:21,779 - user_manager - ERROR - Erro salvando users: [Errno 13] Permission denied: 'C:\\Users\\PC\\AppData\\Local\\Temp\\tmpcovfrbq_\\users.json'
+2026-03-14 18:04:21,781 - user_manager - ERROR - Erro salvando users: [Errno 13] Permission denied: 'C:\\Users\\PC\\AppData\\Local\\Temp\\tmpcovfrbq_\\users.json'
+2026-03-14 18:05:15,162 - main_production - INFO - python-telegram-bot importado com sucesso
+2026-03-14 18:05:16,442 - telegram_bot - INFO - python-telegram-bot v22.6 importado com sucesso
+2026-03-14 18:05:23,973 - main_production - INFO - Serviços importados com sucesso
+2026-03-14 18:05:23,976 - services.rate_limiter - WARNING - RateLimiter usando fallback em memoria: aioredis nao esta instalado
+2026-03-14 18:16:18,111 - main_production - INFO - python-telegram-bot importado com sucesso
+2026-03-14 18:16:22,484 - telegram_bot - INFO - python-telegram-bot v22.6 importado com sucesso
+2026-03-14 18:17:01,342 - main_production - INFO - Serviços importados com sucesso
+2026-03-14 18:24:29,331 - main_production - INFO - python-telegram-bot importado com sucesso
+2026-03-14 18:24:44,593 - telegram_bot - INFO - python-telegram-bot v22.6 importado com sucesso
+2026-03-14 18:27:17,764 - main_production - INFO - python-telegram-bot importado com sucesso
+2026-03-14 18:27:21,554 - telegram_bot - INFO - python-telegram-bot v22.6 importado com sucesso
+2026-03-14 18:27:40,299 - main_production - INFO - Serviços importados com sucesso
+2026-03-14 18:27:40,303 - services.rate_limiter - WARNING - RateLimiter usando fallback em memoria: aioredis nao esta instalado
+2026-03-14 18:44:38,037 - main_production - INFO - python-telegram-bot importado com sucesso
+2026-03-14 18:44:39,046 - telegram_bot - INFO - python-telegram-bot v22.6 importado com sucesso
+2026-03-14 18:44:46,111 - main_production - INFO - Serviços importados com sucesso
+2026-03-14 18:44:46,117 - config.config - INFO - Configuracoes do bot 24/7 validadas com sucesso
+2026-03-14 18:44:46,118 - config.config - ERROR - ❌ TELEGRAM_CHAT_ID não configurado
+2026-03-14 18:44:46,120 - services.rate_limiter - WARNING - RateLimiter usando fallback em memoria: aioredis nao esta instalado
+2026-03-14 18:52:43,924 - main_production - INFO - python-telegram-bot importado com sucesso
+2026-03-14 18:52:45,206 - telegram_bot - INFO - python-telegram-bot v22.6 importado com sucesso
+2026-03-14 18:52:51,063 - main_production - INFO - Serviços importados com sucesso
+2026-03-14 18:52:51,070 - config.config - INFO - Configuracoes do bot 24/7 validadas com sucesso
+2026-03-14 18:52:51,071 - config.config - ERROR - ❌ TELEGRAM_CHAT_ID não configurado
+2026-03-14 18:52:51,075 - services.rate_limiter - WARNING - RateLimiter usando fallback em memoria: aioredis nao esta instalado
+2026-03-14 18:55:22,882 - main_production - INFO - python-telegram-bot importado com sucesso
+2026-03-14 18:55:24,191 - telegram_bot - INFO - python-telegram-bot v22.6 importado com sucesso
+2026-03-14 18:55:34,290 - main_production - INFO - Serviços importados com sucesso
+2026-03-14 18:55:34,291 - main_production - INFO - Iniciando Trading Bot Professional
+2026-03-14 18:55:34,292 - config.config - INFO - Configuracoes do bot 24/7 validadas com sucesso
+2026-03-14 18:55:34,294 - config.config - INFO - ✅ Binance WebSocket Público configurado - sem necessidade de credenciais
+2026-03-14 18:55:34,323 - trading_bot - INFO - 🚀 TradingBot inicializado com BINANCE WEBSOCKET PÚBLICO
+2026-03-14 18:55:34,640 - trading_bot - INFO - 📡 Usando dados em tempo real sem necessidade de credenciais
+2026-03-14 18:55:34,641 - TelegramTradingBot - INFO - 🔧 Configurando bot Telegram...
+2026-03-14 18:55:43,130 - TelegramTradingBot - INFO - ✅ Todos os handlers configurados
+2026-03-14 18:55:43,131 - TelegramTradingBot - INFO - ✅ Bot configurado com sucesso
+2026-03-14 18:55:43,131 - TelegramTradingBot - INFO - ✅ Bot configurado automaticamente via secrets
+2026-03-14 18:55:43,132 - main_production - INFO - Bot Telegram inicializado com sucesso
+2026-03-14 18:55:43,133 - main_production - INFO - Trading Bot Professional - Modo Produção
+2026-03-14 18:55:43,133 - main_production - INFO - Bot pronto para receber comandos
+2026-03-14 18:55:43,134 - main_production - INFO - Digite /start no Telegram
+2026-03-14 18:55:43,135 - TelegramTradingBot - INFO - 🚀 Starting Telegram bot polling...
+2026-03-14 18:55:44,463 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot8454268048:AAHbPLZLML2VAtf9mt5i5xDw7GYJa-NvGis/getMe "HTTP/1.1 200 OK"
+2026-03-14 18:55:44,710 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot8454268048:AAHbPLZLML2VAtf9mt5i5xDw7GYJa-NvGis/deleteWebhook "HTTP/1.1 200 OK"
+2026-03-14 18:55:44,720 - telegram.ext.Application - INFO - Application started
+2026-03-14 18:55:55,529 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot8454268048:AAHbPLZLML2VAtf9mt5i5xDw7GYJa-NvGis/getUpdates "HTTP/1.1 200 OK"
+2026-03-14 18:56:05,719 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot8454268048:AAHbPLZLML2VAtf9mt5i5xDw7GYJa-NvGis/getUpdates "HTTP/1.1 200 OK"
+2026-03-14 18:56:09,865 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot8454268048:AAHbPLZLML2VAtf9mt5i5xDw7GYJa-NvGis/getUpdates "HTTP/1.1 200 OK"
+2026-03-14 18:56:09,872 - TelegramTradingBot - INFO - 📥 Comando /start recebido de 2081890738 (Khow🌱SEED)
+2026-03-14 18:56:10,822 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot8454268048:AAHbPLZLML2VAtf9mt5i5xDw7GYJa-NvGis/sendMessage "HTTP/1.1 200 OK"
+2026-03-14 18:56:10,829 - TelegramTradingBot - INFO - ✅ Usuário 2081890738 - comando /start processado com sucesso
+2026-03-14 18:56:20,067 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot8454268048:AAHbPLZLML2VAtf9mt5i5xDw7GYJa-NvGis/getUpdates "HTTP/1.1 200 OK"
+2026-03-14 18:56:27,105 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot8454268048:AAHbPLZLML2VAtf9mt5i5xDw7GYJa-NvGis/getUpdates "HTTP/1.1 200 OK"
+2026-03-14 18:56:27,834 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot8454268048:AAHbPLZLML2VAtf9mt5i5xDw7GYJa-NvGis/sendMessage "HTTP/1.1 200 OK"
+2026-03-14 18:56:37,307 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot8454268048:AAHbPLZLML2VAtf9mt5i5xDw7GYJa-NvGis/getUpdates "HTTP/1.1 200 OK"
+2026-03-14 18:56:47,493 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot8454268048:AAHbPLZLML2VAtf9mt5i5xDw7GYJa-NvGis/getUpdates "HTTP/1.1 200 OK"
+2026-03-14 18:56:51,027 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot8454268048:AAHbPLZLML2VAtf9mt5i5xDw7GYJa-NvGis/getUpdates "HTTP/1.1 200 OK"
+2026-03-14 18:56:51,987 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot8454268048:AAHbPLZLML2VAtf9mt5i5xDw7GYJa-NvGis/sendMessage "HTTP/1.1 200 OK"
+2026-03-14 18:56:51,993 - trading_bot - INFO - 🔄 Buscando dados públicos (tentativa 1/3) para BTC/USDT
+2026-03-14 18:56:51,994 - trading_bot - INFO - 🌐 Tentando endpoint: https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=5m&limit=200
+2026-03-14 18:56:54,187 - trading_bot - INFO - 📊 Dados públicos obtidos: 200 candles
+2026-03-14 18:56:55,845 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot8454268048:AAHbPLZLML2VAtf9mt5i5xDw7GYJa-NvGis/editMessageText "HTTP/1.1 200 OK"
+2026-03-14 18:57:01,227 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot8454268048:AAHbPLZLML2VAtf9mt5i5xDw7GYJa-NvGis/getUpdates "HTTP/1.1 200 OK"
+2026-03-14 18:57:11,721 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot8454268048:AAHbPLZLML2VAtf9mt5i5xDw7GYJa-NvGis/getUpdates "HTTP/1.1 200 OK"
+2026-03-14 18:57:21,258 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot8454268048:AAHbPLZLML2VAtf9mt5i5xDw7GYJa-NvGis/getUpdates "HTTP/1.1 200 OK"
+2026-03-14 18:57:22,230 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot8454268048:AAHbPLZLML2VAtf9mt5i5xDw7GYJa-NvGis/sendMessage "HTTP/1.1 200 OK"
+2026-03-14 18:57:31,460 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot8454268048:AAHbPLZLML2VAtf9mt5i5xDw7GYJa-NvGis/getUpdates "HTTP/1.1 200 OK"
+2026-03-14 18:57:34,923 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot8454268048:AAHbPLZLML2VAtf9mt5i5xDw7GYJa-NvGis/getUpdates "HTTP/1.1 200 OK"
+2026-03-14 18:57:35,884 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot8454268048:AAHbPLZLML2VAtf9mt5i5xDw7GYJa-NvGis/sendMessage "HTTP/1.1 200 OK"
+2026-03-14 18:57:45,128 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot8454268048:AAHbPLZLML2VAtf9mt5i5xDw7GYJa-NvGis/getUpdates "HTTP/1.1 200 OK"
+2026-03-14 18:57:46,734 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot8454268048:AAHbPLZLML2VAtf9mt5i5xDw7GYJa-NvGis/getUpdates "HTTP/1.1 200 OK"
+2026-03-14 18:57:47,472 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot8454268048:AAHbPLZLML2VAtf9mt5i5xDw7GYJa-NvGis/sendMessage "HTTP/1.1 200 OK"
+2026-03-14 18:57:56,936 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot8454268048:AAHbPLZLML2VAtf9mt5i5xDw7GYJa-NvGis/getUpdates "HTTP/1.1 200 OK"
+2026-03-14 18:58:07,122 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot8454268048:AAHbPLZLML2VAtf9mt5i5xDw7GYJa-NvGis/getUpdates "HTTP/1.1 200 OK"
+2026-03-14 18:58:10,310 - main_production - INFO - Bot interrompido pelo usuário
+2026-03-14 19:03:59,454 - main_production - INFO - python-telegram-bot importado com sucesso
+2026-03-14 19:04:02,378 - telegram_bot - INFO - python-telegram-bot v22.6 importado com sucesso
+2026-03-14 19:04:31,370 - main_production - INFO - Serviços importados com sucesso
+2026-03-14 19:04:31,373 - config.config - INFO - Configuracoes do bot 24/7 validadas com sucesso
+2026-03-14 19:04:31,374 - config.config - ERROR - ❌ TELEGRAM_CHAT_ID não configurado
+2026-03-14 19:04:31,377 - services.rate_limiter - WARNING - RateLimiter usando fallback em memoria: aioredis nao esta instalado

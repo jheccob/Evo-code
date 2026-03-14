@@ -181,17 +181,11 @@ if 'current_exchange' not in st.session_state or st.session_state.current_exchan
 if 'telegram_bot' not in st.session_state:
     st.session_state.telegram_bot = SecureTelegramService()
 
-# Initialize Telegram Trading Bot for /start command functionality
+# Dashboard nao deve iniciar polling do bot 24/7. Esse processo deve rodar separado em nuvem.
 if 'telegram_trading_bot_started' not in st.session_state:
-    try:
-        # Import and start telegram bot in background
-        import start_telegram_bot
-        st.session_state.telegram_trading_bot_started = True
-        logger.info("Bot Telegram inicializado em background")
-    except Exception as e:
-        logger.warning("Erro ao inicializar bot Telegram: %s", e)
-        st.session_state.telegram_trading_bot_started = False
-    # Configuração será carregada automaticamente no __init__
+    if ProductionConfig.ENABLE_DASHBOARD_BACKGROUND_BOT:
+        logger.warning("ENABLE_DASHBOARD_BACKGROUND_BOT foi definido, mas o modo recomendado e executar o bot por start_telegram_bot.py")
+    st.session_state.telegram_trading_bot_started = False
 
 if 'signals_history' not in st.session_state:
     st.session_state.signals_history = []
@@ -565,7 +559,10 @@ if 'user_manager' not in st.session_state:
 if 'telegram_trading_bot' not in st.session_state:
     try:
         from telegram_bot import TelegramTradingBot
-        st.session_state.telegram_trading_bot = TelegramTradingBot(allow_simulated_data=False)
+        st.session_state.telegram_trading_bot = TelegramTradingBot(
+            allow_simulated_data=False,
+            auto_configure_from_env=False
+        )
     except Exception as e:
         logger.warning("Erro ao inicializar telegram_trading_bot do admin: %s", e)
         st.session_state.telegram_trading_bot = None
@@ -1469,7 +1466,7 @@ if st.session_state.current_data is not None:
     fig.update_yaxes(title_text="RSI", range=[0, 100], row=2, col=1)
     fig.update_yaxes(title_text="MACD", row=3, col=1)
 
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width="stretch")
 
     # Current Analysis
     st.subheader("🔍 Análise Atual")
@@ -1798,7 +1795,7 @@ if auto_refresh:
 
             if st.button("🔄 Simular Posições"):
                 positions_df = pd.DataFrame(mock_positions)
-                st.dataframe(positions_df, use_container_width=True)
+                st.dataframe(positions_df, width="stretch")
 
                 profit = 5000 * futures_leverage * 0.015
                 profit_pct = futures_leverage * 1.5
@@ -1817,25 +1814,25 @@ with tab2:
     col1, col2, col3, col4 = st.columns(4)
 
     with col1:
-        if st.button("🚀 Teste Agressivo", help="RSI 15-85, 7 dias", use_container_width=True):
+        if st.button("🚀 Teste Agressivo", help="RSI 15-85, 7 dias", width="stretch"):
             st.session_state.bt_rsi_min = 15
             st.session_state.bt_rsi_max = 85
             st.session_state.bt_start_date = date.today() - timedelta(days=7)
 
     with col2:
-        if st.button("⚖️ Teste Balanceado", help="RSI 25-75, 14 dias", use_container_width=True):
+        if st.button("⚖️ Teste Balanceado", help="RSI 25-75, 14 dias", width="stretch"):
             st.session_state.bt_rsi_min = 25
             st.session_state.bt_rsi_max = 75
             st.session_state.bt_start_date = date.today() - timedelta(days=14)
 
     with col3:
-        if st.button("🛡️ Teste Conservador", help="RSI 30-70, 30 dias", use_container_width=True):
+        if st.button("🛡️ Teste Conservador", help="RSI 30-70, 30 dias", width="stretch"):
             st.session_state.bt_rsi_min = 30
             st.session_state.bt_rsi_max = 70
             st.session_state.bt_start_date = date.today() - timedelta(days=30)
 
     with col4:
-        if st.button("🔄 Reset Padrão", help="Voltar configurações padrão", use_container_width=True):
+        if st.button("🔄 Reset Padrão", help="Voltar configurações padrão", width="stretch"):
             st.session_state.bt_rsi_min = 20
             st.session_state.bt_rsi_max = 80
             st.session_state.bt_start_date = date.today() - timedelta(days=30)
@@ -2063,7 +2060,7 @@ with tab2:
             "🚀 Executar Backtest", 
             disabled=not date_valid or period_days < 1,
             help="Rodar simulação com configurações atuais",
-            use_container_width=True,
+            width="stretch",
             key="bt_execute"
         )
 
@@ -2072,7 +2069,7 @@ with tab2:
             "⚡ Otimização Automática",
             disabled=not date_valid or period_days < 1,
             help="Testar múltiplas combinações automaticamente",
-            use_container_width=True,
+            width="stretch",
             key="bt_optimize"
         ):
             # Trigger optimization mode
@@ -2084,7 +2081,7 @@ with tab2:
             "📊 Comparar Timeframes",
             disabled=not date_valid or period_days < 1,
             help="Testar em múltiplos timeframes",
-            use_container_width=True,
+            width="stretch",
             key="bt_compare"
         ):
             # Trigger comparison mode
@@ -2367,7 +2364,7 @@ with tab2:
                 height=400
             )
 
-            st.plotly_chart(fig_portfolio, use_container_width=True)
+            st.plotly_chart(fig_portfolio, width="stretch")
 
         # Trade history table
         if results['trades']:
@@ -2451,7 +2448,7 @@ with tab2:
 
             st.dataframe(
                 display_history.style.applymap(style_history, subset=['return_pct']),
-                use_container_width=True,
+                width="stretch",
                 hide_index=True
             )
 

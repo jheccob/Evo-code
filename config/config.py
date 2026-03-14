@@ -395,6 +395,7 @@ class ProductionConfig:
     TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
     TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "").strip()
     ADMIN_PANEL_PASSWORD = os.getenv("ADMIN_PANEL_PASSWORD", "").strip()
+    ENABLE_DASHBOARD_BACKGROUND_BOT = os.getenv("ENABLE_DASHBOARD_BACKGROUND_BOT", "").strip().lower() in {"1", "true", "yes"}
     REDIS_URL = os.getenv("REDIS_URL", "").strip()
     STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY", "").strip()
     STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET", "").strip()
@@ -418,6 +419,19 @@ class ProductionConfig:
             return False
 
         logger.info("✅ Configurações validadas com sucesso")
+        return True
+
+    @classmethod
+    def validate_polling_runtime_config(cls) -> bool:
+        if not cls.TELEGRAM_BOT_TOKEN:
+            logger.error("TELEGRAM_BOT_TOKEN nao configurado")
+            return False
+
+        if not cls.TELEGRAM_BOT_TOKEN.startswith(("1", "2", "5", "6", "7", "8", "9")):
+            logger.error("TELEGRAM_BOT_TOKEN formato invalido")
+            return False
+
+        logger.info("Configuracoes do bot 24/7 validadas com sucesso")
         return True
 
     @classmethod

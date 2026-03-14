@@ -76,8 +76,11 @@ def main():
     for attempt in range(1, 4):
         try:
             # validar config
-            if not ProductionConfig.validate_config():
+            if not ProductionConfig.validate_polling_runtime_config():
                 raise Exception("Config inválida")
+
+            if not ProductionConfig.TELEGRAM_CHAT_ID:
+                logger.info("TELEGRAM_CHAT_ID nao configurado. Alertas outbound do dashboard ficam desabilitados neste modo.")
 
             # iniciar bot
             telegram_bot = TelegramTradingBot(allow_simulated_data=False)
