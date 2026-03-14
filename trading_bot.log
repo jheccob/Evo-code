@@ -3309,3 +3309,7 @@ NameError: name 'status' is not defined. Did you mean: 'stats'?
 2026-03-13 11:56:26,801 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot8454268048:AAHbPLZLML2VAtf9mt5i5xDw7GYJa-NvGis/getUpdates "HTTP/1.1 200 OK"
 2026-03-13 11:56:37,046 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot8454268048:AAHbPLZLML2VAtf9mt5i5xDw7GYJa-NvGis/getUpdates "HTTP/1.1 200 OK"
 2026-03-13 11:56:47,246 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot8454268048:AAHbPLZLML2VAtf9mt5i5xDw7GYJa-NvGis/getUpdates "HTTP/1.1 200 OK"
+2026-03-14 15:20:35,724 - main_production - INFO - python-telegram-bot importado com sucesso
+2026-03-14 15:20:56,752 - main_production - INFO - python-telegram-bot importado com sucesso
+2026-03-14 15:24:32,227 - main_production - INFO - python-telegram-bot importado com sucesso
+2026-03-14 15:24:41,225 - main_production - INFO - Serviços importados com sucesso
