@@ -107,6 +107,24 @@ class RailwayConfigSmokeTests(unittest.TestCase):
         self.assertNotIn("streamlit", content)
 
 
+class GcpDeploySmokeTests(unittest.TestCase):
+    def test_gcp_setup_script_and_unit_file_exist(self):
+        self.assertTrue(os.path.exists("deploy/gcp/setup_vm.sh"))
+        self.assertTrue(os.path.exists("deploy/gcp/trading-bot.service"))
+        self.assertTrue(os.path.exists("deploy/gcp/trading-bot.env.example"))
+
+    def test_gcp_service_targets_start_telegram_bot(self):
+        with open("deploy/gcp/trading-bot.service", "r", encoding="utf-8") as service_file:
+            service_content = service_file.read()
+
+        with open("deploy/gcp/setup_vm.sh", "r", encoding="utf-8") as setup_file:
+            setup_content = setup_file.read()
+
+        self.assertIn("ExecStart=__PYTHON_BIN__ __APP_DIR__/start_telegram_bot.py", service_content)
+        self.assertIn("requirements_railway.txt", setup_content)
+        self.assertIn("/etc/trading-bot.env", setup_content)
+
+
 class MainProductionSmokeTests(unittest.TestCase):
     def test_main_returns_nonzero_after_repeated_polling_failure(self):
         module = importlib.import_module("main_production")

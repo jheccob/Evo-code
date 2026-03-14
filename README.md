@@ -46,6 +46,53 @@ Observacao:
 - O processo agora sai com codigo diferente de zero em falha real, permitindo restart automatico pelo Railway.
 - Para operacao realmente 24/7, prefira um plano pago do Railway. Em Free/trial, o restart policy tem limitacoes.
 
+## Deploy no Google Cloud Free
+
+O caminho gratuito mais realista e uma VM `e2-micro` nas regioes Always Free dos EUA.
+
+Configuracao recomendada da VM:
+
+- maquina `e2-micro`
+- regiao `us-east1`, `us-central1` ou `us-west1`
+- Debian 12 ou Ubuntu 22.04
+- nao e necessario abrir portas de entrada para o bot
+
+Passos na VM:
+
+1. Clone este repositorio.
+2. Entre na pasta do projeto.
+3. Execute:
+
+```bash
+chmod +x deploy/gcp/setup_vm.sh
+./deploy/gcp/setup_vm.sh
+```
+
+4. Edite o arquivo de ambiente:
+
+```bash
+sudo nano /etc/trading-bot.env
+```
+
+5. Reinicie o servico:
+
+```bash
+sudo systemctl restart trading-bot.service
+```
+
+6. Verifique status e logs:
+
+```bash
+sudo systemctl status trading-bot.service
+sudo journalctl -u trading-bot.service -f
+```
+
+Arquivos de deploy GCP:
+
+- `deploy/gcp/setup_vm.sh`
+- `deploy/gcp/trading-bot.service`
+- `deploy/gcp/trading-bot.env.example`
+
 ## Dashboard
 
 O dashboard Streamlit e opcional e deve rodar separado do bot 24/7.

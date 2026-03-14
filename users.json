@@ -8,5 +8,16 @@
     "analysis_count_today": 0,
     "last_reset": "2026-03-13",
     "last_analysis": "2026-03-14T19:16:04.177836"
+  },
+  "7186406446": {
+    "id": 7186406446,
+    "username": "sem_username",
+    "first_name": "Karol",
+    "plan": "free",
+    "is_admin": false,
+    "joined_date": "2026-03-14T19:27:56.154338",
+    "analysis_count_today": 0,
+    "last_reset": "2026-03-14",
+    "last_analysis": null
   }
 }
