@@ -94,9 +94,32 @@ class RailwayConfigSmokeTests(unittest.TestCase):
             config = json.load(railway_file)
 
         self.assertEqual(config["build"]["builder"], "RAILPACK")
-        self.assertIn("requirements_production.txt", config["build"]["buildCommand"])
+        self.assertIn("requirements_railway.txt", config["build"]["buildCommand"])
         self.assertEqual(config["deploy"]["startCommand"], "python start_telegram_bot.py")
-        self.assertEqual(config["deploy"]["restartPolicyType"], "ALWAYS")
+        self.assertEqual(config["deploy"]["restartPolicyType"], "ON_FAILURE")
+
+    def test_railway_requirements_are_worker_scoped(self):
+        with open("requirements_railway.txt", "r", encoding="utf-8") as req_file:
+            content = req_file.read()
+
+        self.assertIn("python-telegram-bot==22.6", content)
+        self.assertIn("ccxt==4.5.5", content)
+        self.assertNotIn("streamlit", content)
+
+
+class MainProductionSmokeTests(unittest.TestCase):
+    def test_main_returns_nonzero_after_repeated_polling_failure(self):
+        module = importlib.import_module("main_production")
+
+        with mock.patch.object(module.ProductionConfig, "validate_polling_runtime_config", return_value=True), \
+             mock.patch.object(module.ProductionConfig, "TELEGRAM_CHAT_ID", ""), \
+             mock.patch.object(module.time, "sleep", return_value=None), \
+             mock.patch.object(module, "TelegramTradingBot") as bot_cls:
+            bot = bot_cls.return_value
+            bot.is_configured.return_value = True
+            bot.start_polling.return_value = False
+
+            self.assertEqual(module.main(), 1)
 
 
 if __name__ == "__main__":

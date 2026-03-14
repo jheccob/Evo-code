@@ -22,9 +22,9 @@ Nesse modo, `TELEGRAM_CHAT_ID` nao e obrigatorio. Ele so e usado pelos recursos 
 O repositorio agora inclui `railway.json` com:
 
 - build via Railpack
-- instalacao por `requirements_production.txt`
+- instalacao por `requirements_railway.txt`
 - start command `python start_telegram_bot.py`
-- restart policy `ALWAYS`
+- restart policy `ON_FAILURE`
 
 Passos:
 
@@ -38,6 +38,13 @@ Passos:
 4. Faça o deploy e acompanhe os logs.
 
 Com isso, o Railway deve subir o bot diretamente pelo entrypoint `start_telegram_bot.py`.
+
+Observacao:
+
+- O worker usa um conjunto reduzido de dependencias em `requirements_railway.txt`, separado do dashboard.
+- `ON_FAILURE` foi escolhido para funcionar tambem em planos que nao suportam `ALWAYS`.
+- O processo agora sai com codigo diferente de zero em falha real, permitindo restart automatico pelo Railway.
+- Para operacao realmente 24/7, prefira um plano pago do Railway. Em Free/trial, o restart policy tem limitacoes.
 
 ## Dashboard
 

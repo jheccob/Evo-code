@@ -94,12 +94,14 @@ def main():
             logger.info("Digite /start no Telegram")
 
             # START NORMAL (sem async)
-            telegram_bot.start_polling()
-            return
+            if telegram_bot.start_polling():
+                return 0
+
+            raise RuntimeError("Falha ao iniciar ou manter o polling do bot")
 
         except KeyboardInterrupt:
             logger.info("Bot interrompido pelo usuário")
-            return
+            return 0
 
         except Exception as e:
             logger.error(f"Erro fatal (tentativa {attempt}/3): {e}")
@@ -109,10 +111,10 @@ def main():
                 continue
             else:
                 logger.critical("Falha após 3 tentativas. Verificar logs e configuração.")
-                return
+                return 1
 
 
 # =========================
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
