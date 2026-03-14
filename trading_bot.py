@@ -1,14 +1,17 @@
 import ccxt
 import pandas as pd
 import numpy as np
+import logging
 from datetime import datetime
 import os
 from indicators import TechnicalIndicators
 
+logger = logging.getLogger(__name__)
+
 class TradingBot:
     def __init__(self):
         # Usar sempre Binance WebSocket público
-        from config.exchange_config import ExchangeConfig
+        from config import ExchangeConfig
         self.exchange = ExchangeConfig.get_exchange_instance('binance', testnet=False)
         self.exchange_name = 'binance'
         self.symbol = "BTC/USDT"  # Símbolo padrão mais popular
@@ -18,8 +21,8 @@ class TradingBot:
         self.rsi_max = 80
         self.indicators = TechnicalIndicators()
 
-        print(f"🚀 TradingBot inicializado com BINANCE WEBSOCKET PÚBLICO")
-        print("📡 Usando dados em tempo real sem necessidade de credenciais")
+        logger.info("🚀 TradingBot inicializado com BINANCE WEBSOCKET PÚBLICO")
+        logger.info("📡 Usando dados em tempo real sem necessidade de credenciais")
 
     def update_config(self, symbol=None, timeframe=None, rsi_period=None, rsi_min=None, rsi_max=None):
         """Update bot configuration parameters"""
@@ -30,214 +33,170 @@ class TradingBot:
         if symbol and symbol != self.symbol:
             self.symbol = symbol
             changed = True
-            print(f"✓ Symbol atualizado para: {self.symbol}")
+            logger.info(f"✓ Symbol atualizado para: {self.symbol}")
 
         if timeframe and timeframe != self.timeframe:
             self.timeframe = timeframe
             changed = True
-            print(f"✓ Timeframe atualizado para: {self.timeframe}")
+            logger.info(f"✓ Timeframe atualizado para: {self.timeframe}")
 
         if rsi_period is not None and rsi_period != self.rsi_period:
             self.rsi_period = rsi_period
             changed = True
-            print(f"✓ RSI Period atualizado para: {self.rsi_period}")
+            logger.info(f"✓ RSI Period atualizado para: {self.rsi_period}")
 
         if rsi_min is not None and rsi_min != self.rsi_min:
             self.rsi_min = rsi_min
             changed = True
-            print(f"✓ RSI Min atualizado para: {self.rsi_min}")
+            logger.info(f"✓ RSI Min atualizado para: {self.rsi_min}")
 
         if rsi_max is not None and rsi_max != self.rsi_max:
             self.rsi_max = rsi_max
             changed = True
-            print(f"✓ RSI Max atualizado para: {self.rsi_max}")
+            logger.info(f"✓ RSI Max atualizado para: {self.rsi_max}")
 
         # Só mostrar configuração final se algo mudou
         if changed:
-            print(f"📊 Configuração atualizada: {self.symbol} {self.timeframe} RSI({self.rsi_period}) {self.rsi_min}-{self.rsi_max}")
+            logger.info(f"📊 Configuração atualizada: {self.symbol} {self.timeframe} RSI({self.rsi_period}) {self.rsi_min}-{self.rsi_max}")
 
         return changed
 
-    def get_market_data(self, limit=200):
-        """Fetch OHLCV data using WebSocket público da Binance Futures com cache otimizado"""
+    def _fetch_public_ohlcv(self, limit=200):
+        """Fetch OHLCV data from Binance public APIs"""
+        import requests
 
-        # Cache local para evitar múltiplas chamadas API
+        symbol_formatted = self.symbol.replace('/', '')  # BTC/USDT -> BTCUSDT
+
+        timeframe_map = {
+            '1m': '1m', '3m': '3m', '5m': '5m', '15m': '15m',
+            '30m': '30m', '1h': '1h', '2h': '2h', '4h': '4h',
+            '6h': '6h', '8h': '8h', '12h': '12h', '1d': '1d'
+        }
+
+        binance_timeframe = timeframe_map.get(self.timeframe, '5m')
+
+        endpoints = [
+            f"https://api.binance.com/api/v3/klines?symbol={symbol_formatted}&interval={binance_timeframe}&limit={limit}",
+            f"https://fapi.binance.com/fapi/v1/klines?symbol={symbol_formatted}&interval={binance_timeframe}&limit={limit}",
+            f"https://api.binance.us/api/v3/klines?symbol={symbol_formatted}&interval={binance_timeframe}&limit={limit}"
+        ]
+
+        for endpoint in endpoints:
+            try:
+                logger.info(f"🌐 Tentando endpoint: {endpoint}")
+                response = requests.get(endpoint, timeout=10)
+                response.raise_for_status()
+                ohlcv_data = response.json()
+
+                if not ohlcv_data:
+                    raise ValueError("Endpoint retornou resposta vazia")
+
+                df_data = []
+                for candle in ohlcv_data:
+                    df_data.append([
+                        int(candle[0]),
+                        float(candle[1]),
+                        float(candle[2]),
+                        float(candle[3]),
+                        float(candle[4]),
+                        float(candle[5])
+                    ])
+
+                df = pd.DataFrame(df_data, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+                df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+                df.set_index('timestamp', inplace=True)
+
+                logger.info(f"📊 Dados públicos obtidos: {len(df)} candles")
+                return df
+
+            except Exception as e:
+                logger.warning(f"⚠️ Falha no endpoint {endpoint} -> {e}")
+                continue
+
+        raise ConnectionError("Não foi possível obter dados públicos de nenhum endpoint Binance")
+
+    def _simulate_market_data(self, limit=200):
+        logger.info("🎯 Usando dados simulados para demonstração (WebSocket simulado)")
+        import random
+
+        base_prices = {
+            'BTC/USDT': 65000,
+            'ETH/USDT': 3200,
+            'ADA/USDT': 0.45,
+            'SOL/USDT': 150,
+            'DOT/USDT': 8.5,
+            'XLM/USDT': 0.12,
+            'DOGE/USDT': 0.08,
+            'LTC/USDT': 85,
+            'AVAX/USDT': 35
+        }
+
+        base_price = base_prices.get(self.symbol, 1.0)
+        current_dt = datetime.now()
+
+        candles = []
+        price = base_price
+
+        for i in range(limit):
+            timestamp = current_dt - pd.Timedelta(minutes=(limit - i - 1) * 5)
+            change_pct = random.normalvariate(0, 0.5) / 100
+            price = price * (1 + change_pct)
+            open_price = price
+            close_price = price * random.uniform(0.995, 1.005)
+            high_price = max(open_price, close_price) * random.uniform(1.001, 1.01)
+            low_price = min(open_price, close_price) * random.uniform(0.99, 0.999)
+            volume = random.uniform(1000000, 10000000)
+
+            candles.append([timestamp, open_price, high_price, low_price, close_price, volume])
+
+        df = pd.DataFrame(candles, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+        df.set_index('timestamp', inplace=True)
+
+        logger.info(f"📊 Dados simulados criados: {len(df)} candles para {self.symbol}")
+        return df
+
+    def get_market_data(self, limit=200):
+        """Fetch OHLCV data with cache + retry + public fallback"""
         cache_key = f"{self.symbol}_{self.timeframe}_{limit}"
         current_time = datetime.now()
 
-        # Verificar cache local (60 segundos)
         if hasattr(self, '_cache_data') and cache_key in self._cache_data:
             cached_item = self._cache_data[cache_key]
             cache_age = (current_time - cached_item['timestamp']).total_seconds()
-            if cache_age < 60:  # Cache válido por 60 segundos
-                print(f"📊 Usando dados em cache para {self.symbol} (cache: {cache_age:.1f}s)")
+            if cache_age < 60:
+                logger.info(f"📊 Usando dados em cache para {self.symbol} (cache: {cache_age:.1f}s)")
                 return cached_item['data']
 
-        try:
-            print(f"🔄 Buscando novos dados para {self.symbol}")
-
-            # Simular dados de mercado usando WebSocket (implementação simplificada)
-            # Em produção, isso conectaria ao WebSocket real da Binance Futures
-            import requests
-            from datetime import datetime as dt, timedelta as td
-
-            # Tentar usar API pública alternativa primeiro
+        df = None
+        for attempt in range(1, 4):
             try:
-                # Usar endpoint público da Binance que geralmente funciona
-                symbol_formatted = self.symbol.replace('/', '')  # BTC/USDT -> BTCUSDT
-
-                # Mapear timeframes para Binance
-                timeframe_map = {
-                    '1m': '1m', '3m': '3m', '5m': '5m', '15m': '15m', 
-                    '30m': '30m', '1h': '1h', '2h': '2h', '4h': '4h',
-                    '6h': '6h', '8h': '8h', '12h': '12h', '1d': '1d'
-                }
-
-                binance_timeframe = timeframe_map.get(self.timeframe, '5m')
-
-                # Usar diferentes endpoints públicos
-                endpoints = [
-                    f"https://api.binance.com/api/v3/klines?symbol={symbol_formatted}&interval={binance_timeframe}&limit={limit}",
-                    f"https://fapi.binance.com/fapi/v1/klines?symbol={symbol_formatted}&interval={binance_timeframe}&limit={limit}",
-                    f"https://api.binance.us/api/v3/klines?symbol={symbol_formatted}&interval={binance_timeframe}&limit={limit}"
-                ]
-
-                ohlcv_data = None
-                for endpoint in endpoints:
-                    try:
-                        print(f"🌐 Tentando endpoint: {endpoint[:50]}...")
-                        response = requests.get(endpoint, timeout=10)
-                        if response.status_code == 200:
-                            data = response.json()
-                            if data:
-                                ohlcv_data = data
-                                print(f"✅ Sucesso com endpoint público da Binance!")
-                                break
-                    except Exception as e:
-                        print(f"⚠️ Endpoint falhou: {str(e)[:50]}")
-                        continue
-
-                if ohlcv_data:
-                    # Converter dados para formato pandas
-                    df_data = []
-                    for candle in ohlcv_data:
-                        df_data.append([
-                            int(candle[0]),      # timestamp
-                            float(candle[1]),    # open
-                            float(candle[2]),    # high
-                            float(candle[3]),    # low
-                            float(candle[4]),    # close
-                            float(candle[5])     # volume
-                        ])
-
-                    df = pd.DataFrame(df_data)
-                    df.columns = ['timestamp', 'open', 'high', 'low', 'close', 'volume']
-
-                    # Convert timestamp to datetime
-                    df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-                    df.set_index('timestamp', inplace=True)
-
-                    print(f"📊 Dados obtidos via WebSocket público: {len(df)} candles")
-
-                    # Calculate technical indicators
-                    df = self.calculate_indicators(df)
-                    return df
-
+                logger.info(f"🔄 Buscando dados públicos (tentativa {attempt}/3) para {self.symbol}")
+                df = self._fetch_public_ohlcv(limit=limit)
+                break
             except Exception as e:
-                print(f"⚠️ Erro nos endpoints públicos: {str(e)}")
+                logger.warning(f"⚠️ Tentativa {attempt} falhou: {e}")
 
-            # Fallback: Gerar dados simulados realistas para demonstração
-            print("🎯 Usando dados simulados para demonstração (WebSocket simulado)")
+        if df is None:
+            logger.warning("⚠️ Falha em toda tentativa pública, utilizando dados simulados")
+            df = self._simulate_market_data(limit=limit)
 
-            # Gerar dados realistas baseados no símbolo
-            import random
-            import numpy as np
-
-            # Preços base por símbolo
-            base_prices = {
-                'BTC/USDT': 65000,
-                'ETH/USDT': 3200,
-                'ADA/USDT': 0.45,
-                'SOL/USDT': 150,
-                'DOT/USDT': 8.5,
-                'XLM/USDT': 0.12,
-                'DOGE/USDT': 0.08,
-                'LTC/USDT': 85,
-                'AVAX/USDT': 35
-            }
-
-            base_price = base_prices.get(self.symbol, 1.0)
-
-            # Gerar série temporal com movimento browniano
-            timestamps = []
-            prices = []
-            volumes = []
-
-            from datetime import datetime as dt, timedelta as td
-            current_dt = dt.now()
-            current_price = base_price
-
-            for i in range(limit):
-                # Timestamp
-                timestamp = current_dt - td(minutes=(limit-i-1) * 5)
-                timestamps.append(timestamp)
-
-                # Preço com movimento browniano
-                change_pct = random.normalvariate(0, 0.5) / 100  # Variação de ±0.5%
-                current_price = current_price * (1 + change_pct)
-                prices.append(current_price)
-
-                # Volume realista
-                base_volume = random.uniform(1000000, 10000000)
-                volumes.append(base_volume)
-
-            # Criar DataFrame
-            df_data = []
-            for i in range(len(timestamps)):
-                # OHLC simulado
-                open_price = prices[i]
-                close_price = prices[i] * random.uniform(0.995, 1.005)
-                high_price = max(open_price, close_price) * random.uniform(1.001, 1.01)
-                low_price = min(open_price, close_price) * random.uniform(0.99, 0.999)
-
-                df_data.append({
-                    'timestamp': timestamps[i],
-                    'open': open_price,
-                    'high': high_price,
-                    'low': low_price,
-                    'close': close_price,
-                    'volume': volumes[i]
-                })
-
-            df = pd.DataFrame(df_data)
-            df.set_index('timestamp', inplace=True)
-
-            print(f"📊 Dados simulados criados: {len(df)} candles para {self.symbol}")
-
-            # Calculate technical indicators
+        try:
             df = self.calculate_indicators(df)
 
-            # Salvar no cache local
             if not hasattr(self, '_cache_data'):
                 self._cache_data = {}
 
-            cache_key = f"{self.symbol}_{self.timeframe}_{limit}"
-            self._cache_data[cache_key] = {
-                'data': df.copy(),
-                'timestamp': current_time
-            }
+            self._cache_data[cache_key] = {'data': df.copy(), 'timestamp': current_time}
 
-            # Limpar cache antigo (manter apenas últimos 5 itens)
             if len(self._cache_data) > 5:
-                oldest_key = min(self._cache_data.keys(), 
-                               key=lambda k: self._cache_data[k]['timestamp'])
+                oldest_key = min(self._cache_data.keys(), key=lambda k: self._cache_data[k]['timestamp'])
                 del self._cache_data[oldest_key]
 
             return df
 
         except Exception as e:
-            print(f"❌ Erro no WebSocket público: {e}")
-            raise Exception(f"Erro ao conectar via WebSocket público: {str(e)}")
+            logger.error(f"❌ Erro ao calcular indicadores: {e}")
+            raise
 
     def calculate_indicators(self, df):
         """Calculate comprehensive technical indicators for the dataframe"""
@@ -623,7 +582,7 @@ class TradingBot:
         # Aplicar otimizações específicas para 5m
         if timeframe == "5m" or self.timeframe == "5m":
             try:
-                from config.timeframe_5m_config import TimeFrame5mConfig
+                from config import TimeFrame5mConfig
                 signal = self._generate_advanced_signal(last_row)
                 current_hour = last_row.get('timestamp', pd.Timestamp.now()).hour if hasattr(last_row, 'get') else None
                 signal = TimeFrame5mConfig.apply_5m_filters(signal, last_row, current_hour)
@@ -633,7 +592,7 @@ class TradingBot:
 
         # Configurações otimizadas para mais trades com melhor precisão
         if day_trading_mode:
-            from config.app_config import AppConfig
+            from config import AppConfig
             day_settings = AppConfig.get_day_trading_settings(timeframe)
 
             min_confidence = max(55, day_settings['min_confidence'] - 15)  # Reduced confidence threshold
@@ -648,7 +607,7 @@ class TradingBot:
             # Removed lunch time filter to allow more trades
 
         elif crypto_optimized:
-            from config.app_config import AppConfig
+            from config import AppConfig
             crypto_settings = AppConfig.get_crypto_timeframe_settings(timeframe)
 
             min_confidence = max(55, crypto_settings['min_confidence'] - 10)  # Lower confidence threshold
@@ -746,7 +705,29 @@ class TradingBot:
                 if signal == 'VENDA':
                     signal = 'VENDA_FRACA'
 
-        print(f"DEBUG: Sinal final aprovado: {signal} com RSI {rsi_atual:.1f}")
+        # Combine rule-based signal with advanced score for robust decision
+        advanced_score = self.calculate_advanced_score(last_row)
+        self.logger = logger
+        logger.debug(f"💡 Advanced score: {advanced_score:.2f}")
+
+        if advanced_score < 0.45 and signal in ['COMPRA', 'VENDA', 'COMPRA_FRACA', 'VENDA_FRACA']:
+            logger.debug("📉 score baixo, converte para NEUTRO")
+            return "NEUTRO"
+
+        if advanced_score >= 0.80:
+            if signal in ['COMPRA', 'COMPRA_FRACA']:
+                return "COMPRA"
+            if signal in ['VENDA', 'VENDA_FRACA']:
+                return "VENDA"
+
+        if advanced_score >= 0.60:
+            return signal
+
+        # Se score intermediário e sinal fraco, devolver NEUTRO
+        if signal in ['COMPRA_FRACA', 'VENDA_FRACA'] and advanced_score < 0.65:
+            logger.debug("🔁 sinal fraco + score médio, NEUTRO")
+            return "NEUTRO"
+
         return signal
 
     def get_signal_with_confidence(self, df):
@@ -759,6 +740,77 @@ class TradingBot:
         confidence = self._calculate_signal_confidence(last_row)
 
         return {"signal": signal, "confidence": confidence}
+
+    def calculate_advanced_score(self, row):
+        """Calculate an ensemble score from advanced indicators"""
+        # Basic checks
+        if row is None or row.empty:
+            return 0.0
+
+        scores = []
+
+        # RSI score: favorable se 20-80 (caminho expandido para trades de alta qualidade)
+        rsi = row.get('rsi', 50)
+        if not np.isnan(rsi):
+            if rsi < 20:
+                scores.append(0.95)
+            elif rsi < 30:
+                scores.append(0.75)
+            elif rsi < 40:
+                scores.append(0.55)
+            elif rsi > 80:
+                scores.append(0.05)
+            elif rsi > 70:
+                scores.append(0.2)
+            else:
+                scores.append(0.5)
+
+        # MACD score
+        macd = row.get('macd', 0)
+        macd_signal = row.get('macd_signal', 0)
+        macd_hist = row.get('macd_histogram', 0)
+        if not np.isnan(macd) and not np.isnan(macd_signal):
+            if macd > macd_signal and macd_hist > 0:
+                scores.append(0.85)
+            elif macd < macd_signal and macd_hist < 0:
+                scores.append(0.15)
+            else:
+                scores.append(0.45)
+
+        # ADX score
+        adx = row.get('adx', 0)
+        if not np.isnan(adx):
+            if adx > 40:
+                scores.append(0.85)
+            elif adx > 25:
+                scores.append(0.65)
+            else:
+                scores.append(0.35)
+
+        # Volume confirmation
+        vol_ratio = row.get('volume_ratio', 1.0)
+        if not np.isnan(vol_ratio):
+            if vol_ratio > 2.0:
+                scores.append(0.85)
+            elif vol_ratio > 1.3:
+                scores.append(0.65)
+            else:
+                scores.append(0.45)
+
+        # Regime/instrumentos: tonar de 0.4 a 0.6 se market_regime unknown
+        market_regime = row.get('market_regime', 'trending')
+        if market_regime == 'trending':
+            scores.append(0.7)
+        elif market_regime == 'ranging':
+            scores.append(0.4)
+        else:
+            scores.append(0.5)
+
+        if not scores:
+            return 0.0
+
+        final_score = float(np.mean(scores))
+        return min(1.0, max(0.0, final_score))
 
     def get_market_summary(self, df):
         """Get market summary statistics"""

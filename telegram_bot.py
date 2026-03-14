@@ -6,7 +6,6 @@ Python-telegram-bot v20+
 
 import asyncio
 import logging
-import os
 from datetime import datetime
 from typing import Optional
 
@@ -16,23 +15,26 @@ try:
     from telegram.ext import Application, CommandHandler, ContextTypes
     from telegram.error import TelegramError
     import telegram
+
     TELEGRAM_AVAILABLE = True
     print(f"✅ python-telegram-bot v{telegram.__version__} importado com sucesso")
+
 except ImportError as e:
     TELEGRAM_AVAILABLE = False
     print(f"❌ Telegram library not available: {e}")
-    print("💡 Install with: pip install python-telegram-bot==20.7")
-    
-    # Se não tiver telegram, não prosseguir
+    print("💡 Install with: pip install python-telegram-bot==22.6")
+
     Bot = None
     Update = None
     ContextTypes = None
     Application = None
     CommandHandler = None
+    TelegramError = Exception
 
 from user_manager import UserManager
 from trading_bot import TradingBot
-from config.telegram_bot_config import TelegramBotConfig
+from ai_model import AIModel
+from config import TelegramBotConfig, ProductionConfig
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +42,7 @@ class TelegramTradingBot:
     """Bot Telegram para Trading - Versão Consolidada"""
     
     def __init__(self):
+        self.ai_model = AIModel()
         self.logger = logging.getLogger(self.__class__.__name__)
         
         if not TELEGRAM_AVAILABLE:
@@ -115,13 +118,16 @@ class TelegramTradingBot:
             self.logger.error(f"❌ Erro ao configurar bot: {e}")
             self.enabled = False
             return False
+
+    def is_configured(self) -> bool:
+        return self.enabled and self.application is not None
     
     def _setup_handlers(self):
         """Setup command handlers"""
         if not self.application:
             self.logger.error("❌ Application não inicializada")
             return
-            
+
         try:
             handlers = [
                 ("start", self.start_command),
@@ -129,21 +135,29 @@ class TelegramTradingBot:
                 ("analise", self.analyze_command),
                 ("status", self.status_command),
                 ("premium", self.premium_command),
-                ("admin", self.admin_command),
-                ("stats", self.stats_command),
                 ("users", self.users_command),
                 ("upgrade", self.upgrade_command),
                 ("broadcast", self.broadcast_command),
             ]
-            
+
             for command, handler in handlers:
                 self.application.add_handler(CommandHandler(command, handler))
                 self.logger.debug(f"✅ Handler /{command} adicionado")
-            
+
             self.logger.info("✅ Todos os handlers configurados")
-            
+
         except Exception as e:
             self.logger.error(f"❌ Erro ao configurar handlers: {e}")
+
+    async def _safe_reply(self, update: Update, text: str, parse_mode: Optional[str] = None):
+        try:
+            return await update.message.reply_text(text, parse_mode=parse_mode)
+        except TelegramError as telerr:
+            self.logger.warning(f"⚠️ Falha ao enviar resposta de Telegram: {telerr}")
+            return None
+        except Exception as err:
+            self.logger.error(f"❌ Erro inesperado ao responder Telegram: {err}")
+            return None
     
     async def start_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /start command"""
@@ -151,122 +165,145 @@ class TelegramTradingBot:
             user_id = update.effective_user.id
             username = update.effective_user.username or "sem_username"
             first_name = update.effective_user.first_name or "Usuário"
-            
+
             self.logger.info(f"📥 Comando /start recebido de {user_id} ({first_name})")
-            
-            # Add user to database if user_manager is available
+
             if self.user_manager:
-                try:
-                    self.user_manager.add_user(user_id, username, first_name)
-                    self.logger.info(f"✅ Usuário {user_id} adicionado ao banco")
-                except Exception as e:
-                    self.logger.warning(f"⚠️ Erro ao adicionar usuário: {e}")
-            
-            # Importar configuração
-            try:
-                from config.telegram_bot_config import TelegramBotConfig
-                supported_pairs = TelegramBotConfig.SUPPORTED_PAIRS[:6]
-            except ImportError:
-                supported_pairs = ["BTC/USDT", "ETH/USDT", "XLM/USDT"]
-            
+                self.user_manager.get_or_create_user(user_id, username, first_name)
+
+            supported_pairs = TelegramBotConfig.SUPPORTED_PAIRS[:6]
+
             welcome_message = f"""🤖 **Bem-vindo ao Trading Bot!**
 
-Olá {first_name}! 👋
+    Olá {first_name}! 👋
 
-**Sobre o bot:**
-• Análises técnicas de criptomoedas em tempo real
-• Sinais baseados em RSI e MACD  
-• Suporte a múltiplos pares de trading
+    **Sobre o bot:**
+    • Análises técnicas de criptomoedas em tempo real
+    • Sinais baseados em RSI e MACD
+    • Suporte a múltiplos pares de trading
 
-**Comandos principais:**
-• /analise BTC/USDT - Analisar criptomoeda
-• /status - Ver seu status e limites
-• /help - Ver todos os comandos
-• /premium - Informações sobre Premium
+    **Comandos principais:**
+    • /analise BTC/USDT - Analisar criptomoeda
+    • /status - Ver seu status e limites
+    • /help - Ver todos os comandos
+    • /premium - Informações sobre Premium
 
-**Pares suportados:**
-{', '.join(supported_pairs)}
+    **Pares suportados:**
+    {', '.join(supported_pairs)}
 
-**Tipos de Usuário:**
-• Free: 1 análise por dia
-• Premium: Análises ilimitadas
+    **Tipos de Usuário:**
+    • Free: 1 análise por dia
+    • Premium: Análises ilimitadas
 
-**Exemplo de uso:**
-/analise BTC/USDT
+    **Exemplo de uso:**
+    /analise BTC/USDT
 
-Vamos começar a analisar o mercado! 📈"""
-            
-            await update.message.reply_text(welcome_message, parse_mode='Markdown')
+    Vamos começar a analisar o mercado! 📈"""
+
+            await self._safe_reply(update, welcome_message, parse_mode="Markdown")
             self.logger.info(f"✅ Usuário {user_id} - comando /start processado com sucesso")
-            
+
         except Exception as e:
-            self.logger.error(f"❌ Erro no comando /start: {e}")
-            try:
-                await update.message.reply_text(
-                    "❌ Erro interno no comando /start. Tente novamente em alguns minutos."
-                )
-            except Exception as reply_error:
-                self.logger.error(f"❌ Erro ao enviar resposta de erro: {reply_error}")
-    
+            self.logger.exception(e)
+            await self._safe_reply(update, "❌ Erro interno no comando /start. Tente novamente em alguns minutos.")
+        
     async def help_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /help command"""
         try:
             user_id = update.effective_user.id
+
+            self.user_manager.get_or_create_user(
+                user_id,
+                username=update.effective_user.username,
+                first_name=update.effective_user.first_name
+            )
+
             is_admin = self.user_manager.is_admin(user_id)
             is_premium = self.user_manager.is_premium(user_id)
-            
-            help_text = f"Comandos Disponiveis:\n\nAnalises:\n- /analise BTC/USDT - Analisar criptomoeda\n- /status - Ver seu status e limites\n\nPremium:\n- /premium - Informacoes sobre Premium\n{'- Voce e Premium!' if is_premium else '- Plano Free (1 analise/dia)'}\n\nPares suportados:\n{', '.join(TelegramBotConfig.SUPPORTED_PAIRS)}"
-            
+
+            help_text = (
+                "Comandos Disponiveis:\n\n"
+                "Analises:\n"
+                "- /analise BTC/USDT - Analisar criptomoeda\n"
+                "- /status - Ver seu status e limites\n\n"
+                "Premium:\n"
+                "- /premium - Informacoes sobre Premium\n"
+                f"{'- Voce e Premium!' if is_premium else '- Plano Free (1 analise/dia)'}\n\n"
+                "Pares suportados:\n"
+                + ", ".join(TelegramBotConfig.SUPPORTED_PAIRS)
+            )
+
             if is_admin:
-                help_text += "\n\nComandos de Admin:\n- /admin - Painel administrativo\n- /stats - Estatisticas do bot\n- /users - Listar usuarios\n- /upgrade [ID] - Fazer upgrade de usuario\n- /broadcast [MSG] - Enviar mensagem para todos"
-            
-            await update.message.reply_text(help_text)
-            
+                help_text += (
+                    "\n\nComandos de Admin:\n"
+                    "- /stats\n"
+                    "- /users\n"
+                    "- /upgrade [ID]\n"
+                    "- /broadcast [MSG]"
+                )
+
+            await self._safe_reply(update, help_text)
+
         except Exception as e:
-            self.logger.error(f"❌ Erro no comando /help: {e}")
-            await update.message.reply_text("❌ Erro interno. Tente novamente.")
+            self.logger.exception(e)
+            await self._safe_reply(update, f"Erro no /help: {e}")
     
     async def analyze_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /analise command"""
         try:
             user_id = update.effective_user.id
-            user = self.user_manager.get_user(user_id)
-            
-            if not user:
-                self.user_manager.add_user(user_id, update.effective_user.username, 
-                                         update.effective_user.first_name)
-                user = self.user_manager.get_user(user_id)
-            
-            # Check if user can perform analysis
+
+            self.user_manager.get_or_create_user(
+                user_id,
+                username=update.effective_user.username,
+                first_name=update.effective_user.first_name
+            )
+
             if not self.user_manager.can_analyze(user_id):
-                await update.message.reply_text(
-                    "Limite atingido!\n\nUsuarios Free tem direito a 1 analise por dia.\n\nUpgrade para Premium e tenha:\n- Analises ilimitadas\n- Alerts em tempo real\n- Analises mais detalhadas\n\nUse /premium para mais informacoes!"
+                await self._safe_reply(
+                    update,
+                    "Limite atingido!\n\n"
+                    "Usuarios Free tem direito a 1 analise por dia.\n\n"
+                    "Upgrade para Premium e tenha:\n"
+                    "- Analises ilimitadas\n"
+                    "- Alerts em tempo real\n"
+                    "- Analises mais detalhadas\n\n"
+                    "Use /premium para mais informacoes!"
                 )
                 return
-            
-            # Get symbol from command
+
             if not context.args:
-                await update.message.reply_text(
-                    "Formato incorreto!\n\nUso correto:\n/analise BTC/USDT\n\nPares disponiveis:\n" + ', '.join(TelegramBotConfig.SUPPORTED_PAIRS[:6]) + "..."
+                await self._safe_reply(
+                    update,
+                    "Formato incorreto!\n\n"
+                    "Uso correto:\n"
+                    "/analise BTC/USDT\n\n"
+                    "Pares disponiveis:\n"
+                    + ", ".join(TelegramBotConfig.SUPPORTED_PAIRS[:6]) + "..."
                 )
                 return
-            
+
             symbol = context.args[0].upper()
-            
-            # Validate symbol
+
             if not TelegramBotConfig.is_valid_pair(symbol):
-                await update.message.reply_text(
-                    f"Par nao suportado: {symbol}\n\nPares disponiveis:\n{', '.join(TelegramBotConfig.SUPPORTED_PAIRS)}"
+                await self._safe_reply(
+                    update,
+                    f"Par nao suportado: {symbol}\n\n"
+                    f"Pares disponiveis:\n{', '.join(TelegramBotConfig.SUPPORTED_PAIRS)}"
                 )
                 return
-            
-            # Send loading message
-            loading_msg = await update.message.reply_text("Analisando...\nPor favor aguarde...")
-            
-            # Configure trading bot
+
+            loading_msg = await self._safe_reply(update, "Analisando...\nPor favor aguarde...")
+
+            if loading_msg is None:
+                return
+
+            if not self.trading_bot:
+                await loading_msg.edit_text("Erro: TradingBot não inicializado")
+                return
+
             self.trading_bot.update_config(symbol=symbol)
-            
-            # Get market data with retry logic
+
             data = None
             for attempt in range(3):
                 try:
@@ -277,129 +314,282 @@ Vamos começar a analisar o mercado! 📈"""
                     self.logger.warning(f"Tentativa {attempt + 1} falhou: {e}")
                     if attempt < 2:
                         await asyncio.sleep(1)
-            
+
             if data is None or data.empty:
                 await loading_msg.edit_text("Erro: Nao foi possivel obter dados do mercado")
                 return
-            
-            # Get analysis
+
             last_candle = data.iloc[-1]
             signal = self.trading_bot.check_signal(data)
             emoji = TelegramBotConfig.get_signal_emoji(signal)
-            
-            analysis_message = f"Analise Tecnica - {symbol}\n\n{emoji} Sinal: {signal.replace('_', ' ')}\n\nPreco Atual: ${last_candle['close']:.6f}\nVariacao: {((last_candle['close'] - last_candle['open']) / last_candle['open'] * 100):+.2f}%\n\nIndicadores:\n- RSI: {last_candle['rsi']:.2f}\n- MACD: {last_candle['macd']:.4f}\n- MACD Signal: {last_candle['macd_signal']:.4f}\n\nAtualizado: {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}\n\nLembre-se: Esta e uma analise tecnica automatizada. Sempre faca sua propria pesquisa!"
-            
-            await loading_msg.edit_text(analysis_message)
-            
-            # Record analysis
-            self.user_manager.record_analysis(user_id)
-            
-        except Exception as e:
-            self.logger.error(f"❌ Erro no comando /analise: {e}")
+
+            ai_signal = "NEUTRO"
+            ai_confidence = 0.0
+
             try:
-                await update.message.reply_text("❌ Erro interno. Tente novamente em alguns minutos.")
-            except:
-                pass
+                ai_pred = self.ai_model.predict(data)
+                ai_signal = ai_pred.get("signal", "NEUTRO")
+                ai_confidence = ai_pred.get("confidence", 0.0)
+            except Exception as e:
+                self.logger.warning(f"Falha na IA: {e}")
+
+            final_signal = signal
+            if ai_signal in ["BUY", "SELL"] and signal in ["COMPRA", "VENDA"]:
+                final_signal = signal
+            elif ai_signal == "BUY" and signal in ["NEUTRO", "VENDA", "VENDA_FRACA"]:
+                final_signal = "COMPRA_FRACA"
+            elif ai_signal == "SELL" and signal in ["NEUTRO", "COMPRA", "COMPRA_FRACA"]:
+                final_signal = "VENDA_FRACA"
+
+            analysis_message = (
+                f"Analise Tecnica - {symbol}\n\n"
+                f"{emoji} Sinal (regras): {signal.replace('_', ' ')}\n"
+                f"Sinal (IA): {ai_signal} (conf: {ai_confidence:.2f})\n"
+                f"Sinal (final): {final_signal}\n\n"
+                f"Preco Atual: ${last_candle['close']:.6f}\n"
+                f"Variacao: {((last_candle['close'] - last_candle['open']) / last_candle['open'] * 100):+.2f}%\n\n"
+                f"Indicadores:\n"
+                f"- RSI: {last_candle['rsi']:.2f}\n"
+                f"- MACD: {last_candle['macd']:.4f}\n"
+                f"- MACD Signal: {last_candle['macd_signal']:.4f}\n\n"
+                f"Atualizado: {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}\n\n"
+                f"Lembre-se: Esta e uma analise tecnica automatizada. Sempre faca sua propria pesquisa!"
+            )
+
+            await loading_msg.edit_text(analysis_message)
+            self.user_manager.record_analysis(user_id)
+
+        except Exception as e:
+            self.logger.exception(e)
+            await self._safe_reply(update, f"Erro no /analise: {e}")
+    
+    async def analyze_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /analise command"""
+        try:
+            user_id = update.effective_user.id
+
+            self.user_manager.get_or_create_user(
+                user_id,
+                username=update.effective_user.username,
+                first_name=update.effective_user.first_name
+            )
+
+            if not self.user_manager.can_analyze(user_id):
+                await self._safe_reply(
+                    update,
+                    "Limite atingido!\n\n"
+                    "Usuarios Free tem direito a 1 analise por dia.\n\n"
+                    "Upgrade para Premium e tenha:\n"
+                    "- Analises ilimitadas\n"
+                    "- Alerts em tempo real\n"
+                    "- Analises mais detalhadas\n\n"
+                    "Use /premium para mais informacoes!"
+                )
+                return
+
+            if not context.args:
+                await self._safe_reply(
+                    update,
+                    "Formato incorreto!\n\n"
+                    "Uso correto:\n"
+                    "/analise BTC/USDT\n\n"
+                    "Pares disponiveis:\n"
+                    + ", ".join(TelegramBotConfig.SUPPORTED_PAIRS[:6]) + "..."
+                )
+                return
+
+            symbol = context.args[0].upper()
+
+            if not TelegramBotConfig.is_valid_pair(symbol):
+                await self._safe_reply(
+                    update,
+                    f"Par nao suportado: {symbol}\n\n"
+                    f"Pares disponiveis:\n{', '.join(TelegramBotConfig.SUPPORTED_PAIRS)}"
+                )
+                return
+
+            loading_msg = await self._safe_reply(update, "Analisando...\nPor favor aguarde...")
+
+            if loading_msg is None:
+                return
+
+            if not self.trading_bot:
+                await loading_msg.edit_text("Erro: TradingBot não inicializado")
+                return
+
+            self.trading_bot.update_config(symbol=symbol)
+
+            data = None
+            for attempt in range(3):
+                try:
+                    data = self.trading_bot.get_market_data()
+                    if data is not None and not data.empty:
+                        break
+                except Exception as e:
+                    self.logger.warning(f"Tentativa {attempt + 1} falhou: {e}")
+                    if attempt < 2:
+                        await asyncio.sleep(1)
+
+            if data is None or data.empty:
+                await loading_msg.edit_text("Erro: Nao foi possivel obter dados do mercado")
+                return
+
+            last_candle = data.iloc[-1]
+            signal = self.trading_bot.check_signal(data)
+            emoji = TelegramBotConfig.get_signal_emoji(signal)
+
+            ai_signal = "NEUTRO"
+            ai_confidence = 0.0
+
+            try:
+                ai_pred = self.ai_model.predict(data)
+                ai_signal = ai_pred.get("signal", "NEUTRO")
+                ai_confidence = ai_pred.get("confidence", 0.0)
+            except Exception as e:
+                self.logger.warning(f"Falha na IA: {e}")
+
+            final_signal = signal
+            if ai_signal in ["BUY", "SELL"] and signal in ["COMPRA", "VENDA"]:
+                final_signal = signal
+            elif ai_signal == "BUY" and signal in ["NEUTRO", "VENDA", "VENDA_FRACA"]:
+                final_signal = "COMPRA_FRACA"
+            elif ai_signal == "SELL" and signal in ["NEUTRO", "COMPRA", "COMPRA_FRACA"]:
+                final_signal = "VENDA_FRACA"
+
+            analysis_message = (
+                f"Analise Tecnica - {symbol}\n\n"
+                f"{emoji} Sinal (regras): {signal.replace('_', ' ')}\n"
+                f"Sinal (IA): {ai_signal} (conf: {ai_confidence:.2f})\n"
+                f"Sinal (final): {final_signal}\n\n"
+                f"Preco Atual: ${last_candle['close']:.6f}\n"
+                f"Variacao: {((last_candle['close'] - last_candle['open']) / last_candle['open'] * 100):+.2f}%\n\n"
+                f"Indicadores:\n"
+                f"- RSI: {last_candle['rsi']:.2f}\n"
+                f"- MACD: {last_candle['macd']:.4f}\n"
+                f"- MACD Signal: {last_candle['macd_signal']:.4f}\n\n"
+                f"Atualizado: {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}\n\n"
+                f"Lembre-se: Esta e uma analise tecnica automatizada. Sempre faca sua propria pesquisa!"
+            )
+
+            await loading_msg.edit_text(analysis_message)
+            self.user_manager.record_analysis(user_id)
+
+        except Exception as e:
+            self.logger.exception(e)
+            await self._safe_reply(update, f"Erro no /analise: {e}")
+        
+    
+    
+    # Admin commands (simplified)
+    async def premium_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /premium command"""
+        try:
+            user_id = update.effective_user.id
+
+            self.user_manager.get_or_create_user(
+                user_id,
+                username=update.effective_user.username,
+                first_name=update.effective_user.first_name
+            )
+
+            premium_message = (
+                "💎 Trading Signals Premium\n\n"
+                "🆓 Plano Free:\n"
+                "• 1 análise por dia\n"
+                "• Suporte básico\n"
+                "• Pares principais\n\n"
+                "✨ Plano Premium:\n"
+                "• Análises ilimitadas\n"
+                "• Alerts em tempo real\n"
+                "• Análises mais detalhadas\n"
+                "• Suporte prioritário\n"
+                "• Todos os pares disponíveis\n\n"
+                "💰 Preço: R$ 19,90/mês\n\n"
+                "🔗 Para upgrade:\n"
+                "Entre em contato: @trading_support\n\n"
+                "💡 Pagamentos aceitos:\n"
+                "• PIX\n"
+                "• Cartão de crédito\n"
+                "• Mercado Pago"
+            )
+
+            await self._safe_reply(update, premium_message)
+
+        except Exception as e:
+            self.logger.exception(e)
+            await self._safe_reply(update, f"Erro no /premium: {e}")
     
     async def status_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /status command"""
-        try:
-            user_id = update.effective_user.id
-            user = self.user_manager.get_user(user_id)
-            
-            if not user:
-                await update.message.reply_text("❌ Usuário não encontrado. Use /start primeiro.")
-                return
-            
-            is_premium = self.user_manager.is_premium(user_id)
-            analyses_today = self.user_manager.get_analyses_today(user_id)
-            can_analyze = self.user_manager.can_analyze(user_id)
-            
-            status_message = f"""
-👤 **Seu Status**
-
-📱 **ID:** `{user_id}`
-💎 **Plano:** {'Premium ✨' if is_premium else 'Free 🆓'}
-
-📊 **Análises hoje:** {analyses_today}{'/' + str(self.user_manager.max_analyses_per_day) if not is_premium else ' (ilimitadas)'}
-🔄 **Próxima análise:** {'Disponível ✅' if can_analyze else 'Limite atingido ❌'}
-
-📅 **Membro desde:** {user['joined_date'][:10]}
-
-{'💡 Use /premium para upgrade!' if not is_premium else '🎉 Obrigado por ser Premium!'}
-"""
-            
-            await update.message.reply_text(status_message, parse_mode='Markdown')
-            
-        except Exception as e:
-            self.logger.error(f"❌ Erro no comando /status: {e}")
-            await update.message.reply_text("❌ Erro interno. Tente novamente.")
-    
-    async def premium_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle /premium command"""
-        premium_message = """
-💎 **Trading Signals Premium**
-
-🆓 **Plano Free:**
-• 1 análise por dia
-• Suporte básico
-• Pares principais
-
-✨ **Plano Premium:**
-• ✅ Análises ilimitadas
-• 🚀 Alerts em tempo real
-• 📊 Análises mais detalhadas
-• 🎯 Suporte prioritário
-• 📈 Todos os pares disponíveis
-
-💰 **Preço:** R$ 19,90/mês
-
-🔗 **Para upgradar:**
-Entre em contato: @trading_support
-
-💡 **Pagamentos aceitos:**
-• PIX
-• Cartão de crédito
-• Mercado Pago
-"""
-        
-        await update.message.reply_text(premium_message, parse_mode='Markdown')
-    
-    # Admin commands (simplified)
-    async def admin_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle /admin command"""
         user_id = update.effective_user.id
         if not self.user_manager.is_admin(user_id):
             await update.message.reply_text("❌ Acesso negado")
             return
-        
-        stats = self.user_manager.get_stats()
-        admin_msg = f"""
-👑 **Admin Panel**
 
-📊 **Estatísticas:**
-• Usuários: {stats['total_users']}
-• Premium: {stats['premium_users']}
-• Free: {stats['free_users']}
-• Análises hoje: {stats.get('analyses_today', 0)}
-"""
-        await update.message.reply_text(admin_msg, parse_mode='Markdown')
-    
-    async def stats_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle /stats command"""
-        await update.message.reply_text("📊 Estatísticas - em desenvolvimento")
+        stats = self.user_manager.get_stats()
+        msg = (
+            f"📊 Status do Sistema:\n"
+            f"• Usuários: {status['total_users']}\n"
+            f"• Free: {status['free_users']}\n"
+            f"• Premium: {status['premium_users']}\n"
+            f"• Análises hoje: {status.get('analyses_today', 0)}"
+        )
+        await update.message.reply_text(msg)
     
     async def users_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /users command"""
-        await update.message.reply_text("👥 Lista de usuários - em desenvolvimento")
+        user_id = update.effective_user.id
+        if not self.user_manager.is_admin(user_id):
+            await update.message.reply_text("❌ Acesso negado")
+            return
+
+        users = self.user_manager.list_users(limit=100)
+        text = "👥 Usuários:\n"
+        for u in users:
+            text += f"• {u['id']} - {u.get('username','N/A')} - {u['plan']} - análises hoje: {u['analyses_today']}\n"
+        await update.message.reply_text(text)
     
     async def upgrade_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /upgrade command"""
-        await update.message.reply_text("💎 Upgrade de usuário - em desenvolvimento")
+        user_id = update.effective_user.id
+        if not self.user_manager.is_admin(user_id):
+            await update.message.reply_text("❌ Acesso negado")
+            return
+
+        if not context.args or len(context.args) != 1:
+            await update.message.reply_text("Uso: /upgrade <user_id>")
+            return
+
+        try:
+            target_id = int(context.args[0])
+            self.user_manager.upgrade_to_premium(target_id)
+            await update.message.reply_text(f"💎 Usuário {target_id} atualizado para Premium")
+        except Exception as e:
+            await update.message.reply_text(f"❌ Erro ao atualizar usuário: {e}")
     
     async def broadcast_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /broadcast command"""
-        await update.message.reply_text("📢 Broadcast - em desenvolvimento")
+        user_id = update.effective_user.id
+        if not self.user_manager.is_admin(user_id):
+            await update.message.reply_text("❌ Acesso negado")
+            return
+
+        if not context.args:
+            await update.message.reply_text("Uso: /broadcast <mensagem>")
+            return
+
+        message = ' '.join(context.args)
+        recipients = self.user_manager.get_all_user_ids()
+        success = 0
+        failed = 0
+        for uid in recipients:
+            try:
+                await self.bot.send_message(chat_id=uid, text=f"📢 Broadcast do Admin:\n{message}")
+                success += 1
+            except Exception:
+                failed += 1
+
+        await update.message.reply_text(f"✅ Broadcast enviado: {success} sucesso, {failed} falha")
     
     async def test_connection(self):
         """Test bot connection"""
@@ -425,27 +615,6 @@ Entre em contato: @trading_support
         try:
             self.logger.info("🚀 Starting Telegram bot polling...")
             self.application.run_polling(drop_pending_updates=True)
-            return True
-        except Exception as e:
-            self.logger.error(f"❌ Erro ao iniciar polling: {e}")
-            return False
-    
-    async def start_polling_async(self):
-        """Start the bot polling - async method for integration (PTB v22.4)"""
-        if not TELEGRAM_AVAILABLE:
-            self.logger.error("❌ Cannot start polling: Telegram library not available")
-            return False
-        
-        if not self.application:
-            self.logger.error("❌ Cannot start polling: Bot not configured")
-            return False
-        
-        try:
-            self.logger.info("🚀 Starting Telegram bot polling (async)...")
-            
-            # Use the run_polling method which handles initialization and cleanup properly
-            await self.application.run_polling(drop_pending_updates=True)
-            
             return True
         except Exception as e:
             self.logger.error(f"❌ Erro ao iniciar polling: {e}")
