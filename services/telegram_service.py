@@ -11,20 +11,20 @@ from datetime import datetime
 from typing import Optional, Dict, Any, Tuple
 import logging
 
+logger = logging.getLogger(__name__)
+
 # Verificar se telegram está disponível
 try:
     from telegram import Bot
     from telegram.error import TelegramError
     import telegram
     TELEGRAM_AVAILABLE = True
-    print(f"✅ Telegram service usando v{telegram.__version__}")
+    logger.info("Telegram service usando v%s", telegram.__version__)
 except ImportError as e:
     TELEGRAM_AVAILABLE = False
     Bot = None
     TelegramError = None
-    print(f"❌ Telegram não disponível no service: {e}")
-
-logger = logging.getLogger(__name__)
+    logger.warning("Telegram nao disponivel no service: %s", e)
 
 class SecureTelegramService:
     def __init__(self):

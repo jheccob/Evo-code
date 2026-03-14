@@ -9,6 +9,8 @@ import logging
 from datetime import datetime
 from typing import Optional
 
+logger = logging.getLogger(__name__)
+
 # Verificar se telegram está disponível
 try:
     from telegram import Bot, Update
@@ -17,12 +19,12 @@ try:
     import telegram
 
     TELEGRAM_AVAILABLE = True
-    print(f"✅ python-telegram-bot v{telegram.__version__} importado com sucesso")
+    logger.info("python-telegram-bot v%s importado com sucesso", telegram.__version__)
 
 except ImportError as e:
     TELEGRAM_AVAILABLE = False
-    print(f"❌ Telegram library not available: {e}")
-    print("💡 Install with: pip install python-telegram-bot==22.4")
+    logger.warning("Telegram library not available: %s", e)
+    logger.warning("Install with: pip install python-telegram-bot==22.4")
 
     Bot = None
     Update = None
@@ -36,12 +38,11 @@ from trading_bot import TradingBot
 from ai_model import AIModel
 from config import TelegramBotConfig, ProductionConfig
 
-logger = logging.getLogger(__name__)
-
 class TelegramTradingBot:
     """Bot Telegram para Trading - Versão Consolidada"""
     
-    def __init__(self):
+    def __init__(self, allow_simulated_data=True):
+        self.allow_simulated_data = allow_simulated_data
         self.ai_model = AIModel()
         self.logger = logging.getLogger(self.__class__.__name__)
         
@@ -63,7 +64,7 @@ class TelegramTradingBot:
             from user_manager import UserManager
             from trading_bot import TradingBot
             self.user_manager = UserManager()
-            self.trading_bot = TradingBot()
+            self.trading_bot = TradingBot(allow_simulated_data=self.allow_simulated_data)
         except ImportError as e:
             self.logger.warning(f"⚠️ Erro ao importar dependências: {e}")
             self.user_manager = None

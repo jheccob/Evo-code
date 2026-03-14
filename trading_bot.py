@@ -9,7 +9,7 @@ from indicators import TechnicalIndicators
 logger = logging.getLogger(__name__)
 
 class TradingBot:
-    def __init__(self):
+    def __init__(self, allow_simulated_data=True):
         # Usar sempre Binance WebSocket público
         from config import ExchangeConfig
         self.exchange = ExchangeConfig.get_exchange_instance('binance', testnet=False)
@@ -19,6 +19,7 @@ class TradingBot:
         self.rsi_period = 14  # Padrão RSI
         self.rsi_min = 20
         self.rsi_max = 80
+        self.allow_simulated_data = allow_simulated_data
         self.indicators = TechnicalIndicators()
 
         logger.info("🚀 TradingBot inicializado com BINANCE WEBSOCKET PÚBLICO")
@@ -177,6 +178,11 @@ class TradingBot:
                 logger.warning(f"⚠️ Tentativa {attempt} falhou: {e}")
 
         if df is None:
+            if not self.allow_simulated_data:
+                raise ConnectionError(
+                    "Nao foi possivel obter dados reais do mercado e o fallback simulado esta desabilitado"
+                )
+
             logger.warning("⚠️ Falha em toda tentativa pública, utilizando dados simulados")
             df = self._simulate_market_data(limit=limit)
 
@@ -201,15 +207,20 @@ class TradingBot:
     def calculate_indicators(self, df):
         """Calculate comprehensive technical indicators for the dataframe"""
         # Basic indicators
-        print(f"DEBUG: Calculando RSI com período {self.rsi_period}")
+        logger.debug("Calculando RSI com periodo %s", self.rsi_period)
         df['rsi'] = self.indicators.calculate_rsi(df['close'], self.rsi_period)
 
         # Debug: Mostrar valores atuais do RSI
         current_rsi = df['rsi'].iloc[-1] if not df['rsi'].empty else None
         if current_rsi is not None and not pd.isna(current_rsi):
-            print(f"📊 RSI ATUAL: {current_rsi:.2f} (Min: {self.rsi_min}, Max: {self.rsi_max})")
+            logger.debug(
+                "RSI atual: %.2f (Min: %s, Max: %s)",
+                current_rsi,
+                self.rsi_min,
+                self.rsi_max
+            )
         else:
-            print("⚠️ RSI não calculado ou inválido")
+            logger.warning("RSI nao calculado ou invalido")
 
         # Multiple moving averages for trend analysis
         smas = self.indicators.calculate_multiple_sma(df['close'], periods=[21, 50, 200])
@@ -600,7 +611,12 @@ class TradingBot:
             volatility_threshold = day_settings['volatility_filter'] * 1.3  # Allow more volatility
             min_adx_threshold = day_settings['min_adx'] * 0.7  # Lower ADX requirement
 
-            print(f"DEBUG: Day Trading otimizado - RSI: {actual_rsi_min}-{actual_rsi_max}, Conf: {min_confidence}%")
+            logger.debug(
+                "Day trading otimizado - RSI: %s-%s, Conf: %s%%",
+                actual_rsi_min,
+                actual_rsi_max,
+                min_confidence
+            )
 
             # Less restrictive time filters
             current_hour = last_row.get('timestamp', pd.Timestamp.now()).hour
@@ -615,7 +631,12 @@ class TradingBot:
             volatility_threshold = crypto_settings['volatility_filter'] * 1.5  # Allow higher volatility
             min_adx_threshold = 20  # Reduced from 28
 
-            print(f"DEBUG: Crypto otimizado - RSI: {actual_rsi_min}-{actual_rsi_max}, Conf: {min_confidence}%")
+            logger.debug(
+                "Crypto otimizado - RSI: %s-%s, Conf: %s%%",
+                actual_rsi_min,
+                actual_rsi_max,
+                min_confidence
+            )
 
             # More permissive filters for crypto markets
             # Removed ranging market filter - crypto can be profitable in ranging markets
@@ -634,7 +655,11 @@ class TradingBot:
             volatility_threshold = 0.10  # Allow more volatility
             min_adx_threshold = 15  # Keep low threshold
 
-            print(f"DEBUG: Configuração padrão otimizada - RSI: {actual_rsi_min}-{actual_rsi_max}")
+            logger.debug(
+                "Configuracao padrao otimizada - RSI: %s-%s",
+                actual_rsi_min,
+                actual_rsi_max
+            )
 
             # Very permissive filters for more opportunities
             if require_trend and last_row.get('adx', 0) < min_adx_threshold:
@@ -650,12 +675,16 @@ class TradingBot:
         # Log apenas sinais não-neutros
         if signal != "NEUTRO":
             rsi_atual = last_row.get('rsi', 50)
-            print(f"🎯 Sinal {signal}: RSI {rsi_atual:.1f} | Confiança {confidence:.0f}%")
+            logger.info("Sinal %s: RSI %.1f | Confianca %.0f%%", signal, rsi_atual, confidence)
 
         # Optimized confidence filter for better trade frequency
         effective_min_confidence = min_confidence - 10  # Even more permissive
         if confidence < effective_min_confidence:
-            print(f"  DEBUG: Rejeitado por confiança baixa: {confidence:.1f}% < {effective_min_confidence}%")
+            logger.debug(
+                "Rejeitado por confianca baixa: %.1f%% < %s%%",
+                confidence,
+                effective_min_confidence
+            )
             return "NEUTRO"
 
         # Relaxed volatility check - crypto markets need volatility
@@ -675,12 +704,12 @@ class TradingBot:
         if signal == 'COMPRA':
             # Allow buy signals even if RSI is moderately higher
             if rsi_atual > (actual_rsi_max - base_tolerance):
-                print(f"  DEBUG: COMPRA convertida para FRACA - RSI {rsi_atual:.1f}")
+                logger.debug("COMPRA convertida para FRACA - RSI %.1f", rsi_atual)
                 signal = 'COMPRA_FRACA'
         elif signal == 'VENDA':
             # Allow sell signals even if RSI is moderately lower  
             if rsi_atual < (actual_rsi_min + base_tolerance):
-                print(f"  DEBUG: VENDA convertida para FRACA - RSI {rsi_atual:.1f}")
+                logger.debug("VENDA convertida para FRACA - RSI %.1f", rsi_atual)
                 signal = 'VENDA_FRACA'
 
         # More permissive secondary indicator filters for crypto
@@ -688,11 +717,11 @@ class TradingBot:
             # Allow StochRSI in moderate zones
             stoch_rsi_k = last_row.get('stoch_rsi_k', 50)
             if signal in ['COMPRA', 'COMPRA_FRACA'] and stoch_rsi_k > 70:  # Was 50
-                print(f"  DEBUG: Sinal compra ajustado por StochRSI {stoch_rsi_k:.1f}")
+                logger.debug("Sinal compra ajustado por StochRSI %.1f", stoch_rsi_k)
                 if signal == 'COMPRA':
                     signal = 'COMPRA_FRACA'  # Downgrade instead of reject
             if signal in ['VENDA', 'VENDA_FRACA'] and stoch_rsi_k < 30:  # Was 50
-                print(f"  DEBUG: Sinal venda ajustado por StochRSI {stoch_rsi_k:.1f}")
+                logger.debug("Sinal venda ajustado por StochRSI %.1f", stoch_rsi_k)
                 if signal == 'VENDA':
                     signal = 'VENDA_FRACA'  # Downgrade instead of reject
 

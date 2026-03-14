@@ -378,10 +378,27 @@ def _parse_admin_users(raw_value: str) -> list[int]:
     return admin_users or [1035830659]
 
 
+def _parse_float_env(var_name: str, default: float) -> float:
+    raw_value = os.getenv(var_name, "").strip()
+    if not raw_value:
+        return default
+
+    try:
+        return float(raw_value)
+    except ValueError:
+        logger.warning("Valor invalido para %s. Usando padrao %s", var_name, default)
+        return default
+
+
 class ProductionConfig:
     # Somente variáveis de ambiente (fonte única de verdade)
     TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
     TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "").strip()
+    ADMIN_PANEL_PASSWORD = os.getenv("ADMIN_PANEL_PASSWORD", "").strip()
+    REDIS_URL = os.getenv("REDIS_URL", "").strip()
+    STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY", "").strip()
+    STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET", "").strip()
+    PREMIUM_PRICE_MONTHLY = _parse_float_env("PREMIUM_PRICE_MONTHLY", 19.90)
 
     # Lista separada por vírgula: ADMIN_USERS=123,456
     ADMIN_USERS: list = _parse_admin_users(os.getenv("ADMIN_USERS", "1035830659"))

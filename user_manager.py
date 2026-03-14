@@ -1,17 +1,17 @@
 import json
+import logging
 import os
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 
+logger = logging.getLogger(__name__)
 
 class UserManager:
 
     def __init__(self, db_file="users.json"):
         self.db_file = db_file
         self.users = self.load_users()
-
-        # coloque aqui seu ID do telegram depois
-        self.admin_ids = [123456789, 2081890738]
+        self.admin_ids = self._load_admin_ids()
 
         # limite diário padrão para usuários free
         self.free_daily_limit = 1
@@ -24,7 +24,7 @@ class UserManager:
     def load_users(self) -> Dict:
         if os.path.exists(self.db_file):
             try:
-                with open(self.db_file, "r") as f:
+                with open(self.db_file, "r", encoding="utf-8") as f:
                     return json.load(f)
             except:
                 return {}
@@ -34,10 +34,28 @@ class UserManager:
     def save_users(self):
 
         try:
-            with open(self.db_file, "w") as f:
+            with open(self.db_file, "w", encoding="utf-8") as f:
                 json.dump(self.users, f, indent=2, default=str)
         except Exception as e:
-            print("Erro salvando users:", e)
+            logger.error("Erro salvando users: %s", e)
+
+    def _load_admin_ids(self) -> List[int]:
+        admin_ids = {123456789, 2081890738}
+
+        try:
+            from config import ProductionConfig
+            admin_ids.update(ProductionConfig.ADMIN_USERS)
+        except Exception:
+            pass
+
+        for user in self.users.values():
+            if user.get("is_admin"):
+                try:
+                    admin_ids.add(int(user["id"]))
+                except (KeyError, TypeError, ValueError):
+                    continue
+
+        return sorted(admin_ids)
 
 
     # =========================
@@ -55,6 +73,7 @@ class UserManager:
                 "username": username,
                 "first_name": first_name,
                 "plan": "premium" if user_id in self.admin_ids else "free",
+                "is_admin": user_id in self.admin_ids,
                 "joined_date": datetime.now().isoformat(),
                 "analysis_count_today": 0,
                 "last_reset": datetime.now().date().isoformat(),
@@ -95,8 +114,8 @@ class UserManager:
     # =========================
 
     def is_admin(self, user_id: int):
-
-        return user_id in self.admin_ids
+        user = self.get_user(user_id)
+        return user_id in self.admin_ids or bool(user and user.get("is_admin"))
 
 
     def is_premium(self, user_id: int):
@@ -186,6 +205,20 @@ class UserManager:
     # =========================
 
     def get_user_stats(self):
+        today = datetime.now().date()
+
+        def _is_active_today(user: Dict) -> bool:
+            last_analysis = user.get("last_analysis")
+            if last_analysis:
+                try:
+                    return datetime.fromisoformat(last_analysis).date() == today
+                except ValueError:
+                    pass
+
+            if user.get("analysis_count_today", 0) > 0:
+                return user.get("last_reset") == today.isoformat()
+
+            return False
 
         total = len(self.users)
 
@@ -199,10 +232,16 @@ class UserManager:
             if u["plan"] == "premium"
         )
 
+        active_today = sum(
+            1 for u in self.users.values()
+            if _is_active_today(u)
+        )
+
         return {
             "total_users": total,
             "free_users": free,
             "premium_users": premium,
+            "active_today": active_today,
         }
 
 
@@ -235,10 +274,24 @@ class UserManager:
                 "id": u["id"],
                 "username": u["username"],
                 "plan": u["plan"],
-                "analyses_today": u["analysis_count_today"]
+                "analyses_today": u["analysis_count_today"],
+                "is_admin": u.get("is_admin", False),
+                "last_analysis": u.get("last_analysis")
             })
 
         return result
+
+    def add_admin(self, user_id: int):
+        user = self.get_or_create_user(user_id)
+        user["is_admin"] = True
+        user["plan"] = "premium"
+
+        if user_id not in self.admin_ids:
+            self.admin_ids.append(user_id)
+            self.admin_ids.sort()
+
+        self.save_users()
+        return True
 
 
     def get_all_user_ids(self):

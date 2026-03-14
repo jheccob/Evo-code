@@ -3313,3 +3313,14 @@ NameError: name 'status' is not defined. Did you mean: 'stats'?
 2026-03-14 15:20:56,752 - main_production - INFO - python-telegram-bot importado com sucesso
 2026-03-14 15:24:32,227 - main_production - INFO - python-telegram-bot importado com sucesso
 2026-03-14 15:24:41,225 - main_production - INFO - Serviços importados com sucesso
+2026-03-14 16:01:49,300 - main_production - INFO - python-telegram-bot importado com sucesso
+2026-03-14 16:02:00,505 - telegram_bot - INFO - python-telegram-bot v22.6 importado com sucesso
+2026-03-14 16:02:48,587 - main_production - INFO - Serviços importados com sucesso
+2026-03-14 16:04:11,629 - main_production - INFO - python-telegram-bot importado com sucesso
+2026-03-14 16:04:13,228 - telegram_bot - INFO - python-telegram-bot v22.6 importado com sucesso
+2026-03-14 16:04:32,740 - main_production - INFO - Serviços importados com sucesso
+2026-03-14 16:04:32,754 - services.telegram_service - INFO - Telegram service usando v22.6
+2026-03-14 16:39:16,235 - main_production - INFO - python-telegram-bot importado com sucesso
+2026-03-14 16:39:43,055 - telegram_bot - INFO - python-telegram-bot v22.6 importado com sucesso
+2026-03-14 16:43:49,176 - main_production - INFO - Serviços importados com sucesso
+2026-03-14 16:43:49,294 - services.telegram_service - INFO - Telegram service usando v22.6

@@ -9,6 +9,12 @@ import logging
 import sys
 import time
 
+# Avoid UnicodeEncodeError on Windows consoles when logs contain non-ASCII text.
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
 # =========================
 # LOG CONFIG
 # =========================
@@ -74,7 +80,7 @@ def main():
                 raise Exception("Config inválida")
 
             # iniciar bot
-            telegram_bot = TelegramTradingBot()
+            telegram_bot = TelegramTradingBot(allow_simulated_data=False)
 
             if not telegram_bot.is_configured():
                 raise Exception("Bot Telegram não está configurado corretamente")

@@ -2,10 +2,13 @@
 import ccxt
 import pandas as pd
 import numpy as np
+import logging
 from datetime import datetime
 from typing import Dict, Optional, Tuple
 from trading_bot import TradingBot
-from config.exchange_config import ExchangeConfig
+from config import ExchangeConfig
+
+logger = logging.getLogger(__name__)
 
 class FuturesTrading(TradingBot):
     """
@@ -57,7 +60,7 @@ class FuturesTrading(TradingBot):
                 'currency': 'USDT'
             }
         except Exception as e:
-            print(f"Erro ao obter saldo USDT: {e}")
+            logger.error("Erro ao obter saldo USDT: %s", e)
             return None
     
     def calculate_position_size(self, balance: float, price: float, signal_strength: float = 1.0):
@@ -153,7 +156,7 @@ class FuturesTrading(TradingBot):
             return stop_order
             
         except Exception as e:
-            print(f"Erro ao criar stop loss: {e}")
+            logger.error("Erro ao criar stop loss: %s", e)
             return None
     
     def _create_take_profit_order(self, symbol: str, side: str, quantity: float, 
@@ -177,7 +180,7 @@ class FuturesTrading(TradingBot):
             return tp_order
             
         except Exception as e:
-            print(f"Erro ao criar take profit: {e}")
+            logger.error("Erro ao criar take profit: %s", e)
             return None
     
     def get_open_positions(self):
@@ -203,7 +206,7 @@ class FuturesTrading(TradingBot):
             return open_positions
             
         except Exception as e:
-            print(f"Erro ao obter posições: {e}")
+            logger.error("Erro ao obter posicoes: %s", e)
             return []
     
     def close_position(self, symbol: str, reduce_only: bool = True):
@@ -361,7 +364,7 @@ class FuturesTrading(TradingBot):
                 'next_funding_time': funding_rate['fundingDatetime']
             }
         except Exception as e:
-            print(f"Erro ao obter funding rate: {e}")
+            logger.error("Erro ao obter funding rate: %s", e)
             return None
     
     def calculate_liquidation_price(self, entry_price: float, leverage: int, 
@@ -407,5 +410,5 @@ class FuturesTrading(TradingBot):
             
             return sorted(usdt_futures)
         except Exception as e:
-            print(f"Erro ao obter pares USDT: {e}")
+            logger.error("Erro ao obter pares USDT: %s", e)
             return ["BTC/USDT", "ETH/USDT", "XLM/USDT"]  # fallback

@@ -9,6 +9,7 @@ import os
 from datetime import datetime, timedelta, date
 import asyncio
 import threading
+import logging
 
 # Importar funções de fuso horário brasileiro
 from utils.timezone_utils import now_brazil, format_brazil_time, get_brazil_datetime_naive, BRAZIL_TZ
@@ -17,7 +18,7 @@ from utils.timezone_utils import now_brazil, format_brazil_time, get_brazil_date
 from database.database import db
 from trading_bot import TradingBot
 from indicators import TechnicalIndicators
-from config.exchange_config import ExchangeConfig
+from config import AppConfig, ExchangeConfig, ProductionConfig
 
 # Importar serviço seguro do Telegram
 try:
@@ -43,7 +44,20 @@ except ImportError:
             return False, "❌ Telegram não disponível"
     TELEGRAM_AVAILABLE = False
 
-from backtest import BacktestEngine
+try:
+    from backtest import BacktestEngine
+except ImportError:
+    class BacktestEngine:
+        def __init__(self):
+            self._error = "Modulo backtest nao encontrado"
+
+        def run_backtest(self, *args, **kwargs):
+            raise RuntimeError(self._error)
+
+        def get_trade_summary_df(self):
+            return pd.DataFrame()
+
+logger = logging.getLogger(__name__)
 
 # Helper function for timestamp comparison
 def _compare_timestamps(ts1, ts2):
@@ -133,7 +147,6 @@ st.sidebar.title("🔧 Configurações")
 
 # Exchange selection
 st.sidebar.subheader("🌎 Exchange")
-from config.exchange_config import ExchangeConfig
 
 # Usar sempre Binance WebSocket público
 selected_exchange = 'binance'
@@ -174,9 +187,9 @@ if 'telegram_trading_bot_started' not in st.session_state:
         # Import and start telegram bot in background
         import start_telegram_bot
         st.session_state.telegram_trading_bot_started = True
-        print("🚀 Bot Telegram inicializado em background")
+        logger.info("Bot Telegram inicializado em background")
     except Exception as e:
-        print(f"⚠️ Erro ao inicializar bot Telegram: {e}")
+        logger.warning("Erro ao inicializar bot Telegram: %s", e)
         st.session_state.telegram_trading_bot_started = False
     # Configuração será carregada automaticamente no __init__
 
@@ -207,7 +220,6 @@ if 'backtest_results' not in st.session_state:
 if st.sidebar.button("🧪 Testar WebSocket Binance"):
     with st.spinner("Testando WebSocket público da Binance Futures..."):
         try:
-            from config.exchange_config import ExchangeConfig
             success, message = ExchangeConfig.test_connection('binance')
             
             if success:
@@ -316,7 +328,6 @@ with st.sidebar.expander("📈 Day Trading Otimizado", expanded=True):
     day_trading_mode = st.checkbox("🚀 Modo Day Trading", value=True, help="Configurações otimizadas para operações rápidas")
 
     if day_trading_mode:
-        from config.app_config import AppConfig
         day_settings = AppConfig.get_day_trading_settings(timeframe)
 
         st.success(f"✅ **Day Trading {timeframe}**: RSI {day_settings['rsi_oversold']}-{day_settings['rsi_overbought']}")
@@ -335,7 +346,6 @@ with st.sidebar.expander("📈 Day Trading Otimizado", expanded=True):
 
     else:
         # Aplicar configurações automáticas baseadas no timeframe
-        from config.app_config import AppConfig
         crypto_settings = AppConfig.get_crypto_timeframe_settings(timeframe)
         st.info(f"📊 **Auto-Config {timeframe}**: RSI {crypto_settings['rsi_oversold']}-{crypto_settings['rsi_overbought']}, Confiança {crypto_settings['min_confidence']}%")
 
@@ -513,7 +523,14 @@ config_changed = st.session_state.trading_bot.update_config(
 
 # Só mostrar logs se a configuração mudou
 if config_changed:
-    print(f"🔄 Configuração do bot atualizada: {symbol} {timeframe} RSI({rsi_period}) {rsi_min}-{rsi_max}")
+    logger.info(
+        "Configuracao do bot atualizada: %s %s RSI(%s) %s-%s",
+        symbol,
+        timeframe,
+        rsi_period,
+        rsi_min,
+        rsi_max
+    )
 
 # Main dashboard
 st.title("📈 Trading Signals Dashboard")
@@ -545,9 +562,13 @@ except ImportError:
 if 'user_manager' not in st.session_state:
     st.session_state.user_manager = UserManager()
 
-# Telegram trading bot disabled for now due to import issues
-# if 'telegram_trading_bot' not in st.session_state:
-#     st.session_state.telegram_trading_bot = TelegramTradingBot()
+if 'telegram_trading_bot' not in st.session_state:
+    try:
+        from telegram_bot import TelegramTradingBot
+        st.session_state.telegram_trading_bot = TelegramTradingBot(allow_simulated_data=False)
+    except Exception as e:
+        logger.warning("Erro ao inicializar telegram_trading_bot do admin: %s", e)
+        st.session_state.telegram_trading_bot = None
 
 # Initialize session state for multi-symbol data
 if 'multi_symbol_data' not in st.session_state:
@@ -1057,7 +1078,10 @@ if not st.session_state.telegram_bot.is_configured() and not has_secrets_main:
         with col1:
             if st.button("✅ Configurar", key="config_telegram_main"):
                 if telegram_token_main and telegram_chat_id_main:
-                    success = st.session_state.telegram_bot.configure(telegram_token_main, telegram_chat_id_main)
+                    success, message = st.session_state.telegram_bot.configure(
+                        telegram_token_main,
+                        telegram_chat_id_main
+                    )
                     if success:
                         st.session_state.telegram_notifications = True
                         try:
@@ -1074,7 +1098,7 @@ if not st.session_state.telegram_bot.is_configured() and not has_secrets_main:
                         except Exception as e:
                             st.error(f"❌ Erro ao testar: {str(e)}")
                     else:
-                        st.error("❌ Erro na configuração")
+                        st.error(f"❌ {message}")
                 else:
                     st.warning("⚠️ Preencha ambos os campos")
 
@@ -1082,7 +1106,11 @@ if not st.session_state.telegram_bot.is_configured() and not has_secrets_main:
             if telegram_token_main and telegram_chat_id_main:
                 if st.button("📤 Testar", key="test_telegram_main"):
                     temp_bot = st.session_state.telegram_bot
-                    if temp_bot.configure(telegram_token_main, telegram_chat_id_main):
+                    success, message = temp_bot.configure(
+                        telegram_token_main,
+                        telegram_chat_id_main
+                    )
+                    if success:
                         try:
                             loop = asyncio.new_event_loop()
                             asyncio.set_event_loop(loop)
@@ -1095,6 +1123,8 @@ if not st.session_state.telegram_bot.is_configured() and not has_secrets_main:
                                 st.error(f"❌ {message}")
                         except Exception as e:
                             st.error(f"❌ Erro: {str(e)}")
+                    else:
+                        st.error(f"❌ {message}")
 
         with col3:
             st.info("💡 **Como configurar:**\n1. Crie um bot no @BotFather\n2. Obtenha seu Chat ID no @userinfobot\n3. Configure aqui")
@@ -2591,13 +2621,16 @@ with tab3:
                 )
 
 # Admin Panel Tab
-with tab4:
+with tab5:
     st.subheader("👑 Painel Administrativo")
 
     # Admin authentication
     admin_password = st.text_input("🔐 Senha de Admin", type="password", key="admin_pass")
+    configured_admin_password = ProductionConfig.ADMIN_PANEL_PASSWORD
 
-    if admin_password == "admin123":  # Change this password
+    if not configured_admin_password:
+        st.warning("⚠️ Configure ADMIN_PANEL_PASSWORD para liberar o painel admin.")
+    elif admin_password == configured_admin_password:
         st.success("✅ Acesso autorizado!")
 
         # Admin stats
@@ -2655,6 +2688,7 @@ with tab4:
         # Telegram Bot Configuration
         st.markdown("---")
         st.subheader("🤖 Configuração do Bot Telegram")
+        admin_telegram_bot = st.session_state.get("telegram_trading_bot")
 
         bot_token_admin = st.text_input(
             "Token do Bot Telegram",
@@ -2667,19 +2701,19 @@ with tab4:
 
         with col1:
             if st.button("🚀 Configurar Bot") and bot_token_admin:
-                if st.session_state.telegram_trading_bot.configure(bot_token_admin):
+                if admin_telegram_bot and admin_telegram_bot.configure(bot_token_admin):
                     st.success("✅ Bot Telegram configurado com sucesso!")
                     st.info("💡 O bot agora está pronto para receber comandos dos usuários!")
                 else:
                     st.error("❌ Erro na configuração do bot")
 
         with col2:
-            if st.button("📤 Testar Bot") and st.session_state.telegram_trading_bot.is_configured():
+            if st.button("📤 Testar Bot") and admin_telegram_bot and admin_telegram_bot.is_configured():
                 try:
                     loop = asyncio.new_event_loop()
                     asyncio.set_event_loop(loop)
                     success, message = loop.run_until_complete(
-                        st.session_state.telegram_trading_bot.test_connection()
+                        admin_telegram_bot.test_connection()
                     )
                     if success:
                         st.success(f"✅ {message}")
@@ -2689,9 +2723,11 @@ with tab4:
                     st.error(f"❌ Erro: {str(e)}")
 
         # Bot status
-        if st.session_state.telegram_trading_bot.is_configured():
+        if admin_telegram_bot and admin_telegram_bot.is_configured():
             st.success("🟢 Bot Telegram está ativo e pronto para uso!")
             st.info("💬 Os usuários podem usar comandos como /analise BTC/USDT")
+        elif admin_telegram_bot is None:
+            st.warning("🟡 Bot Telegram admin não pôde ser inicializado neste ambiente")
         else:
             st.warning("🟡 Bot Telegram não configurado")
 
