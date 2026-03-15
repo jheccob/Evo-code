@@ -33,6 +33,28 @@ class UserManagerSmokeTests(unittest.TestCase):
             if os.path.exists(temp_file.name):
                 os.remove(temp_file.name)
 
+    def test_sqlite_backend_is_usable_for_runtime_storage(self):
+        temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".db")
+        temp_file.close()
+
+        try:
+            if os.path.exists(temp_file.name):
+                os.remove(temp_file.name)
+
+            manager = UserManager(db_file=temp_file.name)
+            manager.get_or_create_user(321, username="sqlite_user", first_name="SQLite")
+            manager.record_analysis(321)
+
+            user = manager.get_user(321)
+            stats = manager.get_user_stats()
+
+            self.assertEqual(user["username"], "sqlite_user")
+            self.assertEqual(user["analysis_count_today"], 1)
+            self.assertEqual(stats["total_users"], 1)
+        finally:
+            if os.path.exists(temp_file.name):
+                os.remove(temp_file.name)
+
 
 class BillingServiceSmokeTests(unittest.TestCase):
     def test_billing_service_fails_safe_without_stripe_config(self):
@@ -86,6 +108,15 @@ class ProductionConfigSmokeTests(unittest.TestCase):
              mock.patch.object(ProductionConfig, "TELEGRAM_CHAT_ID", ""):
             self.assertTrue(ProductionConfig.validate_polling_runtime_config())
             self.assertFalse(ProductionConfig.validate_config())
+
+    def test_app_config_db_path_can_be_overridden_by_environment(self):
+        import importlib
+        import config.config as config_module
+
+        with mock.patch.dict(os.environ, {"TRADING_BOT_DB_PATH": "/data/trading_bot.db"}, clear=False):
+            reloaded = importlib.reload(config_module)
+            self.assertEqual(reloaded.AppConfig.DB_PATH, "/data/trading_bot.db")
+            importlib.reload(config_module)
 
 
 class RailwayConfigSmokeTests(unittest.TestCase):

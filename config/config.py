@@ -28,7 +28,7 @@ class AppConfig:
     DEFAULT_INITIAL_BALANCE = 10000
     MAX_BACKTEST_DAYS = 90
 
-    DB_PATH = "data/trading_bot.db"
+    DB_PATH = os.getenv("TRADING_BOT_DB_PATH", "data/trading_bot.db").strip() or "data/trading_bot.db"
     MAX_SIGNALS_HISTORY = 1000
 
     CHART_HEIGHT = 800

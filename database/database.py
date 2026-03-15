@@ -7,9 +7,10 @@ import json
 from datetime import datetime
 from typing import List, Dict, Optional, Any
 from utils.timezone_utils import get_brazil_datetime_naive, format_brazil_time
+from config import AppConfig
 
 class TradingDatabase:
-    def __init__(self, db_path: str = "data/trading_bot.db"):
+    def __init__(self, db_path: str = AppConfig.DB_PATH):
         self.db_path = db_path
         # Criar diretório se não existir
         os.makedirs(os.path.dirname(db_path), exist_ok=True)

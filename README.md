@@ -35,6 +35,7 @@ Passos:
    - `TELEGRAM_BOT_TOKEN` obrigatoria
    - `ADMIN_USERS` opcional
    - `PYTHONUNBUFFERED=1` recomendado
+   - `TRADING_BOT_DB_PATH=/data/trading_bot.db` recomendado se voce anexar um Volume
    - `TELEGRAM_CHAT_ID` opcional
 4. Faça o deploy e acompanhe os logs.
 
@@ -46,6 +47,7 @@ Observacao:
 - `ON_FAILURE` foi escolhido para funcionar tambem em planos que nao suportam `ALWAYS`.
 - O processo agora sai com codigo diferente de zero em falha real, permitindo restart automatico pelo Railway.
 - Para operacao realmente 24/7, prefira um plano pago do Railway. Em Free/trial, o restart policy tem limitacoes.
+- Para nao perder usuarios e historico em redeploy, anexe um `Volume` ao service e use `TRADING_BOT_DB_PATH` apontando para o mount path, por exemplo `/data/trading_bot.db`.
 
 ## Deploy no Google Cloud Free
 
