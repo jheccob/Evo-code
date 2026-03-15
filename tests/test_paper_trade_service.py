@@ -331,6 +331,97 @@ class PaperTradeServiceTests(unittest.TestCase):
         self.assertGreaterEqual(len(readiness["reasons"]), 3)
         self.assertIsNone(promoted)
 
+    def test_backtest_save_creates_strategy_evaluation_snapshot(self):
+        strategy_version = build_strategy_version("BTC/USDT", "5m", 14, 20, 70, 0.0, 0.0, True, False)
+
+        run_id = self.database.save_backtest_result(
+            {
+                "symbol": "BTC/USDT",
+                "timeframe": "5m",
+                "strategy_version": strategy_version,
+                "start_date": "2026-01-01T00:00:00",
+                "end_date": "2026-01-10T00:00:00",
+                "initial_balance": 1000.0,
+                "final_balance": 1080.0,
+                "net_profit": 80.0,
+                "total_return_pct": 8.0,
+                "total_trades": 20,
+                "winning_trades": 12,
+                "losing_trades": 8,
+                "win_rate": 60.0,
+                "max_drawdown": 9.0,
+                "sharpe_ratio": 1.4,
+                "profit_factor": 1.5,
+                "avg_profit": 1.2,
+                "avg_loss": -0.8,
+                "expectancy_pct": 0.5,
+                "rsi_period": 14,
+                "rsi_min": 20,
+                "rsi_max": 70,
+                "require_volume": True,
+                "out_of_sample_return_pct": 5.0,
+                "out_of_sample_profit_factor": 1.4,
+                "out_of_sample_expectancy_pct": 0.4,
+                "out_of_sample_passed": True,
+                "walk_forward_passed": True,
+                "walk_forward_pass_rate_pct": 100.0,
+                "walk_forward_avg_oos_profit_factor": 1.3,
+            },
+            [],
+        )
+
+        evaluations = self.database.get_strategy_evaluations(
+            symbol="BTC/USDT",
+            timeframe="5m",
+            strategy_version=strategy_version,
+            evaluation_type="backtest",
+        )
+
+        self.assertIsInstance(run_id, int)
+        self.assertEqual(len(evaluations), 1)
+        self.assertEqual(evaluations[0]["evaluation_type"], "backtest")
+        self.assertEqual(evaluations[0]["edge_status"], "awaiting_live_data")
+        self.assertGreater(evaluations[0]["quality_score"], 0)
+
+    def test_close_paper_trade_creates_strategy_evaluation_snapshot(self):
+        strategy_version = build_strategy_version("ETH/USDT", "15m", 14, 25, 75, 0.0, 0.0, True, False)
+
+        trade_id = self.database.create_paper_trade(
+            {
+                "symbol": "ETH/USDT",
+                "timeframe": "15m",
+                "strategy_version": strategy_version,
+                "signal": "COMPRA",
+                "side": "long",
+                "source": "test",
+                "entry_timestamp": "2026-01-01T10:00:00",
+                "entry_price": 100.0,
+                "planned_position_notional": 1000.0,
+                "account_reference_balance": 10000.0,
+                "status": "OPEN",
+            }
+        )
+
+        self.database.close_paper_trade(
+            trade_id=trade_id,
+            exit_timestamp="2026-01-01T10:05:00",
+            exit_price=104.0,
+            outcome="WIN",
+            close_reason="TAKE_PROFIT",
+            result_pct=4.0,
+        )
+
+        evaluations = self.database.get_strategy_evaluations(
+            symbol="ETH/USDT",
+            timeframe="15m",
+            strategy_version=strategy_version,
+            evaluation_type="paper",
+        )
+
+        self.assertEqual(len(evaluations), 1)
+        self.assertEqual(evaluations[0]["paper_closed_trades"], 1)
+        self.assertEqual(evaluations[0]["evaluation_type"], "paper")
+
     def test_strategy_governance_summary_classifies_profiles_objectively(self):
         strategy_ready = build_strategy_version("BTC/USDT", "5m", 14, 20, 70, 0.0, 0.0, True, False)
         strategy_active = build_strategy_version("ETH/USDT", "15m", 14, 25, 75, 0.0, 0.0, True, False)

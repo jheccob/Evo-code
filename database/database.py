@@ -242,6 +242,43 @@ class TradingDatabase:
             )
         ''')
 
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS strategy_evaluations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                symbol TEXT NOT NULL,
+                timeframe TEXT NOT NULL,
+                strategy_version TEXT,
+                evaluation_type TEXT NOT NULL DEFAULT 'combined',
+                total_backtest_runs INTEGER DEFAULT 0,
+                total_backtest_trades INTEGER DEFAULT 0,
+                avg_return_pct REAL DEFAULT 0.0,
+                avg_profit_factor REAL DEFAULT 0.0,
+                avg_expectancy_pct REAL DEFAULT 0.0,
+                avg_out_of_sample_return_pct REAL DEFAULT 0.0,
+                avg_out_of_sample_profit_factor REAL DEFAULT 0.0,
+                avg_out_of_sample_expectancy_pct REAL DEFAULT 0.0,
+                passed_oos_runs INTEGER DEFAULT 0,
+                avg_walk_forward_pass_rate_pct REAL DEFAULT 0.0,
+                avg_walk_forward_oos_return_pct REAL DEFAULT 0.0,
+                avg_walk_forward_oos_profit_factor REAL DEFAULT 0.0,
+                passed_walk_forward_runs INTEGER DEFAULT 0,
+                avg_max_drawdown REAL DEFAULT 0.0,
+                total_net_profit REAL DEFAULT 0.0,
+                paper_closed_trades INTEGER DEFAULT 0,
+                paper_win_rate REAL DEFAULT 0.0,
+                paper_avg_result_pct REAL DEFAULT 0.0,
+                paper_total_result_pct REAL DEFAULT 0.0,
+                paper_profit_factor REAL DEFAULT 0.0,
+                baseline_source TEXT,
+                edge_status TEXT,
+                governance_status TEXT,
+                quality_score REAL DEFAULT 0.0,
+                notes TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                created_at_br TEXT
+            )
+        ''')
+
         self._ensure_column(cursor, 'trading_signals', 'strategy_version', 'TEXT')
         self._ensure_column(cursor, 'backtest_runs', 'strategy_version', 'TEXT')
         self._ensure_column(cursor, 'backtest_trades', 'strategy_version', 'TEXT')
@@ -839,19 +876,37 @@ class TradingDatabase:
     ):
         """Fechar paper trade com outcome calculado."""
         conn = self.get_connection()
-        cursor = conn.cursor()
-        cursor.execute('''
-            UPDATE paper_trades
-            SET status = 'CLOSED',
-                outcome = ?,
-                close_reason = ?,
-                exit_timestamp = ?,
-                exit_price = ?,
-                result_pct = ?
-            WHERE id = ?
-        ''', (outcome, close_reason, exit_timestamp, exit_price, result_pct, trade_id))
-        conn.commit()
-        conn.close()
+        trade = None
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                'SELECT symbol, timeframe, strategy_version FROM paper_trades WHERE id = ?',
+                (trade_id,),
+            )
+            trade = cursor.fetchone()
+            cursor.execute('''
+                UPDATE paper_trades
+                SET status = 'CLOSED',
+                    outcome = ?,
+                    close_reason = ?,
+                    exit_timestamp = ?,
+                    exit_price = ?,
+                    result_pct = ?
+                WHERE id = ?
+            ''', (outcome, close_reason, exit_timestamp, exit_price, result_pct, trade_id))
+            conn.commit()
+        finally:
+            conn.close()
+
+        if trade:
+            self.compute_strategy_metrics(
+                symbol=trade['symbol'],
+                timeframe=trade['timeframe'],
+                strategy_version=trade['strategy_version'],
+                evaluation_type='paper',
+                persist=True,
+                notes=f"Snapshot apos fechamento do paper trade #{trade_id}",
+            )
 
     def get_paper_trade_summary(
         self,
@@ -1070,12 +1125,21 @@ class TradingDatabase:
                 ''', trade_rows)
 
             conn.commit()
-            return run_id
         except Exception:
             conn.rollback()
             raise
         finally:
             conn.close()
+
+        self.compute_strategy_metrics(
+            symbol=run_data.get('symbol'),
+            timeframe=run_data.get('timeframe'),
+            strategy_version=run_data.get('strategy_version'),
+            evaluation_type='backtest',
+            persist=True,
+            notes=f"Snapshot apos backtest run #{run_id}",
+        )
+        return run_id
 
     def get_backtest_runs(
         self,
@@ -1184,6 +1248,217 @@ class TradingDatabase:
 
         conn.close()
         return summary
+
+    def save_strategy_evaluation(self, evaluation_data: Dict[str, Any]) -> int:
+        """Persistir um snapshot consolidado de metrics da estrategia."""
+        conn = self.get_connection()
+        try:
+            cursor = conn.cursor()
+            column_values = {
+                'symbol': evaluation_data.get('symbol'),
+                'timeframe': evaluation_data.get('timeframe'),
+                'strategy_version': evaluation_data.get('strategy_version'),
+                'evaluation_type': evaluation_data.get('evaluation_type', 'combined'),
+                'total_backtest_runs': evaluation_data.get('total_backtest_runs', 0),
+                'total_backtest_trades': evaluation_data.get('total_backtest_trades', 0),
+                'avg_return_pct': evaluation_data.get('avg_return_pct', 0.0),
+                'avg_profit_factor': evaluation_data.get('avg_profit_factor', 0.0),
+                'avg_expectancy_pct': evaluation_data.get('avg_expectancy_pct', 0.0),
+                'avg_out_of_sample_return_pct': evaluation_data.get('avg_out_of_sample_return_pct', 0.0),
+                'avg_out_of_sample_profit_factor': evaluation_data.get('avg_out_of_sample_profit_factor', 0.0),
+                'avg_out_of_sample_expectancy_pct': evaluation_data.get('avg_out_of_sample_expectancy_pct', 0.0),
+                'passed_oos_runs': evaluation_data.get('passed_oos_runs', 0),
+                'avg_walk_forward_pass_rate_pct': evaluation_data.get('avg_walk_forward_pass_rate_pct', 0.0),
+                'avg_walk_forward_oos_return_pct': evaluation_data.get('avg_walk_forward_oos_return_pct', 0.0),
+                'avg_walk_forward_oos_profit_factor': evaluation_data.get('avg_walk_forward_oos_profit_factor', 0.0),
+                'passed_walk_forward_runs': evaluation_data.get('passed_walk_forward_runs', 0),
+                'avg_max_drawdown': evaluation_data.get('avg_max_drawdown', 0.0),
+                'total_net_profit': evaluation_data.get('total_net_profit', 0.0),
+                'paper_closed_trades': evaluation_data.get('paper_closed_trades', 0),
+                'paper_win_rate': evaluation_data.get('paper_win_rate', 0.0),
+                'paper_avg_result_pct': evaluation_data.get('paper_avg_result_pct', 0.0),
+                'paper_total_result_pct': evaluation_data.get('paper_total_result_pct', 0.0),
+                'paper_profit_factor': evaluation_data.get('paper_profit_factor', 0.0),
+                'baseline_source': evaluation_data.get('baseline_source'),
+                'edge_status': evaluation_data.get('edge_status'),
+                'governance_status': evaluation_data.get('governance_status'),
+                'quality_score': evaluation_data.get('quality_score', 0.0),
+                'notes': evaluation_data.get('notes'),
+                'created_at_br': format_brazil_time(),
+            }
+            columns = list(column_values.keys())
+            placeholders = ', '.join(['?'] * len(columns))
+            cursor.execute(
+                f"INSERT INTO strategy_evaluations ({', '.join(columns)}) VALUES ({placeholders})",
+                tuple(column_values[column] for column in columns),
+            )
+            conn.commit()
+            return cursor.lastrowid
+        finally:
+            conn.close()
+
+    def get_strategy_evaluations(
+        self,
+        symbol: str = None,
+        timeframe: str = None,
+        strategy_version: str = None,
+        evaluation_type: str = None,
+        limit: int = 50,
+    ) -> List[Dict]:
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            '''
+            SELECT * FROM strategy_evaluations
+            WHERE (? IS NULL OR symbol = ?)
+              AND (? IS NULL OR timeframe = ?)
+              AND (? IS NULL OR strategy_version = ?)
+              AND (? IS NULL OR evaluation_type = ?)
+            ORDER BY created_at DESC, id DESC
+            LIMIT ?
+            ''',
+            (
+                symbol,
+                symbol,
+                timeframe,
+                timeframe,
+                strategy_version,
+                strategy_version,
+                evaluation_type,
+                evaluation_type,
+                limit,
+            ),
+        )
+        rows = [dict(row) for row in cursor.fetchall()]
+        conn.close()
+        return rows
+
+    def compute_strategy_metrics(
+        self,
+        symbol: str = None,
+        timeframe: str = None,
+        strategy_version: str = None,
+        evaluation_type: str = "combined",
+        persist: bool = False,
+        notes: str = None,
+    ) -> Dict[str, Any]:
+        """Consolidar metrics de estrategia a partir de backtest + paper + governanca."""
+        backtest_summary = self.get_backtest_performance_summary(
+            symbol=symbol,
+            timeframe=timeframe,
+            strategy_version=strategy_version,
+        )
+        paper_summary = self.get_paper_trade_summary(
+            symbol=symbol,
+            timeframe=timeframe,
+            strategy_version=strategy_version,
+        )
+        edge_summary = self.get_edge_monitor_summary(
+            symbol=symbol,
+            timeframe=timeframe,
+            strategy_version=strategy_version,
+        )
+
+        governance_status = None
+        governance_summary = self.get_strategy_governance_summary(
+            symbol=symbol,
+            timeframe=timeframe,
+            active_only=False,
+            limit=100,
+        )
+        for row in governance_summary.get("profiles", []):
+            if strategy_version is not None and row.get("strategy_version") != strategy_version:
+                continue
+            governance_status = row.get("governance_status")
+            symbol = row.get("symbol") or symbol
+            timeframe = row.get("timeframe") or timeframe
+            strategy_version = row.get("strategy_version") or strategy_version
+            break
+
+        if symbol is None and backtest_summary.get("breakdown_by_market"):
+            symbol = backtest_summary["breakdown_by_market"][0].get("symbol")
+        if timeframe is None and backtest_summary.get("breakdown_by_market"):
+            timeframe = backtest_summary["breakdown_by_market"][0].get("timeframe")
+
+        quality_score = self._compute_strategy_quality_score(
+            backtest_summary=backtest_summary,
+            paper_summary=paper_summary,
+            edge_summary=edge_summary,
+        )
+
+        paper_profit_factor = paper_summary.get('profit_factor', 0.0)
+        if paper_profit_factor == float('inf'):
+            paper_profit_factor = 999.0
+
+        metrics = {
+            "symbol": symbol,
+            "timeframe": timeframe,
+            "strategy_version": strategy_version,
+            "evaluation_type": evaluation_type,
+            "total_backtest_runs": int(backtest_summary.get('total_runs', 0) or 0),
+            "total_backtest_trades": int(backtest_summary.get('total_trades', 0) or 0),
+            "avg_return_pct": round(float(backtest_summary.get('avg_return_pct', 0.0) or 0.0), 4),
+            "avg_profit_factor": round(float(backtest_summary.get('avg_profit_factor', 0.0) or 0.0), 4),
+            "avg_expectancy_pct": round(float(backtest_summary.get('avg_expectancy_pct', 0.0) or 0.0), 4),
+            "avg_out_of_sample_return_pct": round(float(backtest_summary.get('avg_out_of_sample_return_pct', 0.0) or 0.0), 4),
+            "avg_out_of_sample_profit_factor": round(float(backtest_summary.get('avg_out_of_sample_profit_factor', 0.0) or 0.0), 4),
+            "avg_out_of_sample_expectancy_pct": round(float(backtest_summary.get('avg_out_of_sample_expectancy_pct', 0.0) or 0.0), 4),
+            "passed_oos_runs": int(backtest_summary.get('passed_oos_runs', 0) or 0),
+            "avg_walk_forward_pass_rate_pct": round(float(backtest_summary.get('avg_walk_forward_pass_rate_pct', 0.0) or 0.0), 4),
+            "avg_walk_forward_oos_return_pct": round(float(backtest_summary.get('avg_walk_forward_oos_return_pct', 0.0) or 0.0), 4),
+            "avg_walk_forward_oos_profit_factor": round(float(backtest_summary.get('avg_walk_forward_oos_profit_factor', 0.0) or 0.0), 4),
+            "passed_walk_forward_runs": int(backtest_summary.get('passed_walk_forward_runs', 0) or 0),
+            "avg_max_drawdown": round(float(backtest_summary.get('avg_max_drawdown', 0.0) or 0.0), 4),
+            "total_net_profit": round(float(backtest_summary.get('total_net_profit', 0.0) or 0.0), 4),
+            "paper_closed_trades": int(paper_summary.get('closed_trades', 0) or 0),
+            "paper_win_rate": round(float(paper_summary.get('win_rate', 0.0) or 0.0), 4),
+            "paper_avg_result_pct": round(float(paper_summary.get('avg_result_pct', 0.0) or 0.0), 4),
+            "paper_total_result_pct": round(float(paper_summary.get('total_result_pct', 0.0) or 0.0), 4),
+            "paper_profit_factor": round(float(paper_profit_factor or 0.0), 4),
+            "baseline_source": edge_summary.get('baseline_source'),
+            "edge_status": edge_summary.get('status'),
+            "governance_status": governance_status or "unknown",
+            "quality_score": quality_score,
+            "notes": notes,
+        }
+
+        if persist:
+            metrics["evaluation_id"] = self.save_strategy_evaluation(metrics)
+
+        return metrics
+
+    def _compute_strategy_quality_score(
+        self,
+        backtest_summary: Dict[str, Any],
+        paper_summary: Dict[str, Any],
+        edge_summary: Dict[str, Any],
+    ) -> float:
+        score = 0.0
+
+        score += min(max(float(backtest_summary.get('avg_profit_factor', 0.0) or 0.0) - 1.0, 0.0), 1.5) * 18
+        score += min(max(float(backtest_summary.get('avg_out_of_sample_profit_factor', 0.0) or 0.0) - 1.0, 0.0), 1.5) * 22
+        score += min(max(float(backtest_summary.get('avg_expectancy_pct', 0.0) or 0.0), 0.0), 5.0) * 4
+        score += min(max(float(backtest_summary.get('avg_out_of_sample_expectancy_pct', 0.0) or 0.0), 0.0), 5.0) * 5
+        score += min(max(float(backtest_summary.get('avg_walk_forward_pass_rate_pct', 0.0) or 0.0), 0.0), 100.0) * 0.16
+        score += min(max(float(paper_summary.get('profit_factor', 0.0) or 0.0) - 1.0, 0.0), 1.5) * 20
+        score += min(max(float(paper_summary.get('avg_result_pct', 0.0) or 0.0), 0.0), 3.0) * 5
+
+        if edge_summary.get('status') == 'aligned':
+            score += 10
+        elif edge_summary.get('status') == 'watchlist':
+            score += 4
+        elif edge_summary.get('status') == 'degraded':
+            score -= 12
+
+        score -= min(max(float(backtest_summary.get('avg_max_drawdown', 0.0) or 0.0), 0.0), 30.0) * 1.1
+
+        total_trades = int(backtest_summary.get('total_trades', 0) or 0)
+        if total_trades < 10:
+            score -= 6
+        elif total_trades < 25:
+            score -= 3
+
+        return round(max(0.0, min(100.0, score)), 2)
 
     def get_edge_monitor_summary(
         self,
