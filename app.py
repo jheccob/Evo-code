@@ -194,6 +194,32 @@ def _compare_timestamps(ts1, ts2):
         # If comparison fails, assume it's a new signal
         return True
 
+
+def build_strategy_evaluation_display_df(evaluations):
+    if not evaluations:
+        return pd.DataFrame()
+
+    rows = []
+    for evaluation in evaluations:
+        rows.append(
+            {
+                "Criado em": evaluation.get("created_at_br"),
+                "Simbolo": evaluation.get("symbol"),
+                "Timeframe": evaluation.get("timeframe"),
+                "Versao": evaluation.get("strategy_version"),
+                "Origem": evaluation.get("evaluation_type"),
+                "Score": round(float(evaluation.get("quality_score", 0.0) or 0.0), 2),
+                "PF Backtest": round(float(evaluation.get("avg_profit_factor", 0.0) or 0.0), 2),
+                "PF OOS": round(float(evaluation.get("avg_out_of_sample_profit_factor", 0.0) or 0.0), 2),
+                "PF Paper": round(float(evaluation.get("paper_profit_factor", 0.0) or 0.0), 2),
+                "Paper Fechados": int(evaluation.get("paper_closed_trades", 0) or 0),
+                "Edge": evaluation.get("edge_status"),
+                "Governanca": evaluation.get("governance_status"),
+            }
+        )
+
+    return pd.DataFrame(rows)
+
 # Configure page
 st.set_page_config(
     page_title="Trading Signals Dashboard",
@@ -2701,6 +2727,74 @@ with tab2:
         except Exception as governance_error:
             st.info(f"Governanca de setups indisponivel: {governance_error}")
 
+        try:
+            recent_strategy_evaluations = db.get_strategy_evaluations(
+                symbol=result_symbol,
+                timeframe=result_timeframe,
+                strategy_version=result_strategy_version,
+                limit=5,
+            )
+            if not recent_strategy_evaluations:
+                recent_strategy_evaluations = db.get_strategy_evaluations(
+                    symbol=result_symbol,
+                    timeframe=result_timeframe,
+                    limit=5,
+                )
+            evaluation_overview = db.get_strategy_evaluation_overview(
+                symbol=result_symbol,
+                timeframe=result_timeframe,
+                limit=10,
+            )
+
+            st.markdown("### Strategy Evaluations")
+            latest_evaluation = recent_strategy_evaluations[0] if recent_strategy_evaluations else None
+            if latest_evaluation:
+                eval_col1, eval_col2, eval_col3, eval_col4 = st.columns(4)
+                with eval_col1:
+                    st.metric("Score Atual", f"{latest_evaluation.get('quality_score', 0):.1f}")
+                with eval_col2:
+                    st.metric("Origem", latest_evaluation.get("evaluation_type", "-"))
+                with eval_col3:
+                    st.metric("Edge", latest_evaluation.get("edge_status", "-"))
+                with eval_col4:
+                    st.metric("Governanca", latest_evaluation.get("governance_status", "-"))
+
+                st.caption(
+                    f"Snapshot mais recente: {latest_evaluation.get('created_at_br', '-')}"
+                    f" | PF Backtest {latest_evaluation.get('avg_profit_factor', 0):.2f}"
+                    f" | PF OOS {latest_evaluation.get('avg_out_of_sample_profit_factor', 0):.2f}"
+                    f" | PF Paper {latest_evaluation.get('paper_profit_factor', 0):.2f}"
+                )
+                st.dataframe(
+                    build_strategy_evaluation_display_df(recent_strategy_evaluations),
+                    width="stretch",
+                    hide_index=True,
+                )
+            else:
+                st.info("Ainda nao existem snapshots em strategy_evaluations para este mercado/timeframe.")
+
+            overview_counts = evaluation_overview.get("governance_counts", {})
+            edge_counts = evaluation_overview.get("edge_counts", {})
+            overview_col1, overview_col2, overview_col3, overview_col4 = st.columns(4)
+            with overview_col1:
+                st.metric("Setups Monitorados", evaluation_overview.get("total_strategies", 0))
+            with overview_col2:
+                st.metric("Aprovados", overview_counts.get("approved", 0))
+            with overview_col3:
+                st.metric("Bloqueados", overview_counts.get("blocked", 0))
+            with overview_col4:
+                st.metric("Edge Degradado", edge_counts.get("degraded", 0))
+
+            if evaluation_overview.get("rows"):
+                st.caption("Ultimo snapshot por estrategia neste mercado/timeframe.")
+                st.dataframe(
+                    build_strategy_evaluation_display_df(evaluation_overview["rows"]),
+                    width="stretch",
+                    hide_index=True,
+                )
+        except Exception as evaluation_error:
+            st.info(f"Strategy evaluations indisponiveis: {evaluation_error}")
+
         if optimization_results and optimization_results.get('rows'):
             optimization_summary = optimization_results.get('summary', {})
             best_optimization = optimization_results.get('best') or {}
@@ -3411,6 +3505,32 @@ with tab5:
                 users_df.loc[users_df['last_analysis'] != 'Nunca', 'last_analysis'] = pd.to_datetime(users_df.loc[users_df['last_analysis'] != 'Nunca', 'last_analysis']).dt.strftime('%d/%m/%Y %H:%M')
 
             st.dataframe(users_df, width='stretch', hide_index=True)
+
+        st.markdown("---")
+        st.subheader("Strategy Evaluations")
+
+        evaluation_overview = db.get_strategy_evaluation_overview(limit=25)
+        governance_counts = evaluation_overview.get("governance_counts", {})
+        edge_counts = evaluation_overview.get("edge_counts", {})
+
+        eval_col1, eval_col2, eval_col3, eval_col4 = st.columns(4)
+        with eval_col1:
+            st.metric("Setups com Snapshot", evaluation_overview.get("total_strategies", 0))
+        with eval_col2:
+            st.metric("Aprovados", governance_counts.get("approved", 0))
+        with eval_col3:
+            st.metric("Bloqueados", governance_counts.get("blocked", 0))
+        with eval_col4:
+            st.metric("Edge Degradado", edge_counts.get("degraded", 0))
+
+        if evaluation_overview.get("rows"):
+            st.dataframe(
+                build_strategy_evaluation_display_df(evaluation_overview["rows"]),
+                width="stretch",
+                hide_index=True,
+            )
+        else:
+            st.info("Nenhum snapshot encontrado em strategy_evaluations.")
 
         # User actions
         st.markdown("---")

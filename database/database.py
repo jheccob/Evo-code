@@ -1333,6 +1333,58 @@ class TradingDatabase:
         conn.close()
         return rows
 
+    def get_strategy_evaluation_overview(
+        self,
+        symbol: str = None,
+        timeframe: str = None,
+        limit: int = 20,
+    ) -> Dict[str, Any]:
+        """Retornar o snapshot mais recente por estrategia para dashboard/admin."""
+        raw_limit = max(int(limit or 20) * 8, 50)
+        evaluations = self.get_strategy_evaluations(
+            symbol=symbol,
+            timeframe=timeframe,
+            limit=raw_limit,
+        )
+
+        latest_by_strategy: List[Dict[str, Any]] = []
+        seen_keys = set()
+        governance_counts: Dict[str, int] = {}
+        edge_counts: Dict[str, int] = {}
+        evaluation_type_counts: Dict[str, int] = {}
+
+        for evaluation in evaluations:
+            key = (
+                evaluation.get("symbol"),
+                evaluation.get("timeframe"),
+                evaluation.get("strategy_version") or f"snapshot:{evaluation.get('id')}",
+            )
+            if key in seen_keys:
+                continue
+
+            seen_keys.add(key)
+            latest_by_strategy.append(evaluation)
+
+            governance_status = evaluation.get("governance_status") or "unknown"
+            edge_status = evaluation.get("edge_status") or "unknown"
+            evaluation_type = evaluation.get("evaluation_type") or "unknown"
+
+            governance_counts[governance_status] = governance_counts.get(governance_status, 0) + 1
+            edge_counts[edge_status] = edge_counts.get(edge_status, 0) + 1
+            evaluation_type_counts[evaluation_type] = evaluation_type_counts.get(evaluation_type, 0) + 1
+
+            if len(latest_by_strategy) >= limit:
+                break
+
+        return {
+            "rows": latest_by_strategy,
+            "governance_counts": governance_counts,
+            "edge_counts": edge_counts,
+            "evaluation_type_counts": evaluation_type_counts,
+            "total_strategies": len(latest_by_strategy),
+            "sampled_snapshots": len(evaluations),
+        }
+
     def compute_strategy_metrics(
         self,
         symbol: str = None,

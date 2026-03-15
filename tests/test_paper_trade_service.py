@@ -422,6 +422,64 @@ class PaperTradeServiceTests(unittest.TestCase):
         self.assertEqual(evaluations[0]["paper_closed_trades"], 1)
         self.assertEqual(evaluations[0]["evaluation_type"], "paper")
 
+    def test_strategy_evaluation_overview_returns_latest_snapshot_per_strategy(self):
+        strategy_v1 = build_strategy_version("BTC/USDT", "5m", 14, 20, 70, 0.0, 0.0, True, False)
+        strategy_v2 = build_strategy_version("ETH/USDT", "15m", 14, 25, 75, 0.0, 0.0, True, False)
+
+        self.database.save_strategy_evaluation(
+            {
+                "symbol": "BTC/USDT",
+                "timeframe": "5m",
+                "strategy_version": strategy_v1,
+                "evaluation_type": "backtest",
+                "avg_profit_factor": 1.4,
+                "avg_out_of_sample_profit_factor": 1.3,
+                "paper_profit_factor": 0.0,
+                "edge_status": "awaiting_live_data",
+                "governance_status": "observing",
+                "quality_score": 61.0,
+            }
+        )
+        self.database.save_strategy_evaluation(
+            {
+                "symbol": "BTC/USDT",
+                "timeframe": "5m",
+                "strategy_version": strategy_v1,
+                "evaluation_type": "paper",
+                "avg_profit_factor": 1.4,
+                "avg_out_of_sample_profit_factor": 1.3,
+                "paper_profit_factor": 1.5,
+                "edge_status": "aligned",
+                "governance_status": "approved",
+                "quality_score": 74.0,
+            }
+        )
+        self.database.save_strategy_evaluation(
+            {
+                "symbol": "ETH/USDT",
+                "timeframe": "15m",
+                "strategy_version": strategy_v2,
+                "evaluation_type": "backtest",
+                "avg_profit_factor": 0.9,
+                "avg_out_of_sample_profit_factor": 0.8,
+                "paper_profit_factor": 0.0,
+                "edge_status": "no_backtest",
+                "governance_status": "blocked",
+                "quality_score": 18.0,
+            }
+        )
+
+        overview = self.database.get_strategy_evaluation_overview(limit=10)
+        by_version = {row["strategy_version"]: row for row in overview["rows"]}
+
+        self.assertEqual(overview["total_strategies"], 2)
+        self.assertEqual(by_version[strategy_v1]["evaluation_type"], "paper")
+        self.assertEqual(by_version[strategy_v1]["governance_status"], "approved")
+        self.assertEqual(by_version[strategy_v2]["governance_status"], "blocked")
+        self.assertEqual(overview["governance_counts"]["approved"], 1)
+        self.assertEqual(overview["governance_counts"]["blocked"], 1)
+        self.assertEqual(overview["edge_counts"]["aligned"], 1)
+
     def test_strategy_governance_summary_classifies_profiles_objectively(self):
         strategy_ready = build_strategy_version("BTC/USDT", "5m", 14, 20, 70, 0.0, 0.0, True, False)
         strategy_active = build_strategy_version("ETH/USDT", "15m", 14, 25, 75, 0.0, 0.0, True, False)
@@ -554,6 +612,8 @@ class PaperTradeIntegrationSourceTests(unittest.TestCase):
         self.assertIn("RiskManagementService", app_source)
         self.assertIn("promote_backtest_run", app_source)
         self.assertIn("get_strategy_governance_summary", app_source)
+        self.assertIn("get_strategy_evaluation_overview", app_source)
+        self.assertIn("build_strategy_evaluation_display_df", app_source)
         self.assertIn("strategy_version", app_source)
         self.assertIn("self.paper_trade_service.evaluate_open_trades", bot_source)
         self.assertIn("self.paper_trade_service.register_signal", bot_source)
@@ -561,6 +621,7 @@ class PaperTradeIntegrationSourceTests(unittest.TestCase):
         self.assertIn("RiskManagementService", bot_source)
         self.assertIn("get_edge_monitor_summary", bot_source)
         self.assertIn("get_strategy_governance_summary", bot_source)
+        self.assertIn("get_strategy_evaluation_overview", bot_source)
         self.assertIn("_apply_edge_guardrail", bot_source)
         self.assertIn("_apply_risk_guardrail", bot_source)
         self.assertIn("get_active_strategy_profile", bot_source)

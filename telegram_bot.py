@@ -665,6 +665,9 @@ class TelegramTradingBot:
         edge_summary = runtime_db.get_edge_monitor_summary()
         governance_summary = runtime_db.get_strategy_governance_summary(active_only=True, limit=20)
         governance_counts = governance_summary.get("counts", {})
+        evaluation_overview = runtime_db.get_strategy_evaluation_overview(limit=10)
+        evaluation_counts = evaluation_overview.get("governance_counts", {})
+        recent_evaluations = evaluation_overview.get("rows", [])[:3]
         risk_summary = self.risk_management_service.get_portfolio_risk_summary()
         msg = (
             f"📊 Status do Sistema:\n"
@@ -698,6 +701,20 @@ class TelegramTradingBot:
             f"\n- PnL diario paper: {risk_summary.get('daily_realized_pnl_pct', 0):.2f}%"
             f"\n- Losses consecutivos: {risk_summary.get('consecutive_losses', 0)}"
         )
+        msg += (
+            f"\n- Strategy evaluations: {evaluation_overview.get('total_strategies', 0)}"
+            f"\n- Snapshots aprovados: {evaluation_counts.get('approved', 0)}"
+            f"\n- Snapshots bloqueados: {evaluation_counts.get('blocked', 0)}"
+        )
+        if recent_evaluations:
+            msg += "\n\nUltimas strategy evaluations:"
+            for evaluation in recent_evaluations:
+                msg += (
+                    f"\n- {evaluation.get('symbol')} {evaluation.get('timeframe')}"
+                    f" | score {evaluation.get('quality_score', 0):.1f}"
+                    f" | {evaluation.get('governance_status', 'unknown')}"
+                    f" | edge {evaluation.get('edge_status', 'unknown')}"
+                )
         await self._safe_reply(update, msg)
     
     async def users_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
