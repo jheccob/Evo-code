@@ -277,7 +277,9 @@ class TradingBot:
                     df['close'].iloc[max(0, i-20):i+1],
                     df['volume'].iloc[max(0, i-20):i+1],
                     df['atr'].iloc[max(0, i-20):i+1],
-                    df['adx'].iloc[max(0, i-20):i+1]
+                    df['adx'].iloc[max(0, i-20):i+1],
+                    di_plus=df['di_plus'].iloc[max(0, i-20):i+1],
+                    di_minus=df['di_minus'].iloc[max(0, i-20):i+1],
                 )
                 df.iloc[i, df.columns.get_loc('market_regime')] = regime
 
@@ -550,11 +552,15 @@ class TradingBot:
             'macd': row['macd'],
             'macd_signal': row['macd_signal'],
             'macd_histogram': row['macd_histogram'],
+            'prev_macd_histogram': row.get('prev_macd_histogram', 0),
             'trend_analysis': row.get('trend_analysis', 'LATERAL'),
+            'trend_strength': row.get('trend_strength', 0),
             'adx': row.get('adx', 0),
             'stoch_rsi_k': row.get('stoch_rsi_k', 50),
+            'williams_r': row.get('williams_r', -50),
             'volume_ratio': row.get('volume_ratio', 1),
-            'market_regime': row.get('market_regime', 'trending')
+            'market_regime': row.get('market_regime', 'trending'),
+            'hour': getattr(row.name, 'hour', 12),
         }
 
         return self.indicators.calculate_signal_confidence(indicators_dict)

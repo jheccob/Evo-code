@@ -104,6 +104,76 @@ class RiskManagementServiceTests(unittest.TestCase):
         self.assertEqual(open_trades[0]["planned_position_notional"], 2500.0)
         self.assertEqual(open_trades[0]["planned_quantity"], 25.0)
 
+    def test_build_trade_plan_blocks_when_daily_loss_breaker_is_hit(self):
+        self.database.create_paper_trade(
+            {
+                "symbol": "BTC/USDT",
+                "timeframe": "5m",
+                "signal": "COMPRA",
+                "side": "long",
+                "source": "test",
+                "entry_timestamp": "2026-01-01T10:00:00",
+                "entry_price": 100.0,
+                "planned_position_notional": 5000.0,
+                "account_reference_balance": 10000.0,
+                "status": "CLOSED",
+                "outcome": "LOSS",
+                "close_reason": "STOP_LOSS",
+                "exit_timestamp": datetime.now().replace(hour=10, minute=5, second=0, microsecond=0).isoformat(),
+                "exit_price": 95.0,
+                "result_pct": -5.0,
+            }
+        )
+
+        with mock.patch.object(ProductionConfig, "ENABLE_RISK_CIRCUIT_BREAKER", True), \
+             mock.patch.object(ProductionConfig, "MAX_DAILY_PAPER_LOSS_PCT", 2.0), \
+             mock.patch.object(ProductionConfig, "MAX_CONSECUTIVE_PAPER_LOSSES", 10):
+            plan = self.risk_service.build_trade_plan(
+                entry_price=100.0,
+                stop_loss_pct=2.0,
+                symbol="BTC/USDT",
+                timeframe="5m",
+            )
+
+        self.assertFalse(plan["allowed"])
+        self.assertIn("perda diaria", plan["reason"])
+
+    def test_build_trade_plan_blocks_when_loss_streak_breaker_is_hit(self):
+        now = datetime.now().replace(hour=11, minute=0, second=0, microsecond=0)
+        for offset in range(3):
+            self.database.create_paper_trade(
+                {
+                    "symbol": "ETH/USDT",
+                    "timeframe": "15m",
+                    "signal": "COMPRA",
+                    "side": "long",
+                    "source": "test",
+                    "entry_timestamp": now.isoformat(),
+                    "entry_price": 100.0,
+                    "planned_position_notional": 1000.0,
+                    "account_reference_balance": 10000.0,
+                    "status": "CLOSED",
+                    "outcome": "LOSS",
+                    "close_reason": "STOP_LOSS",
+                    "exit_timestamp": now.replace(minute=offset).isoformat(),
+                    "exit_price": 99.5,
+                    "result_pct": -0.5,
+                }
+            )
+
+        with mock.patch.object(ProductionConfig, "ENABLE_RISK_CIRCUIT_BREAKER", True), \
+             mock.patch.object(ProductionConfig, "MAX_DAILY_PAPER_LOSS_PCT", 10.0), \
+             mock.patch.object(ProductionConfig, "MAX_CONSECUTIVE_PAPER_LOSSES", 3):
+            plan = self.risk_service.build_trade_plan(
+                entry_price=100.0,
+                stop_loss_pct=2.0,
+                symbol="ETH/USDT",
+                timeframe="15m",
+            )
+
+        self.assertFalse(plan["allowed"])
+        self.assertIn("losses consecutivos", plan["reason"])
+
 
 if __name__ == "__main__":
     unittest.main()

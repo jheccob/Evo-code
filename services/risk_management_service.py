@@ -32,6 +32,11 @@ class RiskManagementService:
 
         normalized_stop_loss_pct = self._normalize_pct(stop_loss_pct)
         portfolio_summary = self.database.get_open_portfolio_risk_summary()
+        circuit_breaker = self.evaluate_circuit_breaker(
+            symbol=symbol,
+            timeframe=timeframe,
+            strategy_version=strategy_version,
+        )
         open_trades = int(portfolio_summary.get("open_trades", 0) or 0)
         total_open_risk_pct = float(portfolio_summary.get("total_open_risk_pct", 0.0) or 0.0)
 
@@ -45,18 +50,28 @@ class RiskManagementService:
             return self._blocked_plan(
                 "Setup sem stop loss valido. Operacao bloqueada por risco.",
                 portfolio_summary,
+                circuit_breaker=circuit_breaker,
+            )
+
+        if not circuit_breaker.get("allowed", True):
+            return self._blocked_plan(
+                circuit_breaker.get("reason", "Circuit breaker de risco ativo."),
+                portfolio_summary,
+                circuit_breaker=circuit_breaker,
             )
 
         if open_trades >= resolved_max_open_trades:
             return self._blocked_plan(
                 f"Limite de trades abertos atingido ({open_trades}/{resolved_max_open_trades}).",
                 portfolio_summary,
+                circuit_breaker=circuit_breaker,
             )
 
         if total_open_risk_pct + resolved_risk_per_trade_pct > resolved_max_portfolio_open_risk_pct:
             return self._blocked_plan(
                 "Risco aberto do portfolio acima do limite permitido.",
                 portfolio_summary,
+                circuit_breaker=circuit_breaker,
             )
 
         risk_amount = resolved_account_balance * (resolved_risk_per_trade_pct / 100)
@@ -81,10 +96,14 @@ class RiskManagementService:
             "portfolio_open_risk_pct": round(total_open_risk_pct, 4),
             "max_open_trades": resolved_max_open_trades,
             "max_portfolio_open_risk_pct": round(resolved_max_portfolio_open_risk_pct, 4),
+            "circuit_breaker_allowed": bool(circuit_breaker.get("allowed", True)),
+            "daily_realized_pnl_pct": round(float(circuit_breaker.get("daily_realized_pnl_pct", 0.0) or 0.0), 4),
+            "consecutive_losses": int(circuit_breaker.get("consecutive_losses", 0) or 0),
         }
 
     def get_portfolio_risk_summary(self) -> Dict:
         summary = self.database.get_open_portfolio_risk_summary()
+        circuit_breaker = self.evaluate_circuit_breaker()
         return {
             "open_trades": int(summary.get("open_trades", 0) or 0),
             "total_open_risk_pct": round(float(summary.get("total_open_risk_pct", 0.0) or 0.0), 4),
@@ -95,9 +114,81 @@ class RiskManagementService:
             ),
             "max_open_trades": ProductionConfig.MAX_OPEN_PAPER_TRADES,
             "max_portfolio_open_risk_pct": ProductionConfig.MAX_PORTFOLIO_OPEN_RISK_PCT,
+            "circuit_breaker_allowed": bool(circuit_breaker.get("allowed", True)),
+            "circuit_breaker_reason": circuit_breaker.get("reason", ""),
+            "daily_closed_trades": int(circuit_breaker.get("daily_closed_trades", 0) or 0),
+            "daily_realized_pnl": round(float(circuit_breaker.get("daily_realized_pnl", 0.0) or 0.0), 2),
+            "daily_realized_pnl_pct": round(float(circuit_breaker.get("daily_realized_pnl_pct", 0.0) or 0.0), 4),
+            "consecutive_losses": int(circuit_breaker.get("consecutive_losses", 0) or 0),
+            "max_daily_paper_loss_pct": ProductionConfig.MAX_DAILY_PAPER_LOSS_PCT,
+            "max_consecutive_paper_losses": ProductionConfig.MAX_CONSECUTIVE_PAPER_LOSSES,
         }
 
-    def _blocked_plan(self, reason: str, portfolio_summary: Dict) -> Dict:
+    def evaluate_circuit_breaker(
+        self,
+        symbol: str = None,
+        timeframe: str = None,
+        strategy_version: str = None,
+    ) -> Dict:
+        if not ProductionConfig.ENABLE_RISK_CIRCUIT_BREAKER:
+            return {
+                "allowed": True,
+                "reason": "",
+                "status": "disabled",
+                "daily_closed_trades": 0,
+                "daily_realized_pnl": 0.0,
+                "daily_realized_pnl_pct": 0.0,
+                "consecutive_losses": 0,
+            }
+
+        daily_summary = self.database.get_daily_paper_guardrail_summary(
+            symbol=symbol,
+            timeframe=timeframe,
+            strategy_version=strategy_version,
+        )
+        daily_realized_pnl_pct = float(daily_summary.get("realized_pnl_pct", 0.0) or 0.0)
+        consecutive_losses = int(daily_summary.get("consecutive_losses", 0) or 0)
+
+        if daily_realized_pnl_pct <= -float(ProductionConfig.MAX_DAILY_PAPER_LOSS_PCT):
+            return {
+                "allowed": False,
+                "reason": (
+                    f"Circuit breaker ativo: perda diaria de {abs(daily_realized_pnl_pct):.2f}% "
+                    f"(limite {ProductionConfig.MAX_DAILY_PAPER_LOSS_PCT:.2f}%)."
+                ),
+                "status": "daily_loss_limit",
+                "daily_closed_trades": int(daily_summary.get("closed_trades", 0) or 0),
+                "daily_realized_pnl": float(daily_summary.get("realized_pnl", 0.0) or 0.0),
+                "daily_realized_pnl_pct": daily_realized_pnl_pct,
+                "consecutive_losses": consecutive_losses,
+            }
+
+        if consecutive_losses >= int(ProductionConfig.MAX_CONSECUTIVE_PAPER_LOSSES):
+            return {
+                "allowed": False,
+                "reason": (
+                    f"Circuit breaker ativo: {consecutive_losses} losses consecutivos "
+                    f"(limite {ProductionConfig.MAX_CONSECUTIVE_PAPER_LOSSES})."
+                ),
+                "status": "loss_streak_limit",
+                "daily_closed_trades": int(daily_summary.get("closed_trades", 0) or 0),
+                "daily_realized_pnl": float(daily_summary.get("realized_pnl", 0.0) or 0.0),
+                "daily_realized_pnl_pct": daily_realized_pnl_pct,
+                "consecutive_losses": consecutive_losses,
+            }
+
+        return {
+            "allowed": True,
+            "reason": "",
+            "status": "healthy",
+            "daily_closed_trades": int(daily_summary.get("closed_trades", 0) or 0),
+            "daily_realized_pnl": float(daily_summary.get("realized_pnl", 0.0) or 0.0),
+            "daily_realized_pnl_pct": daily_realized_pnl_pct,
+            "consecutive_losses": consecutive_losses,
+        }
+
+    def _blocked_plan(self, reason: str, portfolio_summary: Dict, circuit_breaker: Dict = None) -> Dict:
+        circuit_breaker = circuit_breaker or {}
         return {
             "allowed": False,
             "reason": reason,
@@ -105,6 +196,9 @@ class RiskManagementService:
             "portfolio_open_risk_pct": round(float(portfolio_summary.get("total_open_risk_pct", 0.0) or 0.0), 4),
             "max_open_trades": ProductionConfig.MAX_OPEN_PAPER_TRADES,
             "max_portfolio_open_risk_pct": ProductionConfig.MAX_PORTFOLIO_OPEN_RISK_PCT,
+            "circuit_breaker_allowed": bool(circuit_breaker.get("allowed", True)),
+            "daily_realized_pnl_pct": round(float(circuit_breaker.get("daily_realized_pnl_pct", 0.0) or 0.0), 4),
+            "consecutive_losses": int(circuit_breaker.get("consecutive_losses", 0) or 0),
         }
 
     def _normalize_pct(self, value: Optional[float]) -> float:

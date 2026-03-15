@@ -56,6 +56,7 @@ class BacktestEngine:
         position_size_pct: float = 1.0,
         require_volume: bool = False,
         require_trend: bool = False,
+        avoid_ranging: bool = False,
         validation_split_pct: float = 0.0,
         walk_forward_windows: int = 0,
         persist_result: bool = True,
@@ -81,6 +82,7 @@ class BacktestEngine:
             take_profit_pct=take_profit_pct,
             require_volume=require_volume,
             require_trend=require_trend,
+            avoid_ranging=avoid_ranging,
         )
 
         self.trading_bot.update_config(
@@ -101,16 +103,19 @@ class BacktestEngine:
         if raw_df.empty:
             raise ValueError("Dados insuficientes para backtest")
 
-        df = self.trading_bot.calculate_indicators(raw_df.copy())
-        if len(df) <= warmup_candles + 1:
-            raise ValueError("Dados insuficientes para backtest")
-
-        self._trade_history, self._portfolio_history, final_balance = self._run_simulation(
-            df=df,
+        return self._run_backtest_with_preloaded_df(
+            df=raw_df,
+            symbol=symbol,
             timeframe=timeframe,
             start_date=start_date,
             end_date=end_date,
             initial_balance=float(initial_balance),
+            rsi_period=rsi_period,
+            rsi_min=rsi_min,
+            rsi_max=rsi_max,
+            strategy_version=strategy_version,
+            raw_stop_loss_pct=stop_loss_pct,
+            raw_take_profit_pct=take_profit_pct,
             stop_loss_pct=normalized_stop_loss,
             take_profit_pct=normalized_take_profit,
             fee_rate=fee_rate,
@@ -118,53 +123,87 @@ class BacktestEngine:
             position_size_pct=normalized_position_size,
             require_volume=require_volume,
             require_trend=require_trend,
-        )
-
-        stats = self._build_stats(
-            initial_balance=float(initial_balance),
-            final_balance=float(final_balance),
-            timeframe=timeframe,
-            trade_history=self._trade_history,
-            portfolio_history=self._portfolio_history,
-        )
-        results = {
-            "meta": {
-                "symbol": symbol,
-                "timeframe": timeframe,
-                "strategy_version": strategy_version,
-                "start_date": pd.Timestamp(start_date).isoformat(),
-                "end_date": pd.Timestamp(end_date).isoformat(),
-                "rsi_period": rsi_period,
-                "rsi_min": rsi_min,
-                "rsi_max": rsi_max,
-            },
-            "stats": stats,
-            "trades": list(self._trade_history),
-            "portfolio_values": list(self._portfolio_history),
-        }
-        validation = self._build_validation_results(
-            df=df,
-            timeframe=timeframe,
-            start_date=start_date,
-            end_date=end_date,
-            initial_balance=float(initial_balance),
-            stop_loss_pct=normalized_stop_loss,
-            take_profit_pct=normalized_take_profit,
-            fee_rate=fee_rate,
-            slippage=slippage,
-            position_size_pct=normalized_position_size,
-            require_volume=require_volume,
-            require_trend=require_trend,
+            avoid_ranging=avoid_ranging,
             validation_split_pct=normalized_validation_split,
+            walk_forward_windows=normalized_walk_forward_windows,
+            persist_result=persist_result,
         )
-        if validation is not None:
-            results["validation"] = validation
-        walk_forward = self._build_walk_forward_results(
-            df=df,
+
+    def run_backtest_from_dataframe(
+        self,
+        df: pd.DataFrame,
+        symbol: str,
+        timeframe: str,
+        start_date: Optional[datetime] = None,
+        end_date: Optional[datetime] = None,
+        initial_balance: int = 10_000,
+        rsi_period: int = 14,
+        rsi_min: int = 20,
+        rsi_max: int = 80,
+        stop_loss_pct: float = 0.0,
+        take_profit_pct: float = 0.0,
+        fee_rate: float = 0.001,
+        slippage: float = 0.0005,
+        position_size_pct: float = 1.0,
+        require_volume: bool = False,
+        require_trend: bool = False,
+        avoid_ranging: bool = False,
+        validation_split_pct: float = 0.0,
+        walk_forward_windows: int = 0,
+        persist_result: bool = False,
+    ) -> Dict:
+        if df is None or df.empty:
+            raise ValueError("DataFrame historico vazio para backtest")
+
+        if not isinstance(df.index, pd.DatetimeIndex):
+            if "timestamp" not in df.columns:
+                raise ValueError("DataFrame historico precisa de DatetimeIndex ou coluna timestamp")
+            df = df.copy()
+            df["timestamp"] = pd.to_datetime(df["timestamp"])
+            df.set_index("timestamp", inplace=True)
+
+        normalized_stop_loss = self._normalize_strategy_pct(stop_loss_pct)
+        normalized_take_profit = self._normalize_strategy_pct(take_profit_pct)
+        normalized_position_size = min(max(self._normalize_position_size(position_size_pct), 0.0), 1.0)
+        normalized_validation_split = min(max(self._normalize_ratio(validation_split_pct), 0.0), 0.5)
+        normalized_walk_forward_windows = max(int(walk_forward_windows or 0), 0)
+        strategy_version = build_strategy_version(
+            symbol=symbol,
             timeframe=timeframe,
-            start_date=start_date,
-            end_date=end_date,
+            rsi_period=rsi_period,
+            rsi_min=rsi_min,
+            rsi_max=rsi_max,
+            stop_loss_pct=stop_loss_pct,
+            take_profit_pct=take_profit_pct,
+            require_volume=require_volume,
+            require_trend=require_trend,
+            avoid_ranging=avoid_ranging,
+        )
+
+        self.trading_bot.update_config(
+            symbol=symbol,
+            timeframe=timeframe,
+            rsi_period=rsi_period,
+            rsi_min=rsi_min,
+            rsi_max=rsi_max,
+        )
+
+        resolved_start_date = start_date or pd.Timestamp(df.index.min()).to_pydatetime()
+        resolved_end_date = end_date or pd.Timestamp(df.index.max()).to_pydatetime()
+
+        return self._run_backtest_with_preloaded_df(
+            df=df.copy(),
+            symbol=symbol,
+            timeframe=timeframe,
+            start_date=resolved_start_date,
+            end_date=resolved_end_date,
             initial_balance=float(initial_balance),
+            rsi_period=rsi_period,
+            rsi_min=rsi_min,
+            rsi_max=rsi_max,
+            strategy_version=strategy_version,
+            raw_stop_loss_pct=stop_loss_pct,
+            raw_take_profit_pct=take_profit_pct,
             stop_loss_pct=normalized_stop_loss,
             take_profit_pct=normalized_take_profit,
             fee_rate=fee_rate,
@@ -172,32 +211,11 @@ class BacktestEngine:
             position_size_pct=normalized_position_size,
             require_volume=require_volume,
             require_trend=require_trend,
+            avoid_ranging=avoid_ranging,
+            validation_split_pct=normalized_validation_split,
             walk_forward_windows=normalized_walk_forward_windows,
+            persist_result=persist_result,
         )
-        if walk_forward is not None:
-            results["walk_forward"] = walk_forward
-        if persist_result:
-            results["saved_run_id"] = self._persist_backtest_run(
-                symbol=symbol,
-                timeframe=timeframe,
-                start_date=start_date,
-                end_date=end_date,
-                stats=stats,
-                rsi_period=rsi_period,
-                rsi_min=rsi_min,
-                rsi_max=rsi_max,
-                strategy_version=strategy_version,
-                stop_loss_pct=stop_loss_pct,
-                take_profit_pct=take_profit_pct,
-                fee_rate=fee_rate,
-                slippage=slippage,
-                position_size_pct=normalized_position_size,
-                require_volume=require_volume,
-                require_trend=require_trend,
-                validation=validation,
-                walk_forward=walk_forward,
-            )
-        return results
 
     def run_market_scan(
         self,
@@ -329,6 +347,135 @@ class BacktestEngine:
         summary = summary[["timestamp", "entry_price", "price", "profit_loss_pct", "profit_loss", "signal"]]
         summary["timestamp"] = pd.to_datetime(summary["timestamp"])
         return summary
+
+    def _run_backtest_with_preloaded_df(
+        self,
+        df: pd.DataFrame,
+        symbol: str,
+        timeframe: str,
+        start_date: datetime,
+        end_date: datetime,
+        initial_balance: float,
+        rsi_period: int,
+        rsi_min: int,
+        rsi_max: int,
+        strategy_version: str,
+        raw_stop_loss_pct: float,
+        raw_take_profit_pct: float,
+        stop_loss_pct: float,
+        take_profit_pct: float,
+        fee_rate: float,
+        slippage: float,
+        position_size_pct: float,
+        require_volume: bool,
+        require_trend: bool,
+        avoid_ranging: bool,
+        validation_split_pct: float,
+        walk_forward_windows: int,
+        persist_result: bool,
+    ) -> Dict:
+        df = self.trading_bot.calculate_indicators(df.copy())
+        warmup_candles = max(210, int(rsi_period) + 5)
+        if len(df) <= warmup_candles + 1:
+            raise ValueError("Dados insuficientes para backtest")
+
+        self._trade_history, self._portfolio_history, final_balance = self._run_simulation(
+            df=df,
+            timeframe=timeframe,
+            start_date=start_date,
+            end_date=end_date,
+            initial_balance=float(initial_balance),
+            stop_loss_pct=stop_loss_pct,
+            take_profit_pct=take_profit_pct,
+            fee_rate=fee_rate,
+            slippage=slippage,
+            position_size_pct=position_size_pct,
+            require_volume=require_volume,
+            require_trend=require_trend,
+            avoid_ranging=avoid_ranging,
+        )
+
+        stats = self._build_stats(
+            initial_balance=float(initial_balance),
+            final_balance=float(final_balance),
+            timeframe=timeframe,
+            trade_history=self._trade_history,
+            portfolio_history=self._portfolio_history,
+        )
+        results = {
+            "meta": {
+                "symbol": symbol,
+                "timeframe": timeframe,
+                "strategy_version": strategy_version,
+                "start_date": pd.Timestamp(start_date).isoformat(),
+                "end_date": pd.Timestamp(end_date).isoformat(),
+                "rsi_period": rsi_period,
+                "rsi_min": rsi_min,
+                "rsi_max": rsi_max,
+            },
+            "stats": stats,
+            "trades": list(self._trade_history),
+            "portfolio_values": list(self._portfolio_history),
+        }
+        validation = self._build_validation_results(
+            df=df,
+            timeframe=timeframe,
+            start_date=start_date,
+            end_date=end_date,
+            initial_balance=float(initial_balance),
+            stop_loss_pct=stop_loss_pct,
+            take_profit_pct=take_profit_pct,
+            fee_rate=fee_rate,
+            slippage=slippage,
+            position_size_pct=position_size_pct,
+            require_volume=require_volume,
+            require_trend=require_trend,
+            avoid_ranging=avoid_ranging,
+            validation_split_pct=validation_split_pct,
+        )
+        if validation is not None:
+            results["validation"] = validation
+        walk_forward = self._build_walk_forward_results(
+            df=df,
+            timeframe=timeframe,
+            start_date=start_date,
+            end_date=end_date,
+            initial_balance=float(initial_balance),
+            stop_loss_pct=stop_loss_pct,
+            take_profit_pct=take_profit_pct,
+            fee_rate=fee_rate,
+            slippage=slippage,
+            position_size_pct=position_size_pct,
+            require_volume=require_volume,
+            require_trend=require_trend,
+            avoid_ranging=avoid_ranging,
+            walk_forward_windows=walk_forward_windows,
+        )
+        if walk_forward is not None:
+            results["walk_forward"] = walk_forward
+        if persist_result:
+            results["saved_run_id"] = self._persist_backtest_run(
+                symbol=symbol,
+                timeframe=timeframe,
+                start_date=start_date,
+                end_date=end_date,
+                stats=stats,
+                rsi_period=rsi_period,
+                rsi_min=rsi_min,
+                rsi_max=rsi_max,
+                strategy_version=strategy_version,
+                stop_loss_pct=raw_stop_loss_pct,
+                take_profit_pct=raw_take_profit_pct,
+                fee_rate=fee_rate,
+                slippage=slippage,
+                position_size_pct=position_size_pct,
+                require_volume=require_volume,
+                require_trend=require_trend,
+                avoid_ranging=avoid_ranging,
+                validation=validation,
+                walk_forward=walk_forward,
+            )
+        return results
 
     def _build_rsi_parameter_candidates(
         self,
@@ -599,6 +746,7 @@ class BacktestEngine:
         position_size_pct: float,
         require_volume: bool,
         require_trend: bool,
+        avoid_ranging: bool,
     ) -> Tuple[List[Dict], List[Dict], float]:
         warmup_candles = max(210, int(getattr(self.trading_bot, "rsi_period", 14)) + 5)
         start_idx = max(warmup_candles, int(df.index.searchsorted(pd.Timestamp(start_date), side="left")))
@@ -634,6 +782,7 @@ class BacktestEngine:
                 timeframe=timeframe,
                 require_volume=require_volume,
                 require_trend=require_trend,
+                avoid_ranging=avoid_ranging,
             )
 
             if open_position is not None and self._is_opposite_signal(open_position.side, signal):
@@ -889,6 +1038,7 @@ class BacktestEngine:
         position_size_pct: float,
         require_volume: bool,
         require_trend: bool,
+        avoid_ranging: bool,
         validation_split_pct: float,
     ) -> Optional[Dict]:
         split_date = self._calculate_validation_split_date(start_date, end_date, validation_split_pct)
@@ -912,6 +1062,7 @@ class BacktestEngine:
                 position_size_pct=position_size_pct,
                 require_volume=require_volume,
                 require_trend=require_trend,
+                avoid_ranging=avoid_ranging,
             )
             out_sample_trades, out_sample_portfolio, out_sample_balance = self._run_simulation(
                 df=df,
@@ -926,6 +1077,7 @@ class BacktestEngine:
                 position_size_pct=position_size_pct,
                 require_volume=require_volume,
                 require_trend=require_trend,
+                avoid_ranging=avoid_ranging,
             )
         except ValueError:
             logger.info("Periodo insuficiente para validacao fora da amostra; split ignorado")
@@ -983,6 +1135,7 @@ class BacktestEngine:
         position_size_pct: float,
         require_volume: bool,
         require_trend: bool,
+        avoid_ranging: bool,
         walk_forward_windows: int,
     ) -> Optional[Dict]:
         if walk_forward_windows <= 0:
@@ -1021,6 +1174,7 @@ class BacktestEngine:
                     position_size_pct=position_size_pct,
                     require_volume=require_volume,
                     require_trend=require_trend,
+                    avoid_ranging=avoid_ranging,
                 )
                 out_sample_trades, out_sample_portfolio, out_sample_balance = self._run_simulation(
                     df=df,
@@ -1035,6 +1189,7 @@ class BacktestEngine:
                     position_size_pct=position_size_pct,
                     require_volume=require_volume,
                     require_trend=require_trend,
+                    avoid_ranging=avoid_ranging,
                 )
             except ValueError:
                 logger.info("Janela walk-forward %s ignorada por dados insuficientes", window_index)
@@ -1116,6 +1271,7 @@ class BacktestEngine:
         position_size_pct: float,
         require_volume: bool,
         require_trend: bool,
+        avoid_ranging: bool,
         validation: Optional[Dict],
         walk_forward: Optional[Dict],
     ) -> Optional[int]:
@@ -1152,6 +1308,7 @@ class BacktestEngine:
             "position_size_pct": position_size_pct,
             "require_volume": require_volume,
             "require_trend": require_trend,
+            "avoid_ranging": avoid_ranging,
             "validation_split_pct": validation["split_pct"] if validation else 0.0,
             "in_sample_end": validation["split_date"].isoformat() if validation else None,
             "out_of_sample_start": validation["out_of_sample_start"].isoformat() if validation else None,

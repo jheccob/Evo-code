@@ -212,6 +212,7 @@ class TelegramTradingBot:
             take_profit_pct=strategy_settings.get("take_profit_pct", 0.0) or 0.0,
             require_volume=strategy_settings.get("require_volume", True),
             require_trend=strategy_settings.get("require_trend", False),
+            avoid_ranging=strategy_settings.get("avoid_ranging", True),
         )
 
     def _resolve_runtime_strategy_settings(self, symbol: str, timeframe: str) -> dict:
@@ -248,6 +249,7 @@ class TelegramTradingBot:
                 "take_profit_pct": active_profile.get("take_profit_pct") or ProductionConfig.DEFAULT_LIVE_TAKE_PROFIT_PCT,
                 "require_volume": bool(active_profile.get("require_volume", False)),
                 "require_trend": bool(active_profile.get("require_trend", False)),
+                "avoid_ranging": bool(active_profile.get("avoid_ranging", False)),
                 "active_profile": active_profile,
             }
         else:
@@ -262,6 +264,7 @@ class TelegramTradingBot:
                 "take_profit_pct": ProductionConfig.DEFAULT_LIVE_TAKE_PROFIT_PCT,
                 "require_volume": True,
                 "require_trend": False,
+                "avoid_ranging": True,
                 "active_profile": None,
             }
 
@@ -465,6 +468,7 @@ class TelegramTradingBot:
                 timeframe=timeframe,
                 require_volume=strategy_settings.get("require_volume", True),
                 require_trend=strategy_settings.get("require_trend", False),
+                avoid_ranging=strategy_settings.get("avoid_ranging", True),
             )
             emoji = TelegramBotConfig.get_signal_emoji(signal)
 
@@ -688,6 +692,11 @@ class TelegramTradingBot:
             f"\nâ€¢ Trades abertos: {risk_summary.get('open_trades', 0)}"
             f"\nâ€¢ Risco aberto: {risk_summary.get('total_open_risk_pct', 0):.2f}%"
             f"\nâ€¢ Notional aberto: ${risk_summary.get('total_open_position_notional', 0):.2f}"
+        )
+        msg += (
+            f"\n- Breaker risco: {'ok' if risk_summary.get('circuit_breaker_allowed', True) else 'ativo'}"
+            f"\n- PnL diario paper: {risk_summary.get('daily_realized_pnl_pct', 0):.2f}%"
+            f"\n- Losses consecutivos: {risk_summary.get('consecutive_losses', 0)}"
         )
         await self._safe_reply(update, msg)
     

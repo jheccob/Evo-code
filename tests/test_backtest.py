@@ -28,13 +28,14 @@ class DeterministicTradingBot:
     def calculate_indicators(self, df):
         return df
 
-    def check_signal(self, df, timeframe="5m", require_volume=False, require_trend=False):
+    def check_signal(self, df, timeframe="5m", require_volume=False, require_trend=False, avoid_ranging=False):
         self.check_calls.append(
             {
                 "length": len(df),
                 "timeframe": timeframe,
                 "require_volume": require_volume,
                 "require_trend": require_trend,
+                "avoid_ranging": avoid_ranging,
             }
         )
         if len(df) == 211:
@@ -47,17 +48,41 @@ class TemporalSignalTradingBot(DeterministicTradingBot):
         super().__init__()
         self.signal_times = {pd.Timestamp(ts) for ts in signal_times}
 
-    def check_signal(self, df, timeframe="5m", require_volume=False, require_trend=False):
+    def check_signal(self, df, timeframe="5m", require_volume=False, require_trend=False, avoid_ranging=False):
         result = super().check_signal(
             df,
             timeframe=timeframe,
             require_volume=require_volume,
             require_trend=require_trend,
+            avoid_ranging=avoid_ranging,
         )
         if result != "NEUTRO":
             return result
 
         if pd.Timestamp(df.index[-1]) in self.signal_times:
+            return "COMPRA"
+        return "NEUTRO"
+
+
+class RegimeAwareTradingBot(DeterministicTradingBot):
+    def calculate_indicators(self, df):
+        return df
+
+    def check_signal(self, df, timeframe="5m", require_volume=False, require_trend=False, avoid_ranging=False):
+        last_row = df.iloc[-1]
+        self.check_calls.append(
+            {
+                "length": len(df),
+                "timeframe": timeframe,
+                "require_volume": require_volume,
+                "require_trend": require_trend,
+                "avoid_ranging": avoid_ranging,
+                "market_regime": last_row.get("market_regime", "trending"),
+            }
+        )
+        if avoid_ranging and last_row.get("market_regime") == "ranging":
+            return "NEUTRO"
+        if len(df) == 211:
             return "COMPRA"
         return "NEUTRO"
 
@@ -263,6 +288,51 @@ class BacktestEngineTests(unittest.TestCase):
         self.assertTrue(bot.check_calls)
         self.assertTrue(any(call["require_volume"] for call in bot.check_calls))
         self.assertTrue(any(call["require_trend"] for call in bot.check_calls))
+
+    def test_run_backtest_from_dataframe_can_block_range_entries_with_avoid_ranging(self):
+        timestamps = pd.date_range("2026-01-01", periods=260, freq="5min")
+        data = pd.DataFrame(
+            {
+                "open": [100.0] * len(timestamps),
+                "high": [100.1] * len(timestamps),
+                "low": [99.9] * len(timestamps),
+                "close": [100.0] * len(timestamps),
+                "volume": [1_000.0] * len(timestamps),
+                "market_regime": ["ranging"] * len(timestamps),
+            },
+            index=timestamps,
+        )
+        data.iloc[211, data.columns.get_loc("high")] = 100.7
+
+        engine = BacktestEngine(trading_bot=RegimeAwareTradingBot())
+
+        without_filter = engine.run_backtest_from_dataframe(
+            df=data,
+            symbol="BTC/USDT",
+            timeframe="5m",
+            start_date=datetime(2026, 1, 1, 0, 0),
+            end_date=datetime(2026, 1, 1, 21, 35),
+            initial_balance=1_000,
+            take_profit_pct=0.5,
+            fee_rate=0.0,
+            slippage=0.0,
+            avoid_ranging=False,
+        )
+        with_filter = engine.run_backtest_from_dataframe(
+            df=data,
+            symbol="BTC/USDT",
+            timeframe="5m",
+            start_date=datetime(2026, 1, 1, 0, 0),
+            end_date=datetime(2026, 1, 1, 21, 35),
+            initial_balance=1_000,
+            take_profit_pct=0.5,
+            fee_rate=0.0,
+            slippage=0.0,
+            avoid_ranging=True,
+        )
+
+        self.assertEqual(without_filter["stats"]["total_trades"], 1)
+        self.assertEqual(with_filter["stats"]["total_trades"], 0)
 
     def test_run_backtest_builds_in_sample_and_out_of_sample_validation(self):
         bot = TemporalSignalTradingBot(

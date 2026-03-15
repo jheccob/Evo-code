@@ -410,6 +410,7 @@ class ProductionConfig:
     ENABLE_DASHBOARD_BACKGROUND_BOT = os.getenv("ENABLE_DASHBOARD_BACKGROUND_BOT", "").strip().lower() in {"1", "true", "yes"}
     ENABLE_EDGE_GUARDRAIL = os.getenv("ENABLE_EDGE_GUARDRAIL", "true").strip().lower() in {"1", "true", "yes"}
     ENABLE_AI_SIGNAL_INFLUENCE = os.getenv("ENABLE_AI_SIGNAL_INFLUENCE", "false").strip().lower() in {"1", "true", "yes"}
+    ENABLE_RISK_CIRCUIT_BREAKER = os.getenv("ENABLE_RISK_CIRCUIT_BREAKER", "true").strip().lower() in {"1", "true", "yes"}
     REDIS_URL = os.getenv("REDIS_URL", "").strip()
     STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY", "").strip()
     STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET", "").strip()
@@ -423,6 +424,8 @@ class ProductionConfig:
     RISK_PER_TRADE_PCT = _parse_float_env("RISK_PER_TRADE_PCT", 0.5)
     MAX_OPEN_PAPER_TRADES = int(os.getenv("MAX_OPEN_PAPER_TRADES", "3").strip() or "3")
     MAX_PORTFOLIO_OPEN_RISK_PCT = _parse_float_env("MAX_PORTFOLIO_OPEN_RISK_PCT", 2.0)
+    MAX_DAILY_PAPER_LOSS_PCT = _parse_float_env("MAX_DAILY_PAPER_LOSS_PCT", 2.0)
+    MAX_CONSECUTIVE_PAPER_LOSSES = int(os.getenv("MAX_CONSECUTIVE_PAPER_LOSSES", "3").strip() or "3")
     DEFAULT_LIVE_STOP_LOSS_PCT = _parse_float_env("DEFAULT_LIVE_STOP_LOSS_PCT", 2.0)
     DEFAULT_LIVE_TAKE_PROFIT_PCT = _parse_float_env("DEFAULT_LIVE_TAKE_PROFIT_PCT", 4.0)
 

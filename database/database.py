@@ -4,7 +4,7 @@ Sistema de banco de dados usando SQLite para persistir dados do trading bot
 import sqlite3
 import os
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import List, Dict, Optional, Any
 from utils.timezone_utils import get_brazil_datetime_naive, format_brazil_time
 from config import AppConfig, ProductionConfig
@@ -20,6 +20,7 @@ def build_strategy_version(
     take_profit_pct: float = 0.0,
     require_volume: bool = False,
     require_trend: bool = False,
+    avoid_ranging: bool = False,
 ) -> str:
     safe_symbol = (symbol or "UNKNOWN").replace("/", "").upper()
     safe_timeframe = timeframe or "na"
@@ -33,7 +34,8 @@ def build_strategy_version(
         f"{safe_symbol}-{safe_timeframe}-"
         f"rsi{rsi_period}-{rsi_min}-{rsi_max}-"
         f"sl{stop_loss_pct:.2f}-tp{take_profit_pct:.2f}-"
-        f"v{int(bool(require_volume))}-t{int(bool(require_trend))}"
+        f"v{int(bool(require_volume))}-t{int(bool(require_trend))}-"
+        f"r{int(bool(avoid_ranging))}"
     )
 
 class TradingDatabase:
@@ -142,6 +144,7 @@ class TradingDatabase:
                 position_size_pct REAL DEFAULT 1.0,
                 require_volume BOOLEAN DEFAULT FALSE,
                 require_trend BOOLEAN DEFAULT FALSE,
+                avoid_ranging BOOLEAN DEFAULT FALSE,
                 validation_split_pct REAL DEFAULT 0.0,
                 in_sample_end TEXT,
                 out_of_sample_start TEXT,
@@ -227,6 +230,7 @@ class TradingDatabase:
                 take_profit_pct REAL DEFAULT 0.0,
                 require_volume BOOLEAN DEFAULT FALSE,
                 require_trend BOOLEAN DEFAULT FALSE,
+                avoid_ranging BOOLEAN DEFAULT FALSE,
                 source_run_id INTEGER,
                 notes TEXT,
                 promoted_at_br TEXT,
@@ -242,6 +246,7 @@ class TradingDatabase:
         self._ensure_column(cursor, 'backtest_runs', 'strategy_version', 'TEXT')
         self._ensure_column(cursor, 'backtest_trades', 'strategy_version', 'TEXT')
         self._ensure_column(cursor, 'paper_trades', 'strategy_version', 'TEXT')
+        self._ensure_column(cursor, 'backtest_runs', 'avoid_ranging', 'BOOLEAN DEFAULT FALSE')
         self._ensure_column(cursor, 'paper_trades', 'planned_risk_pct', 'REAL DEFAULT 0.0')
         self._ensure_column(cursor, 'paper_trades', 'planned_risk_amount', 'REAL DEFAULT 0.0')
         self._ensure_column(cursor, 'paper_trades', 'planned_position_notional', 'REAL DEFAULT 0.0')
@@ -267,6 +272,7 @@ class TradingDatabase:
         self._ensure_column(cursor, 'backtest_runs', 'walk_forward_avg_oos_profit_factor', 'REAL DEFAULT 0.0')
         self._ensure_column(cursor, 'backtest_runs', 'walk_forward_avg_oos_expectancy_pct', 'REAL DEFAULT 0.0')
         self._ensure_column(cursor, 'strategy_profiles', 'source_run_id', 'INTEGER')
+        self._ensure_column(cursor, 'strategy_profiles', 'avoid_ranging', 'BOOLEAN DEFAULT FALSE')
         self._ensure_column(cursor, 'strategy_profiles', 'notes', 'TEXT')
         self._ensure_column(cursor, 'strategy_profiles', 'promoted_at_br', 'TEXT')
         self._ensure_column(cursor, 'strategy_profiles', 'deactivated_at_br', 'TEXT')
@@ -313,6 +319,7 @@ class TradingDatabase:
                 'take_profit_pct': profile_data.get('take_profit_pct', 0.0),
                 'require_volume': int(bool(profile_data.get('require_volume', False))),
                 'require_trend': int(bool(profile_data.get('require_trend', False))),
+                'avoid_ranging': int(bool(profile_data.get('avoid_ranging', False))),
                 'source_run_id': profile_data.get('source_run_id'),
                 'notes': profile_data.get('notes'),
                 'promoted_at_br': profile_data.get('promoted_at_br'),
@@ -325,7 +332,7 @@ class TradingDatabase:
                     '''
                     UPDATE strategy_profiles
                     SET status = ?, rsi_period = ?, rsi_min = ?, rsi_max = ?,
-                        stop_loss_pct = ?, take_profit_pct = ?, require_volume = ?, require_trend = ?,
+                        stop_loss_pct = ?, take_profit_pct = ?, require_volume = ?, require_trend = ?, avoid_ranging = ?,
                         source_run_id = ?, notes = ?, promoted_at_br = ?, deactivated_at_br = ?,
                         updated_at = CURRENT_TIMESTAMP, updated_at_br = ?
                     WHERE id = ?
@@ -339,6 +346,7 @@ class TradingDatabase:
                         values['take_profit_pct'],
                         values['require_volume'],
                         values['require_trend'],
+                        values['avoid_ranging'],
                         values['source_run_id'],
                         values['notes'],
                         values['promoted_at_br'],
@@ -353,9 +361,9 @@ class TradingDatabase:
                     '''
                     INSERT INTO strategy_profiles (
                         symbol, timeframe, strategy_version, status, rsi_period, rsi_min, rsi_max,
-                        stop_loss_pct, take_profit_pct, require_volume, require_trend, source_run_id,
+                        stop_loss_pct, take_profit_pct, require_volume, require_trend, avoid_ranging, source_run_id,
                         notes, promoted_at_br, deactivated_at_br, created_at_br, updated_at_br
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ''',
                     (
                         symbol,
@@ -369,6 +377,7 @@ class TradingDatabase:
                         values['take_profit_pct'],
                         values['require_volume'],
                         values['require_trend'],
+                        values['avoid_ranging'],
                         values['source_run_id'],
                         values['notes'],
                         values['promoted_at_br'],
@@ -569,6 +578,7 @@ class TradingDatabase:
             take_profit_pct=run.get('take_profit_pct', 0.0),
             require_volume=bool(run.get('require_volume', False)),
             require_trend=bool(run.get('require_trend', False)),
+            avoid_ranging=bool(run.get('avoid_ranging', False)),
         )
         profile_id = self.save_strategy_profile(
             {
@@ -583,6 +593,7 @@ class TradingDatabase:
                 'take_profit_pct': run.get('take_profit_pct', 0.0),
                 'require_volume': bool(run.get('require_volume', False)),
                 'require_trend': bool(run.get('require_trend', False)),
+                'avoid_ranging': bool(run.get('avoid_ranging', False)),
                 'source_run_id': run_id,
                 'notes': notes,
                 'promoted_at_br': format_brazil_time(),
@@ -710,6 +721,90 @@ class TradingDatabase:
         summary = dict(cursor.fetchone())
         conn.close()
         return summary
+
+    def get_daily_paper_guardrail_summary(
+        self,
+        symbol: str = None,
+        timeframe: str = None,
+        strategy_version: str = None,
+        session_date: Optional[datetime] = None,
+    ) -> Dict[str, Any]:
+        reference_dt = session_date or get_brazil_datetime_naive()
+        if hasattr(reference_dt, "to_pydatetime"):
+            reference_dt = reference_dt.to_pydatetime()
+        day_start = reference_dt.replace(hour=0, minute=0, second=0, microsecond=0)
+        day_end = day_start + timedelta(days=1)
+
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            '''
+            SELECT
+                id,
+                outcome,
+                result_pct,
+                planned_position_notional,
+                account_reference_balance,
+                exit_timestamp
+            FROM paper_trades
+            WHERE status = 'CLOSED'
+              AND exit_timestamp IS NOT NULL
+              AND exit_timestamp >= ?
+              AND exit_timestamp < ?
+              AND (? IS NULL OR symbol = ?)
+              AND (? IS NULL OR timeframe = ?)
+              AND (? IS NULL OR strategy_version = ?)
+            ORDER BY exit_timestamp DESC
+            ''',
+            (
+                day_start.isoformat(),
+                day_end.isoformat(),
+                symbol,
+                symbol,
+                timeframe,
+                timeframe,
+                strategy_version,
+                strategy_version,
+            ),
+        )
+        rows = [dict(row) for row in cursor.fetchall()]
+        conn.close()
+
+        reference_balance = max(
+            float(row.get("account_reference_balance", 0.0) or 0.0) for row in rows
+        ) if rows else float(ProductionConfig.PAPER_ACCOUNT_BALANCE)
+        if reference_balance <= 0:
+            reference_balance = float(ProductionConfig.PAPER_ACCOUNT_BALANCE)
+
+        realized_pnl = sum(
+            float(row.get("planned_position_notional", 0.0) or 0.0) * float(row.get("result_pct", 0.0) or 0.0) / 100
+            for row in rows
+        )
+        realized_pnl_pct = (realized_pnl / reference_balance * 100) if reference_balance else 0.0
+
+        consecutive_losses = 0
+        for row in rows:
+            if row.get("outcome") == "LOSS":
+                consecutive_losses += 1
+                continue
+            if row.get("outcome") in {"WIN", "FLAT"}:
+                break
+
+        wins = sum(1 for row in rows if row.get("outcome") == "WIN")
+        losses = sum(1 for row in rows if row.get("outcome") == "LOSS")
+        flats = sum(1 for row in rows if row.get("outcome") == "FLAT")
+
+        return {
+            "session_date": day_start.date().isoformat(),
+            "closed_trades": len(rows),
+            "wins": wins,
+            "losses": losses,
+            "flats": flats,
+            "realized_pnl": round(realized_pnl, 2),
+            "realized_pnl_pct": round(realized_pnl_pct, 4),
+            "reference_balance": round(reference_balance, 2),
+            "consecutive_losses": consecutive_losses,
+        }
 
     def get_recent_paper_trades(
         self,
@@ -916,6 +1011,7 @@ class TradingDatabase:
                 'position_size_pct': run_data.get('position_size_pct', 1.0),
                 'require_volume': int(bool(run_data.get('require_volume', False))),
                 'require_trend': int(bool(run_data.get('require_trend', False))),
+                'avoid_ranging': int(bool(run_data.get('avoid_ranging', False))),
                 'validation_split_pct': run_data.get('validation_split_pct', 0.0),
                 'in_sample_end': run_data.get('in_sample_end'),
                 'out_of_sample_start': run_data.get('out_of_sample_start'),

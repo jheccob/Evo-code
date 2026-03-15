@@ -19,19 +19,23 @@ class TechnicalIndicators:
             return pd.Series([np.nan] * len(prices), index=prices.index)
         
         delta = prices.diff()
-        
-        # Separate gains and losses
-        gains = delta.where(delta > 0, 0)
-        losses = -delta.where(delta < 0, 0)
-        
-        # Calculate average gains and losses
-        avg_gains = gains.rolling(window=period).mean()
-        avg_losses = losses.rolling(window=period).mean()
-        
-        # Calculate RS and RSI
-        rs = avg_gains / avg_losses
+
+        gains = delta.clip(lower=0)
+        losses = -delta.clip(upper=0)
+
+        # Wilder smoothing keeps RSI more stable than a plain rolling average.
+        avg_gains = gains.ewm(alpha=1 / period, min_periods=period, adjust=False).mean()
+        avg_losses = losses.ewm(alpha=1 / period, min_periods=period, adjust=False).mean()
+
+        rs = avg_gains / avg_losses.replace(0, np.nan)
         rsi = 100 - (100 / (1 + rs))
-        
+
+        flat_mask = (avg_gains == 0) & (avg_losses == 0)
+        rsi = rsi.where(~flat_mask, 50.0)
+        rsi = rsi.where(avg_losses != 0, 100.0)
+        rsi = rsi.where(avg_gains != 0, 0.0)
+        rsi = rsi.where(~flat_mask, 50.0)
+
         return rsi
     
     def calculate_sma(self, prices, period):
@@ -179,7 +183,8 @@ class TechnicalIndicators:
         rsi_max = rsi.rolling(window=period).max()
         
         # Calculate %K
-        stoch_rsi_k = ((rsi - rsi_min) / (rsi_max - rsi_min)) * 100
+        denominator = (rsi_max - rsi_min).replace(0, np.nan)
+        stoch_rsi_k = ((rsi - rsi_min) / denominator) * 100
         
         # Smooth %K to get %D
         stoch_rsi_k_smooth = stoch_rsi_k.rolling(window=smooth_k).mean()
@@ -192,42 +197,33 @@ class TechnicalIndicators:
 
     def calculate_adx(self, high, low, close, period=14):
         """Calculate ADX (Average Directional Index) for trend strength"""
-        # Calculate True Range
-        tr = self.calculate_atr(high, low, close, 1).fillna(0)
-        
-        # Calculate Directional Movement
-        dm_plus = []
-        dm_minus = []
-        
-        for i in range(1, len(high)):
-            up_move = high.iloc[i] - high.iloc[i-1]
-            down_move = low.iloc[i-1] - low.iloc[i]
-            
-            if up_move > down_move and up_move > 0:
-                dm_plus.append(up_move)
-            else:
-                dm_plus.append(0)
-                
-            if down_move > up_move and down_move > 0:
-                dm_minus.append(down_move)
-            else:
-                dm_minus.append(0)
-        
-        dm_plus = pd.Series([0] + dm_plus, index=close.index)
-        dm_minus = pd.Series([0] + dm_minus, index=close.index)
-        
-        # Calculate smoothed averages
-        tr_smooth = tr.rolling(window=period).mean()
-        dm_plus_smooth = dm_plus.rolling(window=period).mean()
-        dm_minus_smooth = dm_minus.rolling(window=period).mean()
-        
-        # Calculate DI+ and DI-
-        di_plus = (dm_plus_smooth / tr_smooth) * 100
-        di_minus = (dm_minus_smooth / tr_smooth) * 100
-        
-        # Calculate ADX
-        dx = (abs(di_plus - di_minus) / (di_plus + di_minus)) * 100
-        adx = dx.rolling(window=period).mean()
+        prev_close = close.shift(1)
+        tr1 = high - low
+        tr2 = (high - prev_close).abs()
+        tr3 = (low - prev_close).abs()
+        tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+
+        up_move = high.diff()
+        down_move = -low.diff()
+        dm_plus = pd.Series(
+            np.where((up_move > down_move) & (up_move > 0), up_move, 0.0),
+            index=close.index,
+        )
+        dm_minus = pd.Series(
+            np.where((down_move > up_move) & (down_move > 0), down_move, 0.0),
+            index=close.index,
+        )
+
+        tr_smooth = tr.ewm(alpha=1 / period, min_periods=period, adjust=False).mean()
+        dm_plus_smooth = dm_plus.ewm(alpha=1 / period, min_periods=period, adjust=False).mean()
+        dm_minus_smooth = dm_minus.ewm(alpha=1 / period, min_periods=period, adjust=False).mean()
+
+        di_plus = 100 * (dm_plus_smooth / tr_smooth.replace(0, np.nan))
+        di_minus = 100 * (dm_minus_smooth / tr_smooth.replace(0, np.nan))
+
+        dx_denominator = (di_plus + di_minus).replace(0, np.nan)
+        dx = (abs(di_plus - di_minus) / dx_denominator) * 100
+        adx = dx.ewm(alpha=1 / period, min_periods=period, adjust=False).mean()
         
         return {
             'adx': adx,
@@ -235,46 +231,74 @@ class TechnicalIndicators:
             'di_minus': di_minus
         }
 
-    def detect_market_regime(self, close, volume, atr, adx, period=20):
+    def detect_market_regime(self, close, volume, atr, adx, period=20, di_plus=None, di_minus=None):
         """
         Detect market regime: Trending, Ranging, or Volatile
         Returns: 'trending', 'ranging', 'volatile'
         """
-        # Bollinger Band squeeze detection
+        window = min(max(period, 10), len(close))
+        if window < 10:
+            return 'ranging'
+
         bb = self.calculate_bollinger_bands(close, period, 2)
         bb_width = (bb['upper'] - bb['lower']) / bb['middle']
-        bb_squeeze = bb_width < bb_width.rolling(20).mean() * 0.8
-        
-        # ADX trend strength
-        strong_trend = adx > 25
-        weak_trend = adx < 20
-        
-        # Volatility check
-        atr_mean = atr.rolling(20).mean()
-        high_volatility = atr > atr_mean * 1.5
-        
-        # Volume analysis
-        volume_mean = volume.rolling(20).mean()
-        high_volume = volume > volume_mean * 1.3
-        
-        # Market regime classification
-        regime_score = 0
-        
-        if strong_trend.iloc[-1]:
-            regime_score += 2
-        if not weak_trend.iloc[-1]:
-            regime_score += 1
-        if not bb_squeeze.iloc[-1]:
-            regime_score += 1
-        if high_volume.iloc[-1]:
-            regime_score += 1
-            
-        if regime_score >= 4:
-            return 'trending'
-        elif regime_score <= 2 or bb_squeeze.iloc[-1]:
-            return 'ranging'
+        bb_width_mean = bb_width.rolling(window, min_periods=max(5, window // 2)).mean()
+        bb_squeeze = bb_width < (bb_width_mean * 0.85)
+
+        atr_pct = atr / close.replace(0, np.nan)
+        atr_pct_mean = atr_pct.rolling(window, min_periods=max(5, window // 2)).mean()
+
+        volume_mean = volume.rolling(window, min_periods=max(5, window // 2)).mean()
+        volume_ratio = volume / volume_mean.replace(0, np.nan)
+
+        slope_window = max(5, min(window // 2, len(close) - 1))
+        sma_fast = close.rolling(slope_window, min_periods=slope_window).mean()
+        if len(sma_fast.dropna()) >= slope_window:
+            slope_pct = abs((sma_fast.iloc[-1] - sma_fast.iloc[-slope_window]) / close.iloc[-1])
         else:
+            slope_pct = 0.0
+
+        adx_last = float(adx.iloc[-1]) if len(adx) and not pd.isna(adx.iloc[-1]) else 0.0
+        bb_width_last = float(bb_width.iloc[-1]) if len(bb_width) and not pd.isna(bb_width.iloc[-1]) else 0.0
+        bb_width_mean_last = float(bb_width_mean.iloc[-1]) if len(bb_width_mean) and not pd.isna(bb_width_mean.iloc[-1]) else bb_width_last
+        atr_pct_last = float(atr_pct.iloc[-1]) if len(atr_pct) and not pd.isna(atr_pct.iloc[-1]) else 0.0
+        atr_pct_mean_last = float(atr_pct_mean.iloc[-1]) if len(atr_pct_mean) and not pd.isna(atr_pct_mean.iloc[-1]) else atr_pct_last
+        volume_ratio_last = float(volume_ratio.iloc[-1]) if len(volume_ratio) and not pd.isna(volume_ratio.iloc[-1]) else 1.0
+        bb_squeeze_last = bool(bb_squeeze.iloc[-1]) if len(bb_squeeze) and not pd.isna(bb_squeeze.iloc[-1]) else False
+
+        directional_spread = 0.0
+        if di_plus is not None and di_minus is not None and len(di_plus) and len(di_minus):
+            di_plus_last = float(di_plus.iloc[-1]) if not pd.isna(di_plus.iloc[-1]) else 0.0
+            di_minus_last = float(di_minus.iloc[-1]) if not pd.isna(di_minus.iloc[-1]) else 0.0
+            directional_spread = abs(di_plus_last - di_minus_last)
+
+        if (
+            atr_pct_last > max(atr_pct_mean_last * 1.35, 0.025)
+            or bb_width_last > max(bb_width_mean_last * 1.35, 0.18)
+        ):
             return 'volatile'
+
+        if (
+            adx_last < 22
+            and directional_spread < 8
+            and (bb_squeeze_last or slope_pct < 0.0025)
+            and volume_ratio_last < 1.15
+        ):
+            return 'ranging'
+
+        if (
+            adx_last >= 26
+            and directional_spread >= 8
+            and slope_pct >= 0.003
+            and not bb_squeeze_last
+            and volume_ratio_last >= 0.95
+        ):
+            return 'trending'
+
+        if bb_squeeze_last or slope_pct < 0.0015:
+            return 'ranging'
+
+        return 'volatile' if adx_last < 24 else 'trending'
 
     def calculate_signal_confidence(self, indicators_dict):
         """
@@ -377,11 +401,21 @@ class TechnicalIndicators:
         # Market structure bonus/penalty
         market_regime = indicators_dict.get('market_regime', 'trending')
         if market_regime == 'trending':
-            confidence += 5  # Bonus for trending markets
+            confidence += 5
         elif market_regime == 'ranging':
-            confidence *= 0.6  # 40% penalty for ranging markets
+            confidence = max(0, confidence - 12)
+            confidence *= 0.45
         elif market_regime == 'volatile':
-            confidence *= 0.75  # 25% penalty for volatile markets
+            confidence = max(0, confidence - 8)
+            confidence *= 0.65
+
+        if adx < 18:
+            confidence -= 8
+        elif adx < 22:
+            confidence -= 4
+
+        if volume_ratio < 1.0:
+            confidence -= 4
         
         # Time of day filter (if available)
         # Peak trading hours tend to have better signal reliability
@@ -403,9 +437,8 @@ class TechnicalIndicators:
         confidence = max(0, confidence)  # Ensure non-negative
         confidence = min(confidence, max_confidence)
         
-        # Quality threshold - more permissive for signals
-        if confidence < 40:  # Reduzido de 50 para 40
-            confidence *= 0.9  # Menos penalização - de 0.8 para 0.9
+        if confidence < 45:
+            confidence *= 0.75
         
         return int(confidence)
     

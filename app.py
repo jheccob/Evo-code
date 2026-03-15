@@ -117,6 +117,7 @@ def get_effective_strategy_settings(
     timeframe: str,
     require_volume: bool = True,
     require_trend: bool = False,
+    avoid_ranging: bool = True,
 ) -> dict:
     active_profile = db.get_active_strategy_profile(symbol=symbol, timeframe=timeframe)
     trading_bot = st.session_state.get("trading_bot")
@@ -132,6 +133,7 @@ def get_effective_strategy_settings(
             "take_profit_pct": active_profile.get("take_profit_pct") or ProductionConfig.DEFAULT_LIVE_TAKE_PROFIT_PCT,
             "require_volume": bool(active_profile.get("require_volume", False)),
             "require_trend": bool(active_profile.get("require_trend", False)),
+            "avoid_ranging": bool(active_profile.get("avoid_ranging", False)),
             "active_profile": active_profile,
             "source": "active_profile",
         }
@@ -146,6 +148,7 @@ def get_effective_strategy_settings(
             "take_profit_pct": ProductionConfig.DEFAULT_LIVE_TAKE_PROFIT_PCT,
             "require_volume": require_volume,
             "require_trend": require_trend,
+            "avoid_ranging": avoid_ranging,
             "active_profile": None,
             "source": "session",
         }
@@ -160,6 +163,7 @@ def get_effective_strategy_settings(
         take_profit_pct=settings.get("take_profit_pct", 0.0) or 0.0,
         require_volume=settings["require_volume"],
         require_trend=settings["require_trend"],
+        avoid_ranging=settings.get("avoid_ranging", False),
     )
     return settings
 
@@ -1285,6 +1289,7 @@ if st.session_state.current_data is not None:
         timeframe,
         require_volume=require_volume,
         require_trend=require_trend,
+        avoid_ranging=avoid_ranging,
     )
     runtime_strategy_version = live_strategy_settings["strategy_version"]
 
@@ -1294,7 +1299,7 @@ if st.session_state.current_data is not None:
         timeframe=timeframe,
         require_volume=live_strategy_settings["require_volume"],
         require_trend=live_strategy_settings["require_trend"],
-        avoid_ranging=avoid_ranging,
+        avoid_ranging=live_strategy_settings.get("avoid_ranging", avoid_ranging),
     )
     signal, guardrail_edge_summary = apply_edge_guardrail(
         signal,
@@ -1671,6 +1676,17 @@ if st.session_state.current_data is not None:
             f"Risco aberto {portfolio_risk_summary.get('total_open_risk_pct', 0):.2f}% | "
             f"Notional ${portfolio_risk_summary.get('total_open_position_notional', 0):.2f}"
         )
+        if not portfolio_risk_summary.get("circuit_breaker_allowed", True):
+            st.error(
+                f"Circuit breaker: {portfolio_risk_summary.get('circuit_breaker_reason')} | "
+                f"PnL diário {portfolio_risk_summary.get('daily_realized_pnl_pct', 0):.2f}% | "
+                f"Losses consecutivos {portfolio_risk_summary.get('consecutive_losses', 0)}"
+            )
+        else:
+            st.caption(
+                f"PnL diário paper: {portfolio_risk_summary.get('daily_realized_pnl_pct', 0):.2f}% | "
+                f"Losses consecutivos: {portfolio_risk_summary.get('consecutive_losses', 0)}"
+            )
 
     analysis_col1, analysis_col2 = st.columns(2)
 
@@ -2192,6 +2208,12 @@ with tab2:
                 help="Usar MACD como filtro adicional"
             )
 
+            enable_avoid_ranging = st.checkbox(
+                "Evitar Mercado Lateral",
+                value=True,
+                help="Bloqueia trades quando o regime estimado for lateralizado"
+            )
+
             stop_loss_pct = st.number_input(
                 "Stop Loss (%)",
                 min_value=0.0,
@@ -2422,6 +2444,7 @@ with tab2:
                         take_profit_pct=take_profit_pct,
                         require_volume=enable_volume_filter,
                         require_trend=enable_trend_filter,
+                        avoid_ranging=enable_avoid_ranging,
                         validation_split_pct=validation_split_pct if enable_oos_validation else 0.0,
                         walk_forward_windows=walk_forward_windows if enable_walk_forward else 0,
                     )
@@ -2460,6 +2483,7 @@ with tab2:
                         take_profit_pct=take_profit_pct,
                         require_volume=enable_volume_filter,
                         require_trend=enable_trend_filter,
+                        avoid_ranging=enable_avoid_ranging,
                         validation_split_pct=validation_split_pct if enable_oos_validation else 0.0,
                         walk_forward_windows=walk_forward_windows if enable_walk_forward else 0,
                     )
@@ -2494,6 +2518,7 @@ with tab2:
                         take_profit_pct=take_profit_pct,
                         require_volume=enable_volume_filter,
                         require_trend=enable_trend_filter,
+                        avoid_ranging=enable_avoid_ranging,
                         validation_split_pct=validation_split_pct if enable_oos_validation else 0.0,
                         walk_forward_windows=walk_forward_windows if enable_walk_forward else 0,
                     )
