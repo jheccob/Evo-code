@@ -102,13 +102,17 @@ class RailwayConfigSmokeTests(unittest.TestCase):
         with open("requirements_railway.txt", "r", encoding="utf-8") as req_file:
             content = req_file.read()
 
-        self.assertIn("-r requirements_production.txt", content)
+        self.assertIn("python-telegram-bot==22.6", content)
+        self.assertIn("ccxt==4.5.5", content)
+        self.assertIn("streamlit==1.49.1", content)
 
     def test_default_requirements_entrypoint_points_to_production(self):
         with open("requirements.txt", "r", encoding="utf-8") as req_file:
             content = req_file.read()
 
-        self.assertIn("-r requirements_production.txt", content)
+        self.assertIn("python-telegram-bot==22.6", content)
+        self.assertIn("ccxt==4.5.5", content)
+        self.assertIn("streamlit==1.49.1", content)
 
 
 class GcpDeploySmokeTests(unittest.TestCase):

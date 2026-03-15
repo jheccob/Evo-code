@@ -25,7 +25,7 @@ O repositorio agora inclui `railway.json` com:
 - instalacao por `requirements_railway.txt`
 - start command `python start_telegram_bot.py`
 - restart policy `ON_FAILURE`
-- fallback por `requirements.txt` para plataformas que autodetectam dependencias Python
+- fallback por `requirements.txt` com a mesma lista completa de dependencias
 
 Passos:
 
@@ -42,7 +42,7 @@ Com isso, o Railway deve subir o bot diretamente pelo entrypoint `start_telegram
 
 Observacao:
 
-- O `requirements_railway.txt` agora reaproveita o mesmo conjunto de dependencias do `requirements_production.txt`, evitando divergencia no deploy.
+- `requirements_railway.txt`, `requirements.txt` e `requirements_production.txt` estao alinhados para evitar divergencia no deploy.
 - `ON_FAILURE` foi escolhido para funcionar tambem em planos que nao suportam `ALWAYS`.
 - O processo agora sai com codigo diferente de zero em falha real, permitindo restart automatico pelo Railway.
 - Para operacao realmente 24/7, prefira um plano pago do Railway. Em Free/trial, o restart policy tem limitacoes.

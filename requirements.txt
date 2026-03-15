@@ -1,2 +1,36 @@
-# Default Python dependency entrypoint for platforms that auto-detect requirements.txt.
--r requirements_production.txt
+# Core
+aiohttp==3.12.15
+alembic==1.16.5
+aioredis==2.0.1
+asyncpg==0.30.0
+celery==5.5.3
+cryptography==46.0.1
+fastapi==0.116.2
+prometheus-client==0.22.1
+psycopg2-binary==2.9.10
+pyjwt==2.10.1
+redis==6.4.0
+sentry-sdk==2.38.0
+sqlalchemy==2.0.43
+uvicorn==0.35.0
+
+# Telegram
+python-telegram-bot==22.6
+
+# Trading & Analysis
+ccxt==4.5.5
+joblib==1.5.2
+numpy==2.3.3
+pandas==2.3.2
+plotly==6.3.0
+requests==2.32.5
+scikit-learn==1.8.0
+streamlit==1.49.1
+websockets==15.0.1
+
+# Payment
+stripe==12.5.1
+
+# Development
+pytest==8.4.2
+pytest-asyncio==1.2.0
