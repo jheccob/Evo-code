@@ -41,7 +41,7 @@ Com isso, o Railway deve subir o bot diretamente pelo entrypoint `start_telegram
 
 Observacao:
 
-- O worker usa um conjunto reduzido de dependencias em `requirements_railway.txt`, separado do dashboard.
+- O `requirements_railway.txt` agora reaproveita o mesmo conjunto de dependencias do `requirements_production.txt`, evitando divergencia no deploy.
 - `ON_FAILURE` foi escolhido para funcionar tambem em planos que nao suportam `ALWAYS`.
 - O processo agora sai com codigo diferente de zero em falha real, permitindo restart automatico pelo Railway.
 - Para operacao realmente 24/7, prefira um plano pago do Railway. Em Free/trial, o restart policy tem limitacoes.
