@@ -5,6 +5,18 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
+
+def _get_default_db_path() -> str:
+    explicit_path = os.getenv("TRADING_BOT_DB_PATH", "").strip()
+    if explicit_path:
+        return explicit_path
+
+    railway_volume_mount = os.getenv("RAILWAY_VOLUME_MOUNT_PATH", "").strip()
+    if railway_volume_mount:
+        return f"{railway_volume_mount.rstrip('/')}/trading_bot.db"
+
+    return "data/trading_bot.db"
+
 class AppConfig:
     # Trading parameters - Optimized for maximum accuracy
     DEFAULT_SYMBOL = "XLM/USDT"
@@ -28,7 +40,7 @@ class AppConfig:
     DEFAULT_INITIAL_BALANCE = 10000
     MAX_BACKTEST_DAYS = 90
 
-    DB_PATH = os.getenv("TRADING_BOT_DB_PATH", "data/trading_bot.db").strip() or "data/trading_bot.db"
+    DB_PATH = _get_default_db_path()
     MAX_SIGNALS_HISTORY = 1000
 
     CHART_HEIGHT = 800

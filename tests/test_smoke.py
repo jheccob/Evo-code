@@ -118,6 +118,19 @@ class ProductionConfigSmokeTests(unittest.TestCase):
             self.assertEqual(reloaded.AppConfig.DB_PATH, "/data/trading_bot.db")
             importlib.reload(config_module)
 
+    def test_app_config_uses_railway_volume_mount_path_when_present(self):
+        import importlib
+        import config.config as config_module
+
+        with mock.patch.dict(
+            os.environ,
+            {"TRADING_BOT_DB_PATH": "", "RAILWAY_VOLUME_MOUNT_PATH": "/data"},
+            clear=False,
+        ):
+            reloaded = importlib.reload(config_module)
+            self.assertEqual(reloaded.AppConfig.DB_PATH, "/data/trading_bot.db")
+            importlib.reload(config_module)
+
 
 class RailwayConfigSmokeTests(unittest.TestCase):
     def test_railway_json_targets_the_worker_entrypoint(self):

@@ -48,6 +48,7 @@ Observacao:
 - O processo agora sai com codigo diferente de zero em falha real, permitindo restart automatico pelo Railway.
 - Para operacao realmente 24/7, prefira um plano pago do Railway. Em Free/trial, o restart policy tem limitacoes.
 - Para nao perder usuarios e historico em redeploy, anexe um `Volume` ao service e use `TRADING_BOT_DB_PATH` apontando para o mount path, por exemplo `/data/trading_bot.db`.
+- Se o Volume estiver anexado no Railway, o projeto tambem consegue detectar automaticamente `RAILWAY_VOLUME_MOUNT_PATH` e usar `trading_bot.db` nesse mount path.
 
 ## Deploy no Google Cloud Free
 

@@ -21,6 +21,7 @@ class UserManager:
             self._init_sqlite_storage()
             self._migrate_legacy_json_if_needed()
 
+        logger.info("UserManager usando backend %s em %s", "json" if self.use_json_backend else "sqlite", self.db_file)
         self.admin_ids = self._load_admin_ids()
 
     def _get_default_db_path(self) -> str:
