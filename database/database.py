@@ -175,16 +175,23 @@ class TradingDatabase:
                 run_id INTEGER NOT NULL,
                 symbol TEXT NOT NULL,
                 timeframe TEXT NOT NULL,
+                setup_name TEXT,
                 strategy_version TEXT,
+                regime TEXT,
+                signal_score REAL DEFAULT 0.0,
+                atr REAL DEFAULT 0.0,
                 entry_timestamp TEXT,
+                entry_reason TEXT,
                 exit_timestamp TEXT NOT NULL,
                 entry_price REAL NOT NULL,
                 exit_price REAL NOT NULL,
+                exit_reason TEXT,
                 profit_loss_pct REAL NOT NULL,
                 profit_loss REAL NOT NULL,
                 signal TEXT NOT NULL,
                 side TEXT,
                 reason TEXT,
+                sample_type TEXT DEFAULT 'backtest',
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (run_id) REFERENCES backtest_runs(id) ON DELETE CASCADE
             )
@@ -195,11 +202,17 @@ class TradingDatabase:
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 symbol TEXT NOT NULL,
                 timeframe TEXT NOT NULL,
+                setup_name TEXT,
                 strategy_version TEXT,
+                regime TEXT,
+                signal_score REAL DEFAULT 0.0,
+                atr REAL DEFAULT 0.0,
+                sample_type TEXT DEFAULT 'paper',
                 signal TEXT NOT NULL,
                 side TEXT NOT NULL,
                 source TEXT NOT NULL,
                 entry_timestamp TEXT NOT NULL,
+                entry_reason TEXT,
                 entry_price REAL NOT NULL,
                 stop_loss_pct REAL NOT NULL DEFAULT 0.0,
                 take_profit_pct REAL NOT NULL DEFAULT 0.0,
@@ -208,6 +221,7 @@ class TradingDatabase:
                 status TEXT NOT NULL DEFAULT 'OPEN',
                 outcome TEXT NOT NULL DEFAULT 'OPEN',
                 close_reason TEXT,
+                exit_reason TEXT,
                 exit_timestamp TEXT,
                 exit_price REAL,
                 result_pct REAL DEFAULT 0.0,
@@ -283,6 +297,20 @@ class TradingDatabase:
         self._ensure_column(cursor, 'backtest_runs', 'strategy_version', 'TEXT')
         self._ensure_column(cursor, 'backtest_trades', 'strategy_version', 'TEXT')
         self._ensure_column(cursor, 'paper_trades', 'strategy_version', 'TEXT')
+        self._ensure_column(cursor, 'backtest_trades', 'setup_name', 'TEXT')
+        self._ensure_column(cursor, 'backtest_trades', 'regime', 'TEXT')
+        self._ensure_column(cursor, 'backtest_trades', 'signal_score', 'REAL DEFAULT 0.0')
+        self._ensure_column(cursor, 'backtest_trades', 'atr', 'REAL DEFAULT 0.0')
+        self._ensure_column(cursor, 'backtest_trades', 'entry_reason', 'TEXT')
+        self._ensure_column(cursor, 'backtest_trades', 'exit_reason', 'TEXT')
+        self._ensure_column(cursor, 'backtest_trades', 'sample_type', "TEXT DEFAULT 'backtest'")
+        self._ensure_column(cursor, 'paper_trades', 'setup_name', 'TEXT')
+        self._ensure_column(cursor, 'paper_trades', 'regime', 'TEXT')
+        self._ensure_column(cursor, 'paper_trades', 'signal_score', 'REAL DEFAULT 0.0')
+        self._ensure_column(cursor, 'paper_trades', 'atr', 'REAL DEFAULT 0.0')
+        self._ensure_column(cursor, 'paper_trades', 'entry_reason', 'TEXT')
+        self._ensure_column(cursor, 'paper_trades', 'exit_reason', 'TEXT')
+        self._ensure_column(cursor, 'paper_trades', 'sample_type', "TEXT DEFAULT 'paper'")
         self._ensure_column(cursor, 'backtest_runs', 'avoid_ranging', 'BOOLEAN DEFAULT FALSE')
         self._ensure_column(cursor, 'paper_trades', 'planned_risk_pct', 'REAL DEFAULT 0.0')
         self._ensure_column(cursor, 'paper_trades', 'planned_risk_amount', 'REAL DEFAULT 0.0')
@@ -673,21 +701,28 @@ class TradingDatabase:
         try:
             cursor = conn.cursor()
             columns = [
-                'symbol', 'timeframe', 'strategy_version', 'signal', 'side', 'source', 'entry_timestamp', 'entry_price',
+                'symbol', 'timeframe', 'setup_name', 'strategy_version', 'regime', 'signal_score', 'atr', 'sample_type',
+                'signal', 'side', 'source', 'entry_timestamp', 'entry_reason', 'entry_price',
                 'stop_loss_pct', 'take_profit_pct', 'stop_loss_price', 'take_profit_price',
                 'planned_risk_pct', 'planned_risk_amount', 'planned_position_notional', 'planned_quantity',
                 'account_reference_balance',
-                'status', 'outcome', 'close_reason', 'exit_timestamp', 'exit_price', 'result_pct',
+                'status', 'outcome', 'close_reason', 'exit_reason', 'exit_timestamp', 'exit_price', 'result_pct',
                 'created_at_br'
             ]
             values = {
                 'symbol': trade_data.get('symbol'),
                 'timeframe': trade_data.get('timeframe'),
+                'setup_name': trade_data.get('setup_name') or trade_data.get('strategy_version'),
                 'strategy_version': trade_data.get('strategy_version'),
+                'regime': trade_data.get('regime'),
+                'signal_score': trade_data.get('signal_score', 0.0),
+                'atr': trade_data.get('atr', 0.0),
+                'sample_type': trade_data.get('sample_type', 'paper'),
                 'signal': trade_data.get('signal'),
                 'side': trade_data.get('side'),
                 'source': trade_data.get('source', 'system'),
                 'entry_timestamp': trade_data.get('entry_timestamp'),
+                'entry_reason': trade_data.get('entry_reason') or trade_data.get('signal'),
                 'entry_price': trade_data.get('entry_price'),
                 'stop_loss_pct': trade_data.get('stop_loss_pct', 0.0),
                 'take_profit_pct': trade_data.get('take_profit_pct', 0.0),
@@ -701,6 +736,7 @@ class TradingDatabase:
                 'status': trade_data.get('status', 'OPEN'),
                 'outcome': trade_data.get('outcome', 'OPEN'),
                 'close_reason': trade_data.get('close_reason'),
+                'exit_reason': trade_data.get('exit_reason') or trade_data.get('close_reason'),
                 'exit_timestamp': trade_data.get('exit_timestamp'),
                 'exit_price': trade_data.get('exit_price'),
                 'result_pct': trade_data.get('result_pct', 0.0),
@@ -889,11 +925,12 @@ class TradingDatabase:
                 SET status = 'CLOSED',
                     outcome = ?,
                     close_reason = ?,
+                    exit_reason = ?,
                     exit_timestamp = ?,
                     exit_price = ?,
                     result_pct = ?
                 WHERE id = ?
-            ''', (outcome, close_reason, exit_timestamp, exit_price, result_pct, trade_id))
+            ''', (outcome, close_reason, close_reason, exit_timestamp, exit_price, result_pct, trade_id))
             conn.commit()
         finally:
             conn.close()
@@ -1102,16 +1139,23 @@ class TradingDatabase:
                     run_id,
                     run_data.get('symbol'),
                     run_data.get('timeframe'),
+                    trade.get('setup_name') or run_data.get('strategy_version'),
                     run_data.get('strategy_version'),
+                    trade.get('regime'),
+                    trade.get('signal_score', 0.0),
+                    trade.get('atr', 0.0),
                     self._normalize_timestamp(trade.get('entry_timestamp')),
+                    trade.get('entry_reason') or trade.get('signal'),
                     self._normalize_timestamp(trade.get('timestamp')),
                     trade.get('entry_price'),
                     trade.get('price'),
+                    trade.get('exit_reason') or trade.get('reason'),
                     trade.get('profit_loss_pct'),
                     trade.get('profit_loss'),
                     trade.get('signal'),
                     trade.get('side'),
                     trade.get('reason'),
+                    trade.get('sample_type', 'backtest'),
                 )
                 for trade in trades
             ]
@@ -1119,9 +1163,10 @@ class TradingDatabase:
             if trade_rows:
                 cursor.executemany('''
                     INSERT INTO backtest_trades (
-                        run_id, symbol, timeframe, strategy_version, entry_timestamp, exit_timestamp, entry_price, exit_price,
-                        profit_loss_pct, profit_loss, signal, side, reason
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        run_id, symbol, timeframe, setup_name, strategy_version, regime, signal_score, atr, entry_timestamp,
+                        entry_reason, exit_timestamp, entry_price, exit_price, exit_reason, profit_loss_pct, profit_loss,
+                        signal, side, reason, sample_type
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ''', trade_rows)
 
             conn.commit()

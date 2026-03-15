@@ -264,6 +264,12 @@ class BacktestEngineTests(unittest.TestCase):
             self.assertEqual(summary["breakdown_by_market"][0]["symbol"], "BTC/USDT")
             self.assertIn("avg_expectancy_pct", summary)
             self.assertEqual(runs[0]["net_profit"], results["stats"]["net_profit"])
+            self.assertEqual(trades[0]["setup_name"], results["meta"]["strategy_version"])
+            self.assertEqual(trades[0]["strategy_version"], results["meta"]["strategy_version"])
+            self.assertEqual(trades[0]["entry_reason"], trades[0]["signal"])
+            self.assertEqual(trades[0]["exit_reason"], trades[0]["reason"])
+            self.assertEqual(trades[0]["sample_type"], "backtest")
+            self.assertGreaterEqual(float(trades[0]["signal_score"]), 0.0)
         finally:
             if os.path.exists(temp_db.name):
                 os.remove(temp_db.name)

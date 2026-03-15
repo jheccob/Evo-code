@@ -23,6 +23,13 @@ SHORT_SIGNALS = {"VENDA", "VENDA_FRACA"}
 class Position:
     side: str
     signal: str
+    setup_name: str
+    strategy_version: Optional[str]
+    regime: Optional[str]
+    signal_score: float
+    atr: float
+    entry_reason: str
+    sample_type: str
     entry_timestamp: pd.Timestamp
     entry_price: float
     quantity: float
@@ -393,6 +400,9 @@ class BacktestEngine:
             require_volume=require_volume,
             require_trend=require_trend,
             avoid_ranging=avoid_ranging,
+            strategy_version=strategy_version,
+            setup_name=strategy_version,
+            sample_type="backtest",
         )
 
         stats = self._build_stats(
@@ -747,6 +757,9 @@ class BacktestEngine:
         require_volume: bool,
         require_trend: bool,
         avoid_ranging: bool,
+        strategy_version: Optional[str],
+        setup_name: Optional[str],
+        sample_type: str,
     ) -> Tuple[List[Dict], List[Dict], float]:
         warmup_candles = max(210, int(getattr(self.trading_bot, "rsi_period", 14)) + 5)
         start_idx = max(warmup_candles, int(df.index.searchsorted(pd.Timestamp(start_date), side="left")))
@@ -801,6 +814,7 @@ class BacktestEngine:
             if open_position is None and signal in LONG_SIGNALS.union(SHORT_SIGNALS):
                 opened = self._open_position(
                     signal=signal,
+                    current_row=current_row,
                     next_row=next_row,
                     balance=balance,
                     position_size_pct=position_size_pct,
@@ -808,6 +822,9 @@ class BacktestEngine:
                     slippage=slippage,
                     stop_loss_pct=stop_loss_pct,
                     take_profit_pct=take_profit_pct,
+                    strategy_version=strategy_version,
+                    setup_name=setup_name,
+                    sample_type=sample_type,
                 )
                 if opened is not None:
                     open_position = opened
@@ -848,6 +865,7 @@ class BacktestEngine:
     def _open_position(
         self,
         signal: str,
+        current_row: pd.Series,
         next_row: pd.Series,
         balance: float,
         position_size_pct: float,
@@ -855,6 +873,9 @@ class BacktestEngine:
         slippage: float,
         stop_loss_pct: float,
         take_profit_pct: float,
+        strategy_version: Optional[str],
+        setup_name: Optional[str],
+        sample_type: str,
     ) -> Optional[Position]:
         if balance <= 0 or position_size_pct <= 0:
             return None
@@ -874,9 +895,24 @@ class BacktestEngine:
         if take_profit_pct > 0:
             take_profit_price = entry_price * (1 + take_profit_pct if side == "long" else 1 - take_profit_pct)
 
+        setup_name = setup_name or strategy_version or signal
+        signal_score = current_row.get("signal_confidence", 0.0)
+        if pd.isna(signal_score):
+            signal_score = 0.0
+        atr_value = current_row.get("atr", 0.0)
+        if pd.isna(atr_value):
+            atr_value = 0.0
+
         return Position(
             side=side,
             signal=signal,
+            setup_name=setup_name,
+            strategy_version=strategy_version,
+            regime=current_row.get("market_regime"),
+            signal_score=float(signal_score or 0.0),
+            atr=float(atr_value or 0.0),
+            entry_reason=signal,
+            sample_type=sample_type,
             entry_timestamp=pd.Timestamp(next_row.name),
             entry_price=entry_price,
             quantity=quantity,
@@ -971,6 +1007,14 @@ class BacktestEngine:
         return {
             "timestamp": exit_timestamp,
             "entry_timestamp": open_position.entry_timestamp,
+            "setup_name": open_position.setup_name,
+            "strategy_version": open_position.strategy_version,
+            "regime": open_position.regime,
+            "signal_score": round(float(open_position.signal_score or 0.0), 4),
+            "atr": round(float(open_position.atr or 0.0), 6),
+            "entry_reason": open_position.entry_reason,
+            "exit_reason": reason,
+            "sample_type": open_position.sample_type,
             "entry_price": round(open_position.entry_price, 6),
             "price": round(exit_price, 6),
             "profit_loss_pct": round(profit_loss_pct, 4),
@@ -1063,6 +1107,9 @@ class BacktestEngine:
                 require_volume=require_volume,
                 require_trend=require_trend,
                 avoid_ranging=avoid_ranging,
+                strategy_version=None,
+                setup_name=None,
+                sample_type="in_sample",
             )
             out_sample_trades, out_sample_portfolio, out_sample_balance = self._run_simulation(
                 df=df,
@@ -1078,6 +1125,9 @@ class BacktestEngine:
                 require_volume=require_volume,
                 require_trend=require_trend,
                 avoid_ranging=avoid_ranging,
+                strategy_version=None,
+                setup_name=None,
+                sample_type="out_of_sample",
             )
         except ValueError:
             logger.info("Periodo insuficiente para validacao fora da amostra; split ignorado")
@@ -1175,6 +1225,9 @@ class BacktestEngine:
                     require_volume=require_volume,
                     require_trend=require_trend,
                     avoid_ranging=avoid_ranging,
+                    strategy_version=None,
+                    setup_name=None,
+                    sample_type="walk_forward_in_sample",
                 )
                 out_sample_trades, out_sample_portfolio, out_sample_balance = self._run_simulation(
                     df=df,
@@ -1190,6 +1243,9 @@ class BacktestEngine:
                     require_volume=require_volume,
                     require_trend=require_trend,
                     avoid_ranging=avoid_ranging,
+                    strategy_version=None,
+                    setup_name=None,
+                    sample_type="walk_forward_out_of_sample",
                 )
             except ValueError:
                 logger.info("Janela walk-forward %s ignorada por dados insuficientes", window_index)

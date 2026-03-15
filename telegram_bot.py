@@ -564,6 +564,12 @@ class TelegramTradingBot:
                         stop_loss_pct=strategy_settings.get("stop_loss_pct"),
                         take_profit_pct=strategy_settings.get("take_profit_pct"),
                         risk_plan=risk_plan,
+                        setup_name=runtime_strategy_version,
+                        regime=last_candle.get("market_regime"),
+                        signal_score=last_candle.get("signal_confidence", 0.0),
+                        atr=last_candle.get("atr", 0.0),
+                        entry_reason=final_signal,
+                        sample_type="paper",
                     )
             except Exception as e:
                 self.logger.warning("Falha ao registrar outcome de paper trade: %s", e)

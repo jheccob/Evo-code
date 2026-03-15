@@ -113,6 +113,36 @@ class PaperTradeServiceTests(unittest.TestCase):
         self.assertEqual(open_trades[0]["side"], "short")
         self.assertTrue(any(trade["close_reason"] == "SIGNAL_FLIP" for trade in recent_trades))
 
+    def test_register_signal_persists_setup_and_signal_metadata(self):
+        strategy_version = build_strategy_version("BTC/USDT", "5m", 14, 20, 70, 0.0, 0.0, True, False)
+
+        trade_id = self.service.register_signal(
+            symbol="BTC/USDT",
+            timeframe="5m",
+            signal="COMPRA",
+            entry_price=100.0,
+            entry_timestamp=datetime(2026, 1, 1, 10, 0),
+            source="test",
+            strategy_version=strategy_version,
+            setup_name="setup-btc-5m",
+            regime="trending",
+            signal_score=74.5,
+            atr=1.23,
+            entry_reason="COMPRA",
+            sample_type="paper",
+        )
+
+        open_trades = self.database.get_open_paper_trades(symbol="BTC/USDT", timeframe="5m")
+
+        self.assertEqual(trade_id, open_trades[0]["id"])
+        self.assertEqual(open_trades[0]["setup_name"], "setup-btc-5m")
+        self.assertEqual(open_trades[0]["strategy_version"], strategy_version)
+        self.assertEqual(open_trades[0]["regime"], "trending")
+        self.assertEqual(open_trades[0]["signal_score"], 74.5)
+        self.assertEqual(open_trades[0]["atr"], 1.23)
+        self.assertEqual(open_trades[0]["entry_reason"], "COMPRA")
+        self.assertEqual(open_trades[0]["sample_type"], "paper")
+
     def test_edge_monitor_flags_degraded_live_performance_against_backtest(self):
         self.database.save_backtest_result(
             {
@@ -417,10 +447,12 @@ class PaperTradeServiceTests(unittest.TestCase):
             strategy_version=strategy_version,
             evaluation_type="paper",
         )
+        recent_trades = self.database.get_recent_paper_trades(symbol="ETH/USDT", timeframe="15m")
 
         self.assertEqual(len(evaluations), 1)
         self.assertEqual(evaluations[0]["paper_closed_trades"], 1)
         self.assertEqual(evaluations[0]["evaluation_type"], "paper")
+        self.assertEqual(recent_trades[0]["exit_reason"], "TAKE_PROFIT")
 
     def test_strategy_evaluation_overview_returns_latest_snapshot_per_strategy(self):
         strategy_v1 = build_strategy_version("BTC/USDT", "5m", 14, 20, 70, 0.0, 0.0, True, False)

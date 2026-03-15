@@ -39,6 +39,12 @@ class PaperTradeService:
         stop_loss_pct: Optional[float] = None,
         take_profit_pct: Optional[float] = None,
         risk_plan: Optional[Dict] = None,
+        setup_name: str = None,
+        regime: str = None,
+        signal_score: Optional[float] = None,
+        atr: Optional[float] = None,
+        entry_reason: str = None,
+        sample_type: str = "paper",
     ) -> Optional[int]:
         if signal not in ACTIONABLE_SIGNALS:
             return None
@@ -75,11 +81,17 @@ class PaperTradeService:
         trade_data = {
             "symbol": symbol,
             "timeframe": timeframe,
+            "setup_name": setup_name or strategy_version,
             "strategy_version": strategy_version,
+            "regime": regime,
+            "signal_score": 0.0 if pd.isna(signal_score) else (signal_score or 0.0),
+            "atr": 0.0 if pd.isna(atr) else (atr or 0.0),
+            "sample_type": sample_type,
             "signal": signal,
             "side": side,
             "source": source,
             "entry_timestamp": timestamp_iso,
+            "entry_reason": entry_reason or signal,
             "entry_price": float(entry_price),
             "stop_loss_pct": stop_loss_pct * 100,
             "take_profit_pct": take_profit_pct * 100,
@@ -184,6 +196,7 @@ class PaperTradeService:
             "exit_price": round(float(exit_price), 6),
             "outcome": outcome,
             "close_reason": close_reason,
+            "exit_reason": close_reason,
             "result_pct": round(float(result_pct), 4),
         }
 
