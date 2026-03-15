@@ -408,10 +408,23 @@ class ProductionConfig:
     TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "").strip()
     ADMIN_PANEL_PASSWORD = os.getenv("ADMIN_PANEL_PASSWORD", "").strip()
     ENABLE_DASHBOARD_BACKGROUND_BOT = os.getenv("ENABLE_DASHBOARD_BACKGROUND_BOT", "").strip().lower() in {"1", "true", "yes"}
+    ENABLE_EDGE_GUARDRAIL = os.getenv("ENABLE_EDGE_GUARDRAIL", "true").strip().lower() in {"1", "true", "yes"}
+    ENABLE_AI_SIGNAL_INFLUENCE = os.getenv("ENABLE_AI_SIGNAL_INFLUENCE", "false").strip().lower() in {"1", "true", "yes"}
     REDIS_URL = os.getenv("REDIS_URL", "").strip()
     STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY", "").strip()
     STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET", "").strip()
     PREMIUM_PRICE_MONTHLY = _parse_float_env("PREMIUM_PRICE_MONTHLY", 19.90)
+    MIN_PAPER_TRADES_FOR_EDGE_VALIDATION = int(os.getenv("MIN_PAPER_TRADES_FOR_EDGE_VALIDATION", "30").strip() or "30")
+    MIN_PAPER_TRADES_FOR_EDGE_GUARDRAIL = int(os.getenv("MIN_PAPER_TRADES_FOR_EDGE_GUARDRAIL", "30").strip() or "30")
+    MIN_BACKTEST_TRADES_FOR_PROMOTION = int(os.getenv("MIN_BACKTEST_TRADES_FOR_PROMOTION", "10").strip() or "10")
+    MIN_PROMOTION_PROFIT_FACTOR = _parse_float_env("MIN_PROMOTION_PROFIT_FACTOR", 1.20)
+    MAX_PROMOTION_DRAWDOWN = _parse_float_env("MAX_PROMOTION_DRAWDOWN", 20.0)
+    PAPER_ACCOUNT_BALANCE = _parse_float_env("PAPER_ACCOUNT_BALANCE", 10000.0)
+    RISK_PER_TRADE_PCT = _parse_float_env("RISK_PER_TRADE_PCT", 0.5)
+    MAX_OPEN_PAPER_TRADES = int(os.getenv("MAX_OPEN_PAPER_TRADES", "3").strip() or "3")
+    MAX_PORTFOLIO_OPEN_RISK_PCT = _parse_float_env("MAX_PORTFOLIO_OPEN_RISK_PCT", 2.0)
+    DEFAULT_LIVE_STOP_LOSS_PCT = _parse_float_env("DEFAULT_LIVE_STOP_LOSS_PCT", 2.0)
+    DEFAULT_LIVE_TAKE_PROFIT_PCT = _parse_float_env("DEFAULT_LIVE_TAKE_PROFIT_PCT", 4.0)
 
     # Lista separada por vírgula: ADMIN_USERS=123,456
     ADMIN_USERS: list = _parse_admin_users(os.getenv("ADMIN_USERS", "1035830659"))

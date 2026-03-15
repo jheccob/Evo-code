@@ -37,6 +37,9 @@ from user_manager import UserManager
 from trading_bot import TradingBot
 from ai_model import AIModel
 from config import TelegramBotConfig, ProductionConfig
+from database.database import build_strategy_version, db as runtime_db
+from services.paper_trade_service import PaperTradeService
+from services.risk_management_service import RiskManagementService
 
 class TelegramTradingBot:
     """Bot Telegram para Trading - Versão Consolidada"""
@@ -45,6 +48,8 @@ class TelegramTradingBot:
         self.allow_simulated_data = allow_simulated_data
         self.auto_configure_from_env = auto_configure_from_env
         self.ai_model = AIModel()
+        self.paper_trade_service = PaperTradeService()
+        self.risk_management_service = RiskManagementService()
         self.logger = logging.getLogger(self.__class__.__name__)
         
         if not TELEGRAM_AVAILABLE:
@@ -163,6 +168,134 @@ class TelegramTradingBot:
             self.logger.error(f"❌ Erro inesperado ao responder Telegram: {err}")
             return None
     
+    def _apply_edge_guardrail(self, signal: str, symbol: str, timeframe: str, strategy_version: Optional[str] = None):
+        if signal not in {"COMPRA", "VENDA", "COMPRA_FRACA", "VENDA_FRACA"}:
+            return signal, None
+        if not ProductionConfig.ENABLE_EDGE_GUARDRAIL:
+            return signal, None
+
+        if strategy_version is None:
+            strategy_version = self._build_runtime_strategy_version(symbol, timeframe)
+
+        try:
+            edge_summary = runtime_db.get_edge_monitor_summary(
+                symbol=symbol,
+                timeframe=timeframe,
+                strategy_version=strategy_version,
+            )
+        except Exception as exc:
+            self.logger.warning("Falha ao consultar edge monitor: %s", exc)
+            return signal, None
+
+        if (
+            edge_summary.get("status") == "degraded"
+            and edge_summary.get("paper_closed_trades", 0) >= ProductionConfig.MIN_PAPER_TRADES_FOR_EDGE_GUARDRAIL
+        ):
+            return "NEUTRO", edge_summary
+
+        return signal, edge_summary
+
+    def _build_runtime_strategy_version(
+        self,
+        symbol: str,
+        timeframe: str,
+        strategy_settings: Optional[dict] = None,
+    ) -> str:
+        strategy_settings = strategy_settings or {}
+        return build_strategy_version(
+            symbol=symbol,
+            timeframe=timeframe,
+            rsi_period=strategy_settings.get("rsi_period", getattr(self.trading_bot, "rsi_period", 14)),
+            rsi_min=strategy_settings.get("rsi_min", getattr(self.trading_bot, "rsi_min", 20)),
+            rsi_max=strategy_settings.get("rsi_max", getattr(self.trading_bot, "rsi_max", 80)),
+            stop_loss_pct=strategy_settings.get("stop_loss_pct", 0.0) or 0.0,
+            take_profit_pct=strategy_settings.get("take_profit_pct", 0.0) or 0.0,
+            require_volume=strategy_settings.get("require_volume", True),
+            require_trend=strategy_settings.get("require_trend", False),
+        )
+
+    def _resolve_runtime_strategy_settings(self, symbol: str, timeframe: str) -> dict:
+        if not self.trading_bot:
+            return {
+                "symbol": symbol,
+                "timeframe": timeframe,
+                "rsi_period": 14,
+                "rsi_min": 20,
+                "rsi_max": 80,
+                "stop_loss_pct": ProductionConfig.DEFAULT_LIVE_STOP_LOSS_PCT,
+                "take_profit_pct": ProductionConfig.DEFAULT_LIVE_TAKE_PROFIT_PCT,
+                "require_volume": True,
+                "require_trend": False,
+                "active_profile": None,
+            }
+
+        active_profile = runtime_db.get_active_strategy_profile(symbol=symbol, timeframe=timeframe)
+        if active_profile:
+            self.trading_bot.update_config(
+                symbol=symbol,
+                timeframe=timeframe,
+                rsi_period=active_profile.get("rsi_period"),
+                rsi_min=active_profile.get("rsi_min"),
+                rsi_max=active_profile.get("rsi_max"),
+            )
+            settings = {
+                "symbol": symbol,
+                "timeframe": timeframe,
+                "rsi_period": active_profile.get("rsi_period"),
+                "rsi_min": active_profile.get("rsi_min"),
+                "rsi_max": active_profile.get("rsi_max"),
+                "stop_loss_pct": active_profile.get("stop_loss_pct") or ProductionConfig.DEFAULT_LIVE_STOP_LOSS_PCT,
+                "take_profit_pct": active_profile.get("take_profit_pct") or ProductionConfig.DEFAULT_LIVE_TAKE_PROFIT_PCT,
+                "require_volume": bool(active_profile.get("require_volume", False)),
+                "require_trend": bool(active_profile.get("require_trend", False)),
+                "active_profile": active_profile,
+            }
+        else:
+            self.trading_bot.update_config(symbol=symbol, timeframe=timeframe)
+            settings = {
+                "symbol": symbol,
+                "timeframe": timeframe,
+                "rsi_period": getattr(self.trading_bot, "rsi_period", 14),
+                "rsi_min": getattr(self.trading_bot, "rsi_min", 20),
+                "rsi_max": getattr(self.trading_bot, "rsi_max", 80),
+                "stop_loss_pct": ProductionConfig.DEFAULT_LIVE_STOP_LOSS_PCT,
+                "take_profit_pct": ProductionConfig.DEFAULT_LIVE_TAKE_PROFIT_PCT,
+                "require_volume": True,
+                "require_trend": False,
+                "active_profile": None,
+            }
+
+        settings["strategy_version"] = self._build_runtime_strategy_version(symbol, timeframe, settings)
+        return settings
+
+    def _merge_rule_and_ai_signal(self, signal: str, ai_signal: str) -> str:
+        if not ProductionConfig.ENABLE_AI_SIGNAL_INFLUENCE:
+            return signal
+
+        final_signal = signal
+        if ai_signal in ["BUY", "SELL"] and signal in ["COMPRA", "VENDA"]:
+            final_signal = signal
+        elif ai_signal == "BUY" and signal in ["NEUTRO", "VENDA", "VENDA_FRACA"]:
+            final_signal = "COMPRA_FRACA"
+        elif ai_signal == "SELL" and signal in ["NEUTRO", "COMPRA", "COMPRA_FRACA"]:
+            final_signal = "VENDA_FRACA"
+        return final_signal
+
+    def _apply_risk_guardrail(self, signal: str, entry_price: float, strategy_settings: dict):
+        if signal not in {"COMPRA", "VENDA", "COMPRA_FRACA", "VENDA_FRACA"}:
+            return signal, None
+
+        risk_plan = self.risk_management_service.build_trade_plan(
+            entry_price=float(entry_price),
+            stop_loss_pct=strategy_settings.get("stop_loss_pct", 0.0) or 0.0,
+            symbol=strategy_settings.get("symbol"),
+            timeframe=strategy_settings.get("timeframe"),
+            strategy_version=strategy_settings.get("strategy_version"),
+        )
+        if not risk_plan.get("allowed"):
+            return "NEUTRO", risk_plan
+        return signal, risk_plan
+
     async def start_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /start command"""
         try:
@@ -306,7 +439,9 @@ class TelegramTradingBot:
                 await loading_msg.edit_text("Erro: TradingBot não inicializado")
                 return
 
-            self.trading_bot.update_config(symbol=symbol)
+            initial_timeframe = getattr(self.trading_bot, "timeframe", "5m")
+            strategy_settings = self._resolve_runtime_strategy_settings(symbol, initial_timeframe)
+            active_profile = strategy_settings.get("active_profile")
 
             data = None
             for attempt in range(3):
@@ -324,7 +459,13 @@ class TelegramTradingBot:
                 return
 
             last_candle = data.iloc[-1]
-            signal = self.trading_bot.check_signal(data)
+            timeframe = strategy_settings["timeframe"]
+            signal = self.trading_bot.check_signal(
+                data,
+                timeframe=timeframe,
+                require_volume=strategy_settings.get("require_volume", True),
+                require_trend=strategy_settings.get("require_trend", False),
+            )
             emoji = TelegramBotConfig.get_signal_emoji(signal)
 
             ai_signal = "NEUTRO"
@@ -337,28 +478,91 @@ class TelegramTradingBot:
             except Exception as e:
                 self.logger.warning(f"Falha na IA: {e}")
 
-            final_signal = signal
-            if ai_signal in ["BUY", "SELL"] and signal in ["COMPRA", "VENDA"]:
-                final_signal = signal
-            elif ai_signal == "BUY" and signal in ["NEUTRO", "VENDA", "VENDA_FRACA"]:
-                final_signal = "COMPRA_FRACA"
-            elif ai_signal == "SELL" and signal in ["NEUTRO", "COMPRA", "COMPRA_FRACA"]:
-                final_signal = "VENDA_FRACA"
+            runtime_strategy_version = strategy_settings["strategy_version"]
+            final_signal = self._merge_rule_and_ai_signal(signal, ai_signal)
+            final_signal, edge_summary = self._apply_edge_guardrail(
+                final_signal,
+                symbol,
+                timeframe,
+                strategy_version=runtime_strategy_version,
+            )
+            final_signal, risk_plan = self._apply_risk_guardrail(
+                final_signal,
+                float(last_candle["close"]),
+                strategy_settings,
+            )
+            emoji = TelegramBotConfig.get_signal_emoji(final_signal)
+            edge_guardrail_note = ""
+            if edge_summary and edge_summary.get("status") == "degraded" and final_signal == "NEUTRO":
+                edge_guardrail_note = (
+                    f"\nGuardrail: setup bloqueado por degradacao no paper trade "
+                    f"({edge_summary.get('paper_closed_trades', 0)} trades fechados)."
+                )
+            risk_guardrail_note = ""
+            risk_plan_note = ""
+            if risk_plan:
+                if risk_plan.get("allowed"):
+                    risk_plan_note = (
+                        f"\nPlano de risco: {risk_plan.get('risk_per_trade_pct', 0):.2f}% "
+                        f"(${risk_plan.get('risk_amount', 0):.2f}) | "
+                        f"Posicao ${risk_plan.get('position_notional', 0):.2f}"
+                    )
+                else:
+                    risk_guardrail_note = f"\nRisk guardrail: {risk_plan.get('reason')}"
+            ai_mode_note = "comparativo" if not ProductionConfig.ENABLE_AI_SIGNAL_INFLUENCE else "influencia"
 
             analysis_message = (
                 f"Analise Tecnica - {symbol}\n\n"
                 f"{emoji} Sinal (regras): {signal.replace('_', ' ')}\n"
-                f"Sinal (IA): {ai_signal} (conf: {ai_confidence:.2f})\n"
+                f"Sinal (IA - {ai_mode_note}): {ai_signal} (conf: {ai_confidence:.2f})\n"
                 f"Sinal (final): {final_signal}\n\n"
+                f"Estrategia ativa: {active_profile.get('strategy_version') if active_profile else runtime_strategy_version}\n"
                 f"Preco Atual: ${last_candle['close']:.6f}\n"
                 f"Variacao: {((last_candle['close'] - last_candle['open']) / last_candle['open'] * 100):+.2f}%\n\n"
                 f"Indicadores:\n"
                 f"- RSI: {last_candle['rsi']:.2f}\n"
                 f"- MACD: {last_candle['macd']:.4f}\n"
                 f"- MACD Signal: {last_candle['macd_signal']:.4f}\n\n"
-                f"Atualizado: {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}\n\n"
+                f"Atualizado: {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}\n"
+                f"{edge_guardrail_note}"
+                f"{risk_guardrail_note}"
+                f"{risk_plan_note}\n\n"
                 f"Lembre-se: Esta e uma analise tecnica automatizada. Sempre faca sua propria pesquisa!"
             )
+
+            signal_timestamp = datetime.now()
+
+            try:
+                self.paper_trade_service.evaluate_open_trades(symbol=symbol, timeframe=timeframe, market_data=data)
+                runtime_db.save_trading_signal(
+                    {
+                        "symbol": symbol,
+                        "timeframe": timeframe,
+                        "strategy_version": runtime_strategy_version,
+                        "signal": final_signal,
+                        "price": last_candle["close"],
+                        "rsi": last_candle["rsi"],
+                        "macd_signal": last_candle["macd_signal"],
+                        "macd_value": last_candle["macd"],
+                        "signal_strength": abs(last_candle["rsi"] - 50) / 50,
+                        "volume": last_candle.get("volume", 0),
+                    }
+                )
+                if risk_plan and risk_plan.get("allowed"):
+                    self.paper_trade_service.register_signal(
+                        symbol=symbol,
+                        timeframe=timeframe,
+                        signal=final_signal,
+                        entry_price=float(last_candle["close"]),
+                        entry_timestamp=signal_timestamp,
+                        source="telegram",
+                        strategy_version=runtime_strategy_version,
+                        stop_loss_pct=strategy_settings.get("stop_loss_pct"),
+                        take_profit_pct=strategy_settings.get("take_profit_pct"),
+                        risk_plan=risk_plan,
+                    )
+            except Exception as e:
+                self.logger.warning("Falha ao registrar outcome de paper trade: %s", e)
 
             await loading_msg.edit_text(analysis_message)
             self.user_manager.record_analysis(user_id)
@@ -453,12 +657,37 @@ class TelegramTradingBot:
             return
 
         stats = self.user_manager.get_stats()
+        paper_summary = self.paper_trade_service.get_summary()
+        edge_summary = runtime_db.get_edge_monitor_summary()
+        governance_summary = runtime_db.get_strategy_governance_summary(active_only=True, limit=20)
+        governance_counts = governance_summary.get("counts", {})
+        risk_summary = self.risk_management_service.get_portfolio_risk_summary()
         msg = (
             f"📊 Status do Sistema:\n"
             f"• Usuários: {stats['total_users']}\n"
             f"• Free: {stats['free_users']}\n"
             f"• Premium: {stats['premium_users']}\n"
             f"• Análises hoje: {stats.get('analyses_today', 0)}"
+        )
+        msg += (
+            f"\nâ€¢ Paper trades fechados: {paper_summary.get('closed_trades', 0)}"
+            f"\nâ€¢ Win rate paper: {paper_summary.get('win_rate', 0):.1f}%"
+            f"\nâ€¢ Resultado paper acumulado: {paper_summary.get('total_result_pct', 0):.2f}%"
+        )
+        msg += (
+            f"\nâ€¢ Edge monitor: {edge_summary.get('status')}"
+            f"\nâ€¢ Baseline PF: {edge_summary.get('baseline_profit_factor', 0):.2f}"
+            f"\nâ€¢ Paper PF: {edge_summary.get('paper_profit_factor', 0):.2f}"
+        )
+        msg += (
+            f"\nâ€¢ Setups aprovados: {governance_counts.get('approved', 0)}"
+            f"\nâ€¢ Setups observando: {governance_counts.get('observing', 0)}"
+            f"\nâ€¢ Setups bloqueados: {governance_counts.get('blocked', 0)}"
+        )
+        msg += (
+            f"\nâ€¢ Trades abertos: {risk_summary.get('open_trades', 0)}"
+            f"\nâ€¢ Risco aberto: {risk_summary.get('total_open_risk_pct', 0):.2f}%"
+            f"\nâ€¢ Notional aberto: ${risk_summary.get('total_open_position_notional', 0):.2f}"
         )
         await self._safe_reply(update, msg)
     

@@ -173,22 +173,6 @@ class TechnicalIndicators:
             'below_all_sma': below_all
         }
 
-    def calculate_atr(self, high, low, close, period=14):
-        """Calculate Average True Range for volatility measurement"""
-        tr_list = []
-        
-        for i in range(1, len(close)):
-            tr1 = high.iloc[i] - low.iloc[i]
-            tr2 = abs(high.iloc[i] - close.iloc[i-1])
-            tr3 = abs(low.iloc[i] - close.iloc[i-1])
-            tr = max(tr1, tr2, tr3)
-            tr_list.append(tr)
-        
-        # Add NaN for first value
-        tr_series = pd.Series([np.nan] + tr_list, index=close.index)
-        atr = tr_series.rolling(window=period).mean()
-        return atr
-
     def calculate_stochastic_rsi(self, rsi, period=14, smooth_k=3, smooth_d=3):
         """Calculate Stochastic RSI for better oversold/overbought detection"""
         rsi_min = rsi.rolling(window=period).min()
@@ -250,14 +234,6 @@ class TechnicalIndicators:
             'di_plus': di_plus,
             'di_minus': di_minus
         }
-
-    def calculate_williams_r(self, high, low, close, period=14):
-        """Calculate Williams %R oscillator"""
-        highest_high = high.rolling(window=period).max()
-        lowest_low = low.rolling(window=period).min()
-        
-        williams_r = ((highest_high - close) / (highest_high - lowest_low)) * -100
-        return williams_r
 
     def detect_market_regime(self, close, volume, atr, adx, period=20):
         """

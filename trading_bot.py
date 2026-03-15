@@ -158,7 +158,10 @@ class TradingBot:
 
     def get_market_data(self, limit=200):
         """Fetch OHLCV data with cache + retry + public fallback"""
-        cache_key = f"{self.symbol}_{self.timeframe}_{limit}"
+        cache_key = (
+            f"{self.symbol}_{self.timeframe}_{limit}_"
+            f"rsi{self.rsi_period}_{self.rsi_min}_{self.rsi_max}"
+        )
         current_time = datetime.now()
 
         if hasattr(self, '_cache_data') and cache_key in self._cache_data:
@@ -234,6 +237,7 @@ class TradingBot:
         df['macd'] = macd_data['macd']
         df['macd_signal'] = macd_data['signal']
         df['macd_histogram'] = macd_data['histogram']
+        df['prev_macd_histogram'] = df['macd_histogram'].shift(1)
 
         # Advanced volatility indicators
         df['atr'] = self.indicators.calculate_atr(df['high'], df['low'], df['close'])
@@ -262,6 +266,8 @@ class TradingBot:
         # Volume analysis
         df['volume_ma'] = df['volume'].rolling(window=20).mean()
         df['volume_ratio'] = df['volume'] / df['volume_ma']
+        df['prev_close'] = df['close'].shift(1)
+        df['prev_rsi'] = df['rsi'].shift(1)
 
         # Market regime detection
         df['market_regime'] = 'trending'  # Default
@@ -379,10 +385,10 @@ class TradingBot:
         if timeframe == '5m':
             confidence_multiplier = 1.2  # Aumentar exigência base para 5m
 
-        # RSI scoring mais permissivo - expandir as zonas de trading
+        # RSI scoring mais seletivo - evitar zonas moderadas amplas demais
         oversold_extreme = rsi_oversold_threshold - 5  # Zona extrema de compra
-        oversold_moderate = rsi_oversold_threshold + 15  # Zona moderada de compra (expandida)
-        overbought_moderate = rsi_overbought_threshold - 15  # Zona moderada de venda (expandida)
+        oversold_moderate = rsi_oversold_threshold + 8
+        overbought_moderate = rsi_overbought_threshold - 8
         overbought_extreme = rsi_overbought_threshold + 5  # Zona extrema de venda
 
         if rsi <= oversold_extreme:  # Extremo oversold (usuário definiu)
@@ -391,18 +397,16 @@ class TradingBot:
         elif rsi <= rsi_oversold_threshold:  # Oversold configurado pelo usuário
             bullish_score += 4
             confidence_multiplier += 0.2
-        elif rsi <= oversold_moderate:  # Zona moderada de compra (NOVA - mais permissiva)
-            bullish_score += 3
-            confidence_multiplier += 0.1
+        elif rsi <= oversold_moderate:
+            bullish_score += 2
         elif rsi >= overbought_extreme:  # Extremo overbought (usuário definiu)
             bearish_score += 5
             confidence_multiplier += 0.3
         elif rsi >= rsi_overbought_threshold:  # Overbought configurado pelo usuário
             bearish_score += 4
             confidence_multiplier += 0.2
-        elif rsi >= overbought_moderate:  # Zona moderada de venda (NOVA - mais permissiva)
-            bearish_score += 3
-            confidence_multiplier += 0.1
+        elif rsi >= overbought_moderate:
+            bearish_score += 2
 
         # Enhanced Stochastic RSI (more sensitive)
         if not pd.isna(stoch_rsi_k):
@@ -584,20 +588,31 @@ class TradingBot:
             return "NEUTRO"
 
         last_row = df.iloc[-1]
+        signal = None
 
         # SEMPRE usar as configurações atuais do bot (definidas no dashboard)
         actual_rsi_min = self.rsi_min
         actual_rsi_max = self.rsi_max
         actual_rsi_period = self.rsi_period
+        current_timeframe = timeframe or self.timeframe or "5m"
+        market_regime = last_row.get('market_regime', 'trending')
+
+        if market_regime == 'ranging' and (avoid_ranging or current_timeframe in {"5m", "15m"}):
+            return "NEUTRO"
+
+        if market_regime == 'volatile' and current_timeframe in {"5m", "15m"}:
+            return "NEUTRO"
         
         # Aplicar otimizações específicas para 5m
-        if timeframe == "5m" or self.timeframe == "5m":
+        if current_timeframe == "5m" or self.timeframe == "5m":
             try:
                 from config import TimeFrame5mConfig
                 signal = self._generate_advanced_signal(last_row)
-                current_hour = last_row.get('timestamp', pd.Timestamp.now()).hour if hasattr(last_row, 'get') else None
+                current_timestamp = last_row.get('timestamp') if hasattr(last_row, 'get') else None
+                if current_timestamp is None and hasattr(df, 'index') and len(df.index) > 0:
+                    current_timestamp = df.index[-1]
+                current_hour = pd.Timestamp(current_timestamp).hour if current_timestamp is not None else None
                 signal = TimeFrame5mConfig.apply_5m_filters(signal, last_row, current_hour)
-                return signal
             except ImportError:
                 pass  # Continuar com lógica normal se config não existir
 
@@ -606,10 +621,10 @@ class TradingBot:
             from config import AppConfig
             day_settings = AppConfig.get_day_trading_settings(timeframe)
 
-            min_confidence = max(55, day_settings['min_confidence'] - 15)  # Reduced confidence threshold
-            min_volume_ratio = day_settings['min_volume_ratio'] * 0.8  # More permissive volume
-            volatility_threshold = day_settings['volatility_filter'] * 1.3  # Allow more volatility
-            min_adx_threshold = day_settings['min_adx'] * 0.7  # Lower ADX requirement
+            min_confidence = max(68, day_settings['min_confidence'] - 2)
+            min_volume_ratio = max(1.4, day_settings['min_volume_ratio'])
+            volatility_threshold = day_settings['volatility_filter'] * 1.1
+            min_adx_threshold = max(24, day_settings['min_adx'] * 0.9)
 
             logger.debug(
                 "Day trading otimizado - RSI: %s-%s, Conf: %s%%",
@@ -626,10 +641,19 @@ class TradingBot:
             from config import AppConfig
             crypto_settings = AppConfig.get_crypto_timeframe_settings(timeframe)
 
-            min_confidence = max(55, crypto_settings['min_confidence'] - 10)  # Lower confidence threshold
-            min_volume_ratio = max(1.1, crypto_settings['min_volume_ratio'] * 0.7)  # More permissive volume
-            volatility_threshold = crypto_settings['volatility_filter'] * 1.5  # Allow higher volatility
-            min_adx_threshold = 20  # Reduced from 28
+            min_confidence = max(64, crypto_settings['min_confidence'])
+            min_volume_ratio = max(1.3, crypto_settings['min_volume_ratio'])
+            volatility_threshold = crypto_settings['volatility_filter'] * 1.05
+            min_adx_threshold = max(24, crypto_settings.get('min_adx', 20))
+
+            if current_timeframe == "5m":
+                min_confidence = max(min_confidence, 68)
+                min_volume_ratio = max(min_volume_ratio, 1.6)
+                min_adx_threshold = max(min_adx_threshold, 28)
+            elif current_timeframe == "15m":
+                min_confidence = max(min_confidence, 66)
+                min_volume_ratio = max(min_volume_ratio, 1.4)
+                min_adx_threshold = max(min_adx_threshold, 25)
 
             logger.debug(
                 "Crypto otimizado - RSI: %s-%s, Conf: %s%%",
@@ -650,10 +674,10 @@ class TradingBot:
                 return "NEUTRO"
         else:
             # More balanced default settings
-            min_confidence = 55  # Reduced from 70
-            min_volume_ratio = 1.1  # More permissive
-            volatility_threshold = 0.10  # Allow more volatility
-            min_adx_threshold = 15  # Keep low threshold
+            min_confidence = 60
+            min_volume_ratio = 1.2
+            volatility_threshold = 0.08
+            min_adx_threshold = 18
 
             logger.debug(
                 "Configuracao padrao otimizada - RSI: %s-%s",
@@ -669,7 +693,8 @@ class TradingBot:
                 return "NEUTRO"
 
         # Gerar sinal usando configurações atuais
-        signal = self._generate_advanced_signal(last_row)
+        if signal is None:
+            signal = self._generate_advanced_signal(last_row)
         confidence = self._calculate_signal_confidence(last_row)
 
         # Log apenas sinais não-neutros
@@ -677,8 +702,13 @@ class TradingBot:
             rsi_atual = last_row.get('rsi', 50)
             logger.info("Sinal %s: RSI %.1f | Confianca %.0f%%", signal, rsi_atual, confidence)
 
-        # Optimized confidence filter for better trade frequency
-        effective_min_confidence = min_confidence - 10  # Even more permissive
+        effective_min_confidence = max(62, min_confidence - 1)
+        if current_timeframe == "5m" or self.timeframe == "5m":
+            effective_min_confidence = max(effective_min_confidence, 68)
+        elif current_timeframe == "15m":
+            effective_min_confidence = max(effective_min_confidence, 66)
+        elif current_timeframe in {"30m", "1h"}:
+            effective_min_confidence = max(effective_min_confidence, 63)
         if confidence < effective_min_confidence:
             logger.debug(
                 "Rejeitado por confianca baixa: %.1f%% < %s%%",
@@ -689,7 +719,7 @@ class TradingBot:
 
         # Relaxed volatility check - crypto markets need volatility
         atr_pct = last_row.get('atr', 0) / last_row.get('close', 1) * 100
-        max_volatility = (volatility_threshold * 100) * 2.0  # Double the threshold
+        max_volatility = (volatility_threshold * 100) * 1.5
         if atr_pct > max_volatility:
             return "NEUTRO"
 
@@ -698,7 +728,7 @@ class TradingBot:
         
         # Dynamic RSI tolerance based on market conditions
         market_volatility = last_row.get('bb_width', 0.05)
-        base_tolerance = 15 if market_volatility > 0.1 else 12
+        base_tolerance = 10 if market_volatility > 0.1 else 8
         
         # Smart signal adjustment instead of rejection
         if signal == 'COMPRA':
@@ -716,44 +746,48 @@ class TradingBot:
         if crypto_optimized:
             # Allow StochRSI in moderate zones
             stoch_rsi_k = last_row.get('stoch_rsi_k', 50)
-            if signal in ['COMPRA', 'COMPRA_FRACA'] and stoch_rsi_k > 70:  # Was 50
+            if signal in ['COMPRA', 'COMPRA_FRACA'] and stoch_rsi_k > 65:
                 logger.debug("Sinal compra ajustado por StochRSI %.1f", stoch_rsi_k)
                 if signal == 'COMPRA':
                     signal = 'COMPRA_FRACA'  # Downgrade instead of reject
-            if signal in ['VENDA', 'VENDA_FRACA'] and stoch_rsi_k < 30:  # Was 50
+            if signal in ['VENDA', 'VENDA_FRACA'] and stoch_rsi_k < 35:
                 logger.debug("Sinal venda ajustado por StochRSI %.1f", stoch_rsi_k)
                 if signal == 'VENDA':
                     signal = 'VENDA_FRACA'  # Downgrade instead of reject
 
-            # More reasonable Williams %R thresholds
             williams_r = last_row.get('williams_r', -50)
-            if signal in ['COMPRA', 'COMPRA_FRACA'] and williams_r > -20:  # Was -50
+            if signal in ['COMPRA', 'COMPRA_FRACA'] and williams_r > -25:
                 if signal == 'COMPRA':
                     signal = 'COMPRA_FRACA'
-            if signal in ['VENDA', 'VENDA_FRACA'] and williams_r < -80:  # Was -50
+            if signal in ['VENDA', 'VENDA_FRACA'] and williams_r < -75:
                 if signal == 'VENDA':
                     signal = 'VENDA_FRACA'
 
         # Combine rule-based signal with advanced score for robust decision
-        advanced_score = self.calculate_advanced_score(last_row)
+        advanced_score = self.calculate_advanced_score(last_row, signal=signal)
         self.logger = logger
         logger.debug(f"💡 Advanced score: {advanced_score:.2f}")
 
-        if advanced_score < 0.45 and signal in ['COMPRA', 'VENDA', 'COMPRA_FRACA', 'VENDA_FRACA']:
+        if advanced_score < 0.55 and signal in ['COMPRA', 'VENDA', 'COMPRA_FRACA', 'VENDA_FRACA']:
             logger.debug("📉 score baixo, converte para NEUTRO")
             return "NEUTRO"
 
-        if advanced_score >= 0.80:
+        if advanced_score >= 0.82:
             if signal in ['COMPRA', 'COMPRA_FRACA']:
                 return "COMPRA"
             if signal in ['VENDA', 'VENDA_FRACA']:
                 return "VENDA"
 
-        if advanced_score >= 0.60:
+        if advanced_score >= 0.68:
             return signal
 
         # Se score intermediário e sinal fraco, devolver NEUTRO
-        if signal in ['COMPRA_FRACA', 'VENDA_FRACA'] and advanced_score < 0.65:
+        if signal == 'COMPRA' and advanced_score >= 0.62:
+            return 'COMPRA_FRACA'
+        if signal == 'VENDA' and advanced_score >= 0.62:
+            return 'VENDA_FRACA'
+
+        if signal in ['COMPRA_FRACA', 'VENDA_FRACA'] and advanced_score < 0.72:
             logger.debug("🔁 sinal fraco + score médio, NEUTRO")
             return "NEUTRO"
 
@@ -770,43 +804,63 @@ class TradingBot:
 
         return {"signal": signal, "confidence": confidence}
 
-    def calculate_advanced_score(self, row):
-        """Calculate an ensemble score from advanced indicators"""
-        # Basic checks
+    def calculate_advanced_score(self, row, signal=None):
+        """Calculate a direction-aware ensemble score from advanced indicators."""
         if row is None or row.empty:
+            return 0.0
+
+        signal = signal or "NEUTRO"
+        if signal.startswith("COMPRA"):
+            signal_side = "bullish"
+        elif signal.startswith("VENDA"):
+            signal_side = "bearish"
+        else:
             return 0.0
 
         scores = []
 
-        # RSI score: favorable se 20-80 (caminho expandido para trades de alta qualidade)
         rsi = row.get('rsi', 50)
         if not np.isnan(rsi):
-            if rsi < 20:
-                scores.append(0.95)
-            elif rsi < 30:
-                scores.append(0.75)
-            elif rsi < 40:
-                scores.append(0.55)
-            elif rsi > 80:
-                scores.append(0.05)
-            elif rsi > 70:
-                scores.append(0.2)
+            if signal_side == "bullish":
+                if rsi < 20:
+                    scores.append(0.95)
+                elif rsi < 30:
+                    scores.append(0.78)
+                elif rsi < 38:
+                    scores.append(0.60)
+                elif rsi > 80:
+                    scores.append(0.05)
+                elif rsi > 70:
+                    scores.append(0.18)
+                else:
+                    scores.append(0.45)
             else:
-                scores.append(0.5)
+                if rsi > 80:
+                    scores.append(0.95)
+                elif rsi > 70:
+                    scores.append(0.78)
+                elif rsi > 62:
+                    scores.append(0.60)
+                elif rsi < 20:
+                    scores.append(0.05)
+                elif rsi < 30:
+                    scores.append(0.18)
+                else:
+                    scores.append(0.45)
 
-        # MACD score
         macd = row.get('macd', 0)
         macd_signal = row.get('macd_signal', 0)
         macd_hist = row.get('macd_histogram', 0)
         if not np.isnan(macd) and not np.isnan(macd_signal):
-            if macd > macd_signal and macd_hist > 0:
+            bullish_alignment = macd > macd_signal and macd_hist > 0
+            bearish_alignment = macd < macd_signal and macd_hist < 0
+            if (signal_side == "bullish" and bullish_alignment) or (signal_side == "bearish" and bearish_alignment):
                 scores.append(0.85)
-            elif macd < macd_signal and macd_hist < 0:
+            elif (signal_side == "bullish" and bearish_alignment) or (signal_side == "bearish" and bullish_alignment):
                 scores.append(0.15)
             else:
                 scores.append(0.45)
 
-        # ADX score
         adx = row.get('adx', 0)
         if not np.isnan(adx):
             if adx > 40:
@@ -816,7 +870,26 @@ class TradingBot:
             else:
                 scores.append(0.35)
 
-        # Volume confirmation
+        price = row.get('close', np.nan)
+        sma_21 = row.get('sma_21', np.nan)
+        sma_50 = row.get('sma_50', np.nan)
+        sma_200 = row.get('sma_200', np.nan)
+        if not np.isnan(price) and not np.isnan(sma_21):
+            bullish_trend = price >= sma_21 and (np.isnan(sma_50) or sma_21 >= sma_50)
+            bearish_trend = price <= sma_21 and (np.isnan(sma_50) or sma_21 <= sma_50)
+            if signal_side == "bullish":
+                scores.append(0.82 if bullish_trend else 0.22)
+            else:
+                scores.append(0.82 if bearish_trend else 0.22)
+
+        di_plus = row.get('di_plus', np.nan)
+        di_minus = row.get('di_minus', np.nan)
+        if not np.isnan(di_plus) and not np.isnan(di_minus):
+            if signal_side == "bullish":
+                scores.append(0.78 if di_plus > di_minus else 0.20)
+            else:
+                scores.append(0.78 if di_minus > di_plus else 0.20)
+
         vol_ratio = row.get('volume_ratio', 1.0)
         if not np.isnan(vol_ratio):
             if vol_ratio > 2.0:
@@ -824,16 +897,26 @@ class TradingBot:
             elif vol_ratio > 1.3:
                 scores.append(0.65)
             else:
-                scores.append(0.45)
+                scores.append(0.30)
 
-        # Regime/instrumentos: tonar de 0.4 a 0.6 se market_regime unknown
         market_regime = row.get('market_regime', 'trending')
         if market_regime == 'trending':
-            scores.append(0.7)
+            scores.append(0.75)
         elif market_regime == 'ranging':
-            scores.append(0.4)
+            scores.append(0.20)
+        elif market_regime == 'volatile':
+            scores.append(0.25)
         else:
             scores.append(0.5)
+
+        bb_width = row.get('bb_width', np.nan)
+        if not np.isnan(bb_width):
+            if bb_width > 0.18:
+                scores.append(0.20)
+            elif bb_width > 0.10:
+                scores.append(0.45)
+            else:
+                scores.append(0.72)
 
         if not scores:
             return 0.0

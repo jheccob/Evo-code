@@ -15,7 +15,7 @@ import logging
 from utils.timezone_utils import now_brazil, format_brazil_time, get_brazil_datetime_naive, BRAZIL_TZ
 
 # Importar banco de dados
-from database.database import db
+from database.database import build_strategy_version, db
 from trading_bot import TradingBot
 from indicators import TechnicalIndicators
 from config import AppConfig, ExchangeConfig, ProductionConfig
@@ -54,10 +54,114 @@ except ImportError:
         def run_backtest(self, *args, **kwargs):
             raise RuntimeError(self._error)
 
+        def run_market_scan(self, *args, **kwargs):
+            raise RuntimeError(self._error)
+
+        def optimize_rsi_parameters(self, *args, **kwargs):
+            raise RuntimeError(self._error)
+
         def get_trade_summary_df(self):
             return pd.DataFrame()
 
+from services.paper_trade_service import PaperTradeService
+from services.risk_management_service import RiskManagementService
+
 logger = logging.getLogger(__name__)
+paper_trade_service = PaperTradeService()
+risk_management_service = RiskManagementService()
+ACTIONABLE_SIGNALS = {"COMPRA", "VENDA", "COMPRA_FRACA", "VENDA_FRACA"}
+
+
+def apply_edge_guardrail(signal: str, symbol: str, timeframe: str, strategy_version: str = None):
+    """Downgrade actionable signals when live paper performance is degraded."""
+    if signal not in ACTIONABLE_SIGNALS or not ProductionConfig.ENABLE_EDGE_GUARDRAIL:
+        return signal, None
+
+    try:
+        edge_summary = db.get_edge_monitor_summary(
+            symbol=symbol,
+            timeframe=timeframe,
+            strategy_version=strategy_version,
+        )
+    except Exception as exc:
+        logger.warning("Falha ao consultar edge monitor: %s", exc)
+        return signal, None
+
+    if (
+        edge_summary.get("status") == "degraded"
+        and edge_summary.get("paper_closed_trades", 0) >= ProductionConfig.MIN_PAPER_TRADES_FOR_EDGE_GUARDRAIL
+    ):
+        return "NEUTRO", edge_summary
+
+    return signal, edge_summary
+
+
+def apply_risk_guardrail(signal: str, entry_price: float, strategy_settings: dict):
+    if signal not in ACTIONABLE_SIGNALS:
+        return signal, None
+
+    risk_plan = risk_management_service.build_trade_plan(
+        entry_price=float(entry_price),
+        stop_loss_pct=strategy_settings.get("stop_loss_pct", 0.0) or 0.0,
+        symbol=strategy_settings.get("symbol"),
+        timeframe=strategy_settings.get("timeframe"),
+        strategy_version=strategy_settings.get("strategy_version"),
+    )
+    if not risk_plan.get("allowed"):
+        return "NEUTRO", risk_plan
+    return signal, risk_plan
+
+
+def get_effective_strategy_settings(
+    symbol: str,
+    timeframe: str,
+    require_volume: bool = True,
+    require_trend: bool = False,
+) -> dict:
+    active_profile = db.get_active_strategy_profile(symbol=symbol, timeframe=timeframe)
+    trading_bot = st.session_state.get("trading_bot")
+
+    if active_profile:
+        settings = {
+            "symbol": symbol,
+            "timeframe": timeframe,
+            "rsi_period": active_profile.get("rsi_period"),
+            "rsi_min": active_profile.get("rsi_min"),
+            "rsi_max": active_profile.get("rsi_max"),
+            "stop_loss_pct": active_profile.get("stop_loss_pct") or ProductionConfig.DEFAULT_LIVE_STOP_LOSS_PCT,
+            "take_profit_pct": active_profile.get("take_profit_pct") or ProductionConfig.DEFAULT_LIVE_TAKE_PROFIT_PCT,
+            "require_volume": bool(active_profile.get("require_volume", False)),
+            "require_trend": bool(active_profile.get("require_trend", False)),
+            "active_profile": active_profile,
+            "source": "active_profile",
+        }
+    else:
+        settings = {
+            "symbol": symbol,
+            "timeframe": timeframe,
+            "rsi_period": getattr(trading_bot, "rsi_period", 14) if trading_bot else 14,
+            "rsi_min": getattr(trading_bot, "rsi_min", 20) if trading_bot else 20,
+            "rsi_max": getattr(trading_bot, "rsi_max", 80) if trading_bot else 80,
+            "stop_loss_pct": ProductionConfig.DEFAULT_LIVE_STOP_LOSS_PCT,
+            "take_profit_pct": ProductionConfig.DEFAULT_LIVE_TAKE_PROFIT_PCT,
+            "require_volume": require_volume,
+            "require_trend": require_trend,
+            "active_profile": None,
+            "source": "session",
+        }
+
+    settings["strategy_version"] = build_strategy_version(
+        symbol=symbol,
+        timeframe=timeframe,
+        rsi_period=settings["rsi_period"],
+        rsi_min=settings["rsi_min"],
+        rsi_max=settings["rsi_max"],
+        stop_loss_pct=settings.get("stop_loss_pct", 0.0) or 0.0,
+        take_profit_pct=settings.get("take_profit_pct", 0.0) or 0.0,
+        require_volume=settings["require_volume"],
+        require_trend=settings["require_trend"],
+    )
+    return settings
 
 # Helper function for timestamp comparison
 def _compare_timestamps(ts1, ts2):
@@ -207,6 +311,12 @@ if 'backtest_engine' not in st.session_state:
 
 if 'backtest_results' not in st.session_state:
     st.session_state.backtest_results = None
+
+if 'backtest_scan_results' not in st.session_state:
+    st.session_state.backtest_scan_results = None
+
+if 'backtest_optimization_results' not in st.session_state:
+    st.session_state.backtest_optimization_results = None
 
 # Continue with sidebar configuration
 
@@ -524,6 +634,22 @@ if config_changed:
         rsi_period,
         rsi_min,
         rsi_max
+    )
+
+live_strategy_settings = get_effective_strategy_settings(
+    symbol,
+    timeframe,
+    require_volume=require_volume,
+    require_trend=require_trend,
+)
+active_live_profile = live_strategy_settings.get("active_profile")
+if active_live_profile:
+    st.session_state.trading_bot.update_config(
+        symbol=symbol,
+        timeframe=timeframe,
+        rsi_period=live_strategy_settings["rsi_period"],
+        rsi_min=live_strategy_settings["rsi_min"],
+        rsi_max=live_strategy_settings["rsi_max"],
     )
 
 # Main dashboard
@@ -1152,16 +1278,46 @@ if should_update:
 if st.session_state.current_data is not None:
     data = st.session_state.current_data
     last_candle = data.iloc[-1]
+    guardrail_edge_summary = None
+    risk_plan = None
+    live_strategy_settings = get_effective_strategy_settings(
+        symbol,
+        timeframe,
+        require_volume=require_volume,
+        require_trend=require_trend,
+    )
+    runtime_strategy_version = live_strategy_settings["strategy_version"]
 
     # Calculate signal
-    signal = st.session_state.trading_bot.check_signal(data)
+    signal = st.session_state.trading_bot.check_signal(
+        data,
+        timeframe=timeframe,
+        require_volume=live_strategy_settings["require_volume"],
+        require_trend=live_strategy_settings["require_trend"],
+        avoid_ranging=avoid_ranging,
+    )
+    signal, guardrail_edge_summary = apply_edge_guardrail(
+        signal,
+        symbol,
+        timeframe,
+        strategy_version=runtime_strategy_version,
+    )
+    signal, risk_plan = apply_risk_guardrail(signal, float(last_candle['close']), live_strategy_settings)
+    risk_guardrail_blocked = bool(risk_plan and not risk_plan.get("allowed"))
+
+    try:
+        paper_trade_service.evaluate_open_trades(symbol=symbol, timeframe=timeframe, market_data=data)
+    except Exception as e:
+        logger.warning("Falha ao avaliar paper trades do dashboard: %s", e)
 
     # Store data for multi-symbol monitoring
     st.session_state.multi_symbol_data[symbol] = {
         'data': data,
         'signal': signal,
         'last_candle': last_candle,
-        'last_update': st.session_state.last_update
+        'last_update': st.session_state.last_update,
+        'edge_summary': guardrail_edge_summary,
+        'risk_plan': risk_plan,
     }
 
     # Add signal to history if it's a new signal
@@ -1198,6 +1354,7 @@ if st.session_state.current_data is not None:
             'macd_signal': last_candle['macd_signal'],
             'signal': signal,
             'timeframe': timeframe,
+            'strategy_version': runtime_strategy_version,
             'macd_value': last_candle['macd'],
             'signal_strength': abs(last_candle['rsi'] - 50) / 50,  # Força do sinal baseada no RSI
             'volume': last_candle.get('volume', 0)
@@ -1208,6 +1365,23 @@ if st.session_state.current_data is not None:
             db.save_trading_signal(signal_data)
         except Exception as e:
             st.error(f"Erro ao salvar sinal no banco: {str(e)}")
+
+        try:
+            if risk_plan and risk_plan.get("allowed"):
+                paper_trade_service.register_signal(
+                    symbol=symbol,
+                    timeframe=timeframe,
+                    signal=signal,
+                    entry_price=float(last_candle['close']),
+                    entry_timestamp=signal_data['timestamp'],
+                    source="dashboard",
+                    strategy_version=runtime_strategy_version,
+                    stop_loss_pct=live_strategy_settings.get("stop_loss_pct"),
+                    take_profit_pct=live_strategy_settings.get("take_profit_pct"),
+                    risk_plan=risk_plan,
+                )
+        except Exception as e:
+            logger.warning("Falha ao registrar paper trade do dashboard: %s", e)
 
         # Manter no histórico da sessão também
         st.session_state.signals_history.append(signal_data)
@@ -1471,6 +1645,33 @@ if st.session_state.current_data is not None:
     # Current Analysis
     st.subheader("🔍 Análise Atual")
 
+    if (
+        guardrail_edge_summary
+        and guardrail_edge_summary.get("status") == "degraded"
+        and guardrail_edge_summary.get("paper_closed_trades", 0) >= ProductionConfig.MIN_PAPER_TRADES_FOR_EDGE_GUARDRAIL
+    ):
+        st.warning(
+            "Guardrail ativo: setup degradado no paper trade. "
+            "O sinal foi bloqueado ate recuperar edge live."
+        )
+
+    if risk_plan:
+        if risk_plan.get("allowed"):
+            st.info(
+                f"Plano de risco: arriscar {risk_plan.get('risk_per_trade_pct', 0):.2f}% "
+                f"(${risk_plan.get('risk_amount', 0):.2f}) | "
+                f"Posicao ${risk_plan.get('position_notional', 0):.2f} | "
+                f"Qtd {risk_plan.get('quantity', 0):.6f}"
+            )
+        else:
+            st.warning(f"Risk guardrail: {risk_plan.get('reason')}")
+        portfolio_risk_summary = risk_management_service.get_portfolio_risk_summary()
+        st.caption(
+            f"Portfolio paper: {portfolio_risk_summary.get('open_trades', 0)} trades abertos | "
+            f"Risco aberto {portfolio_risk_summary.get('total_open_risk_pct', 0):.2f}% | "
+            f"Notional ${portfolio_risk_summary.get('total_open_position_notional', 0):.2f}"
+        )
+
     analysis_col1, analysis_col2 = st.columns(2)
 
     with analysis_col1:
@@ -1654,6 +1855,36 @@ if signals_df is not None and len(signals_df) > 0:
             # Exibir estatísticas do banco
             try:
                 stats = db.get_statistics()
+                runtime_strategy_version = get_effective_strategy_settings(
+                    symbol,
+                    timeframe,
+                    require_volume=require_volume,
+                    require_trend=require_trend,
+                )["strategy_version"]
+                paper_summary = paper_trade_service.get_summary(symbol=symbol, timeframe=timeframe)
+                edge_summary = db.get_edge_monitor_summary(
+                    symbol=symbol,
+                    timeframe=timeframe,
+                    strategy_version=runtime_strategy_version,
+                )
+                st.caption(
+                    f"Paper trades {symbol} {timeframe}: "
+                    f"{paper_summary.get('closed_trades', 0)} fechados | "
+                    f"Win rate {paper_summary.get('win_rate', 0):.1f}% | "
+                    f"Resultado acumulado {paper_summary.get('total_result_pct', 0):.2f}%"
+                )
+                edge_status = edge_summary.get('status')
+                edge_message = (
+                    f"Edge monitor {symbol} {timeframe}: {edge_summary.get('status_message')} "
+                    f"| Baseline PF {edge_summary.get('baseline_profit_factor', 0):.2f} "
+                    f"vs Paper PF {edge_summary.get('paper_profit_factor', 0):.2f}"
+                )
+                if edge_status == "aligned":
+                    st.success(edge_message)
+                elif edge_status in {"degraded", "watchlist"}:
+                    st.warning(edge_message)
+                else:
+                    st.info(edge_message)
                 st.info(f"📊 Estatísticas: {stats['total_signals']} sinais total | {stats['signals_24h']} últimas 24h")
             except Exception as e:
                 st.warning(f"⚠️ Erro ao carregar estatísticas: {str(e)}")
@@ -1951,13 +2182,13 @@ with tab2:
             # Opções de filtragem de sinais
             enable_volume_filter = st.checkbox(
                 "Filtrar por Volume",
-                value=False,
+                value=True,
                 help="Apenas trades com volume acima da média"
             )
 
             enable_trend_filter = st.checkbox(
                 "Filtrar por Tendência",
-                value=False,
+                value=True,
                 help="Usar MACD como filtro adicional"
             )
 
@@ -1965,7 +2196,7 @@ with tab2:
                 "Stop Loss (%)",
                 min_value=0.0,
                 max_value=20.0,
-                value=0.0,
+                value=2.0,
                 step=0.5,
                 help="0 = sem stop loss"
             )
@@ -1974,9 +2205,24 @@ with tab2:
                 "Take Profit (%)",
                 min_value=0.0,
                 max_value=50.0,
-                value=0.0,
+                value=4.0,
                 step=0.5,
                 help="0 = sem take profit"
+            )
+
+            enable_oos_validation = st.checkbox(
+                "Validar Fora da Amostra",
+                value=True,
+                help="Reserva a parte final do período para validar a estratégia em dados futuros"
+            )
+
+            validation_split_pct = st.slider(
+                "Parte Fora da Amostra (%)",
+                10,
+                50,
+                30,
+                disabled=not enable_oos_validation,
+                help="Percentual final do período reservado para validação temporal"
             )
 
     with config_tab3:
@@ -2025,6 +2271,61 @@ with tab2:
             help="Testa a mesma estratégia em diferentes timeframes"
         )
 
+        compare_symbols = st.checkbox(
+            "🪙 Comparar Pares",
+            help="Executa o mesmo backtest em múltiplos pares para encontrar onde o edge realmente se sustenta"
+        )
+
+        supported_scan_timeframes = AppConfig.get_supported_timeframes()
+        default_scan_timeframes = list(dict.fromkeys([bt_timeframe, "15m", "1h"]))
+        default_scan_timeframes = [tf for tf in default_scan_timeframes if tf in supported_scan_timeframes]
+        comparison_timeframes = [bt_timeframe]
+        if compare_timeframes:
+            comparison_timeframes = st.multiselect(
+                "Timeframes do Scan",
+                options=supported_scan_timeframes,
+                default=default_scan_timeframes or [bt_timeframe],
+                help="Compare a robustez da estratégia em múltiplos timeframes",
+                key="bt_comparison_timeframes",
+            )
+
+        supported_scan_symbols = AppConfig.get_supported_pairs()
+        default_scan_symbols = list(dict.fromkeys([bt_symbol, "BTC/USDT", "ETH/USDT"]))
+        default_scan_symbols = [sym for sym in default_scan_symbols if sym in supported_scan_symbols]
+        comparison_symbols = [bt_symbol]
+        if compare_symbols:
+            comparison_symbols = st.multiselect(
+                "Pares do Scan",
+                options=supported_scan_symbols,
+                default=default_scan_symbols or [bt_symbol],
+                help="Selecione os pares para o scan comparativo",
+                key="bt_comparison_symbols",
+            )
+
+        comparison_timeframes = comparison_timeframes or [bt_timeframe]
+        comparison_symbols = comparison_symbols or [bt_symbol]
+        comparison_combo_count = len(comparison_symbols) * len(comparison_timeframes)
+        if compare_timeframes or compare_symbols:
+            st.caption(
+                f"Scan configurado: {len(comparison_symbols)} par(es) x "
+                f"{len(comparison_timeframes)} timeframe(s) = {comparison_combo_count} cenário(s)"
+            )
+
+        enable_walk_forward = st.checkbox(
+            "🧭 Walk-Forward",
+            value=True,
+            help="Executa validação sequencial em múltiplas janelas temporais"
+        )
+
+        walk_forward_windows = st.slider(
+            "Janelas Walk-Forward",
+            2,
+            5,
+            3,
+            disabled=not enable_walk_forward,
+            help="Quantidade de janelas out-of-sample sequenciais"
+        )
+
     # Validation and execution
     st.markdown("---")
     st.markdown("### 🚀 Executar Testes")
@@ -2054,6 +2355,8 @@ with tab2:
 
     # Execution buttons
     col1, col2, col3 = st.columns(3)
+    run_optimization = False
+    run_market_scan = False
 
     with col1:
         bt_execute = st.button(
@@ -2072,20 +2375,18 @@ with tab2:
             width="stretch",
             key="bt_optimize"
         ):
-            # Trigger optimization mode
-            st.session_state.run_optimization = True
+            run_optimization = True
             bt_execute = True
 
     with col3:
-        if compare_timeframes and st.button(
-            "📊 Comparar Timeframes",
+        if (compare_timeframes or compare_symbols) and st.button(
+            "🧭 Scan Comparativo",
             disabled=not date_valid or period_days < 1,
-            help="Testar em múltiplos timeframes",
+            help="Testar a estratégia em múltiplos pares e/ou timeframes",
             width="stretch",
             key="bt_compare"
         ):
-            # Trigger comparison mode
-            st.session_state.run_comparison = True
+            run_market_scan = True
             bt_execute = True
 
     if bt_execute and date_valid:
@@ -2100,26 +2401,113 @@ with tab2:
                     st.error("❌ Período muito longo. Máximo recomendado: 1 ano")
                     st.stop()
 
-                # Execute backtest
-                st.info(f"📊 Executando backtest para {bt_symbol} no período de {period_days} dias...")
+                if run_optimization:
+                    st.info(
+                        f"⚡ Executando otimização RSI para {bt_symbol} {bt_timeframe} "
+                        f"em até {int(max_tests)} combinações..."
+                    )
 
-                results = st.session_state.backtest_engine.run_backtest(
-                    symbol=bt_symbol,
-                    timeframe=bt_timeframe,
-                    start_date=start_dt,
-                    end_date=end_dt,
-                    initial_balance=int(bt_initial_balance),
-                    rsi_period=bt_rsi_period,
-                    rsi_min=bt_rsi_min,
-                    rsi_max=bt_rsi_max
-                )
+                    optimization_results = st.session_state.backtest_engine.optimize_rsi_parameters(
+                        symbol=bt_symbol,
+                        timeframe=bt_timeframe,
+                        rsi_min_range=rsi_min_range,
+                        rsi_max_range=rsi_max_range,
+                        max_tests=int(max_tests),
+                        optimization_metric=optimization_metric,
+                        start_date=start_dt,
+                        end_date=end_dt,
+                        initial_balance=int(bt_initial_balance),
+                        rsi_period=bt_rsi_period,
+                        stop_loss_pct=stop_loss_pct,
+                        take_profit_pct=take_profit_pct,
+                        require_volume=enable_volume_filter,
+                        require_trend=enable_trend_filter,
+                        validation_split_pct=validation_split_pct if enable_oos_validation else 0.0,
+                        walk_forward_windows=walk_forward_windows if enable_walk_forward else 0,
+                    )
 
-                if results and 'stats' in results:
-                    st.session_state.backtest_results = results
-                    st.success("✅ Backtest concluído com sucesso!")
-                    st.balloons()
+                    if optimization_results and optimization_results.get('rows'):
+                        st.session_state.backtest_scan_results = None
+                        st.session_state.backtest_optimization_results = optimization_results
+                        st.session_state.backtest_results = optimization_results.get('best_result')
+                        best_optimization = optimization_results.get('best') or {}
+                        st.success("✅ Otimização concluída com sucesso!")
+                        if best_optimization:
+                            st.caption(
+                                f"Melhor configuração: RSI {best_optimization.get('rsi_min')}-"
+                                f"{best_optimization.get('rsi_max')} | "
+                                f"Score {best_optimization.get('quality_score', 0):.1f}"
+                            )
+                        st.balloons()
+                    else:
+                        st.error("❌ A otimização não retornou resultados válidos")
+                elif run_market_scan:
+                    st.info(
+                        f"📊 Executando scan comparativo com {len(comparison_symbols)} par(es) e "
+                        f"{len(comparison_timeframes)} timeframe(s)..."
+                    )
+
+                    scan_results = st.session_state.backtest_engine.run_market_scan(
+                        symbols=comparison_symbols,
+                        timeframes=comparison_timeframes,
+                        start_date=start_dt,
+                        end_date=end_dt,
+                        initial_balance=int(bt_initial_balance),
+                        rsi_period=bt_rsi_period,
+                        rsi_min=bt_rsi_min,
+                        rsi_max=bt_rsi_max,
+                        stop_loss_pct=stop_loss_pct,
+                        take_profit_pct=take_profit_pct,
+                        require_volume=enable_volume_filter,
+                        require_trend=enable_trend_filter,
+                        validation_split_pct=validation_split_pct if enable_oos_validation else 0.0,
+                        walk_forward_windows=walk_forward_windows if enable_walk_forward else 0,
+                    )
+
+                    if scan_results and scan_results.get('rows'):
+                        st.session_state.backtest_scan_results = scan_results
+                        st.session_state.backtest_optimization_results = None
+                        st.session_state.backtest_results = scan_results.get('best_result')
+                        best_scan = scan_results.get('best') or {}
+                        st.success("✅ Scan comparativo concluído com sucesso!")
+                        if best_scan:
+                            st.caption(
+                                f"Melhor cenário: {best_scan.get('symbol')} {best_scan.get('timeframe')} "
+                                f"| Score {best_scan.get('quality_score', 0):.1f}"
+                            )
+                        st.balloons()
+                    else:
+                        st.error("❌ O scan comparativo não retornou resultados válidos")
                 else:
-                    st.error("❌ Backtest não retornou resultados válidos")
+                    st.info(f"📊 Executando backtest para {bt_symbol} no período de {period_days} dias...")
+
+                    results = st.session_state.backtest_engine.run_backtest(
+                        symbol=bt_symbol,
+                        timeframe=bt_timeframe,
+                        start_date=start_dt,
+                        end_date=end_dt,
+                        initial_balance=int(bt_initial_balance),
+                        rsi_period=bt_rsi_period,
+                        rsi_min=bt_rsi_min,
+                        rsi_max=bt_rsi_max,
+                        stop_loss_pct=stop_loss_pct,
+                        take_profit_pct=take_profit_pct,
+                        require_volume=enable_volume_filter,
+                        require_trend=enable_trend_filter,
+                        validation_split_pct=validation_split_pct if enable_oos_validation else 0.0,
+                        walk_forward_windows=walk_forward_windows if enable_walk_forward else 0,
+                    )
+
+                    if results and 'stats' in results:
+                        st.session_state.backtest_scan_results = None
+                        st.session_state.backtest_optimization_results = None
+                        st.session_state.backtest_results = results
+                        st.success("✅ Backtest concluído com sucesso!")
+                        if results.get('saved_run_id'):
+                            st.caption(f"Backtest salvo no banco com ID #{results['saved_run_id']}")
+                        st.balloons()
+                    else:
+                        st.error("❌ Backtest não retornou resultados válidos")
 
             except Exception as e:
                 error_msg = str(e)
@@ -2143,9 +2531,266 @@ with tab2:
     if st.session_state.backtest_results:
         results = st.session_state.backtest_results
         stats = results['stats']
+        result_meta = results.get('meta', {})
+        result_symbol = result_meta.get('symbol', bt_symbol)
+        result_timeframe = result_meta.get('timeframe', bt_timeframe)
+        result_strategy_version = result_meta.get('strategy_version')
+        result_rsi_min = result_meta.get('rsi_min', bt_rsi_min)
+        result_rsi_max = result_meta.get('rsi_max', bt_rsi_max)
+        scan_results = st.session_state.get('backtest_scan_results')
+        optimization_results = st.session_state.get('backtest_optimization_results')
 
         st.markdown("---")
         st.subheader("📊 Resultados do Backtest")
+        st.caption(f"Cenário exibido: {result_symbol} {result_timeframe}")
+        if result_strategy_version:
+            st.caption(f"Versão da estratégia: {result_strategy_version}")
+
+        active_strategy_profile = db.get_active_strategy_profile(result_symbol, result_timeframe)
+        promotion_readiness = None
+        if results.get('saved_run_id'):
+            promotion_readiness = db.get_backtest_run_promotion_readiness(results['saved_run_id'])
+        strategy_col1, strategy_col2 = st.columns(2)
+        with strategy_col1:
+            if active_strategy_profile:
+                st.info(
+                    f"Setup ativo em paper: {active_strategy_profile.get('strategy_version')} "
+                    f"| RSI {active_strategy_profile.get('rsi_min')}-{active_strategy_profile.get('rsi_max')}"
+                )
+            else:
+                st.info("Nenhum setup ativo em paper para este mercado/timeframe.")
+            if promotion_readiness:
+                if promotion_readiness.get("ready"):
+                    st.success("Setup apto para ativação em paper com base nos critérios mínimos de backtest.")
+                else:
+                    reasons_text = "\n".join(f"- {reason}" for reason in promotion_readiness.get("reasons", []))
+                    st.warning(f"Setup ainda não apto para ativação em paper:\n{reasons_text}")
+        with strategy_col2:
+            action_col1, action_col2 = st.columns(2)
+            with action_col1:
+                if results.get('saved_run_id') and st.button(
+                    "🚀 Ativar Setup em Paper",
+                    key=f"promote_setup_{results.get('saved_run_id')}",
+                    disabled=bool(promotion_readiness and not promotion_readiness.get("ready")),
+                ):
+                    promoted = db.promote_backtest_run(
+                        results['saved_run_id'],
+                        notes="Ativado em paper via dashboard",
+                    )
+                    if promoted:
+                        st.success(f"Setup ativo em paper: {promoted.get('strategy_version')}")
+                        st.rerun()
+                    else:
+                        st.error("Não foi possível ativar o setup atual em paper.")
+            with action_col2:
+                if active_strategy_profile and st.button(
+                    "⛔ Desligar Ativo",
+                    key=f"disable_setup_{active_strategy_profile.get('id')}",
+                ):
+                    db.deactivate_strategy_profile(
+                        active_strategy_profile['id'],
+                        reason="Desativado via dashboard",
+                    )
+                    st.warning("Setup ativo desativado.")
+                    st.rerun()
+
+        try:
+            edge_summary = db.get_edge_monitor_summary(
+                symbol=result_symbol,
+                timeframe=result_timeframe,
+                strategy_version=result_strategy_version,
+            )
+            st.markdown("### 📡 Edge Live vs Backtest")
+            edge_col1, edge_col2, edge_col3, edge_col4 = st.columns(4)
+            with edge_col1:
+                st.metric("Baseline PF", f"{edge_summary.get('baseline_profit_factor', 0):.2f}")
+            with edge_col2:
+                st.metric("Paper PF", f"{edge_summary.get('paper_profit_factor', 0):.2f}")
+            with edge_col3:
+                st.metric("Paper Trades", edge_summary.get('paper_closed_trades', 0))
+            with edge_col4:
+                st.metric("Alinhamento PF", f"{edge_summary.get('profit_factor_alignment_pct', 0):.1f}%")
+
+            edge_message = (
+                f"{edge_summary.get('baseline_source', 'Baseline')} retorno {edge_summary.get('baseline_return_pct', 0):.2f}% "
+                f"| Paper acumulado {edge_summary.get('paper_total_result_pct', 0):.2f}% "
+                f"| {edge_summary.get('status_message')}"
+            )
+            edge_status = edge_summary.get('status')
+            if edge_status == "aligned":
+                st.success(edge_message)
+            elif edge_status in {"degraded", "watchlist"}:
+                st.warning(edge_message)
+            else:
+                st.info(edge_message)
+        except Exception as edge_error:
+            st.info(f"Edge monitor indisponivel: {edge_error}")
+
+        try:
+            governance_summary = db.get_strategy_governance_summary(
+                symbol=result_symbol,
+                timeframe=result_timeframe,
+                active_only=False,
+                limit=10,
+            )
+            governance_counts = governance_summary.get('counts', {})
+            governance_profiles = governance_summary.get('profiles', [])
+
+            st.markdown("### 🧭 Governanca dos Setups")
+            gov_col1, gov_col2, gov_col3, gov_col4, gov_col5 = st.columns(5)
+            with gov_col1:
+                st.metric("Aprovados", governance_counts.get('approved', 0))
+            with gov_col2:
+                st.metric("Observando", governance_counts.get('observing', 0))
+            with gov_col3:
+                st.metric("Bloqueados", governance_counts.get('blocked', 0))
+            with gov_col4:
+                st.metric("Prontos p/ Paper", governance_counts.get('ready_for_paper', 0))
+            with gov_col5:
+                st.metric("Precisam Ajuste", governance_counts.get('needs_work', 0))
+
+            if governance_profiles:
+                governance_df = pd.DataFrame(governance_profiles)
+                governance_df = governance_df[
+                    [
+                        'strategy_version',
+                        'profile_status',
+                        'governance_status',
+                        'paper_closed_trades',
+                        'baseline_profit_factor',
+                        'paper_profit_factor',
+                        'governance_message',
+                    ]
+                ].rename(
+                    columns={
+                        'strategy_version': 'Versao',
+                        'profile_status': 'Perfil',
+                        'governance_status': 'Status',
+                        'paper_closed_trades': 'Paper Trades',
+                        'baseline_profit_factor': 'PF Baseline',
+                        'paper_profit_factor': 'PF Paper',
+                        'governance_message': 'Mensagem',
+                    }
+                )
+                st.dataframe(governance_df, width="stretch", hide_index=True)
+        except Exception as governance_error:
+            st.info(f"Governanca de setups indisponivel: {governance_error}")
+
+        if optimization_results and optimization_results.get('rows'):
+            optimization_summary = optimization_results.get('summary', {})
+            best_optimization = optimization_results.get('best') or {}
+
+            st.markdown("### ⚡ Ranking de Otimização")
+            opt_col1, opt_col2, opt_col3, opt_col4 = st.columns(4)
+            with opt_col1:
+                st.metric("Testes", optimization_summary.get('completed_tests', 0))
+            with opt_col2:
+                st.metric("Candidatos Robustos", optimization_summary.get('passed_candidates', 0))
+            with opt_col3:
+                st.metric("Melhor Score", f"{optimization_summary.get('best_quality_score', 0):.1f}")
+            with opt_col4:
+                st.metric("Métrica", optimization_summary.get('optimization_metric', '-'))
+
+            if best_optimization:
+                st.info(
+                    f"Melhor configuração: RSI {best_optimization.get('rsi_min')}-{best_optimization.get('rsi_max')} | "
+                    f"Score {best_optimization.get('quality_score', 0):.1f} | "
+                    f"OOS PF {best_optimization.get('oos_profit_factor', 0):.2f} | "
+                    f"WF Pass Rate {best_optimization.get('walk_forward_pass_rate_pct', 0):.1f}%"
+                )
+
+            optimization_df = pd.DataFrame(optimization_results['rows'])
+            optimization_df = optimization_df[
+                [
+                    'rsi_min',
+                    'rsi_max',
+                    'metric_value',
+                    'quality_score',
+                    'total_return_pct',
+                    'profit_factor',
+                    'oos_return_pct',
+                    'oos_profit_factor',
+                    'walk_forward_pass_rate_pct',
+                    'robust_candidate',
+                ]
+            ]
+            optimization_df.columns = [
+                'RSI Min',
+                'RSI Max',
+                'Métrica',
+                'Score',
+                'Retorno %',
+                'PF',
+                'OOS %',
+                'OOS PF',
+                'WF Pass Rate %',
+                'Robusto',
+            ]
+            st.dataframe(optimization_df, width='stretch', hide_index=True)
+
+            if optimization_results.get('failed_runs'):
+                with st.expander("Falhas da Otimização"):
+                    st.dataframe(pd.DataFrame(optimization_results['failed_runs']), width='stretch', hide_index=True)
+
+            st.caption("O detalhamento abaixo corresponde à melhor configuração de RSI encontrada.")
+
+        if scan_results and scan_results.get('rows'):
+            scan_summary = scan_results.get('summary', {})
+            best_scan = scan_results.get('best') or {}
+
+            st.markdown("### 🧭 Ranking Comparativo")
+            scan_col1, scan_col2, scan_col3, scan_col4 = st.columns(4)
+            with scan_col1:
+                st.metric("Cenários", scan_summary.get('completed_runs', 0))
+            with scan_col2:
+                st.metric("OOS Aprovados", scan_summary.get('oos_passed_runs', 0))
+            with scan_col3:
+                st.metric("WF Aprovados", scan_summary.get('walk_forward_passed_runs', 0))
+            with scan_col4:
+                st.metric("Melhor Score", f"{scan_summary.get('best_quality_score', 0):.1f}")
+
+            if best_scan:
+                st.info(
+                    f"Melhor combinação: {best_scan.get('symbol')} {best_scan.get('timeframe')} | "
+                    f"Score {best_scan.get('quality_score', 0):.1f} | "
+                    f"OOS PF {best_scan.get('oos_profit_factor', 0):.2f} | "
+                    f"WF Pass Rate {best_scan.get('walk_forward_pass_rate_pct', 0):.1f}%"
+                )
+
+            scan_df = pd.DataFrame(scan_results['rows'])
+            scan_df = scan_df[
+                [
+                    'symbol',
+                    'timeframe',
+                    'quality_score',
+                    'total_return_pct',
+                    'profit_factor',
+                    'oos_return_pct',
+                    'oos_profit_factor',
+                    'walk_forward_pass_rate_pct',
+                    'max_drawdown',
+                    'total_trades',
+                ]
+            ]
+            scan_df.columns = [
+                'Símbolo',
+                'Timeframe',
+                'Score',
+                'Retorno %',
+                'PF',
+                'OOS %',
+                'OOS PF',
+                'WF Pass Rate %',
+                'Drawdown %',
+                'Trades',
+            ]
+            st.dataframe(scan_df, width='stretch', hide_index=True)
+
+            if scan_results.get('failed_runs'):
+                with st.expander("Falhas do Scan"):
+                    st.dataframe(pd.DataFrame(scan_results['failed_runs']), width='stretch', hide_index=True)
+
+            st.caption("O detalhamento abaixo corresponde ao melhor cenário encontrado no scan.")
 
         # Performance Overview
         col1, col2, col3, col4 = st.columns(4)
@@ -2177,6 +2822,83 @@ with tab2:
             st.metric("✅ Trades Vencedores", stats['winning_trades'])
         with col4:
             st.metric("❌ Trades Perdedores", stats['losing_trades'])
+
+        if results.get('validation'):
+            validation = results['validation']
+            in_sample_stats = validation['in_sample']['stats']
+            out_of_sample_stats = validation['out_of_sample']['stats']
+
+            st.markdown("---")
+            st.subheader("🧪 Validação Fora da Amostra")
+            st.caption(
+                f"Split temporal: {100 - validation['split_pct']:.0f}% in-sample / "
+                f"{validation['split_pct']:.0f}% out-of-sample até {pd.Timestamp(validation['split_date']).strftime('%d/%m/%Y %H:%M')}"
+            )
+
+            val_col1, val_col2, val_col3, val_col4 = st.columns(4)
+            with val_col1:
+                st.metric("IS Retorno", f"{in_sample_stats['total_return_pct']:.2f}%")
+            with val_col2:
+                st.metric("OOS Retorno", f"{out_of_sample_stats['total_return_pct']:.2f}%")
+            with val_col3:
+                st.metric("OOS Profit Factor", f"{out_of_sample_stats['profit_factor']:.2f}")
+            with val_col4:
+                st.metric("OOS Expectancy", f"{out_of_sample_stats['expectancy_pct']:.2f}%")
+
+            val_col1, val_col2, val_col3 = st.columns(3)
+            with val_col1:
+                st.metric("IS Trades", in_sample_stats['total_trades'])
+            with val_col2:
+                st.metric("OOS Trades", out_of_sample_stats['total_trades'])
+            with val_col3:
+                st.metric("OOS Win Rate", f"{out_of_sample_stats['win_rate']:.1f}%")
+
+            if validation.get('oos_passed'):
+                st.success("✅ OOS positivo: retorno > 0 e profit factor >= 1.2")
+            else:
+                st.warning("⚠️ OOS fraco: a estratégia ainda não provou edge suficiente fora da amostra")
+
+        if results.get('walk_forward'):
+            walk_forward = results['walk_forward']
+
+            st.markdown("---")
+            st.subheader("🧭 Walk-Forward")
+
+            wf_col1, wf_col2, wf_col3, wf_col4 = st.columns(4)
+            with wf_col1:
+                st.metric("Janelas", walk_forward['total_windows'])
+            with wf_col2:
+                st.metric("Pass Rate", f"{walk_forward['pass_rate_pct']:.1f}%")
+            with wf_col3:
+                st.metric("WF Avg OOS", f"{walk_forward['avg_oos_return_pct']:.2f}%")
+            with wf_col4:
+                st.metric("WF Avg PF", f"{walk_forward['avg_oos_profit_factor']:.2f}")
+
+            wf_col1, wf_col2 = st.columns(2)
+            with wf_col1:
+                st.metric("WF Avg Expectancy", f"{walk_forward['avg_oos_expectancy_pct']:.2f}%")
+            with wf_col2:
+                st.metric("Janelas Aprovadas", f"{walk_forward['passed_windows']}/{walk_forward['total_windows']}")
+
+            if walk_forward.get('overall_passed'):
+                st.success("✅ Walk-forward consistente: a maioria das janelas OOS manteve edge")
+            else:
+                st.warning("⚠️ Walk-forward inconsistente: o edge ainda não se sustenta bem entre janelas")
+
+            walk_forward_rows = []
+            for window in walk_forward['windows']:
+                walk_forward_rows.append({
+                    'Janela': window['window_index'],
+                    'IS Fim': pd.Timestamp(window['in_sample_end']).strftime('%d/%m/%Y %H:%M'),
+                    'OOS Início': pd.Timestamp(window['out_of_sample_start']).strftime('%d/%m/%Y %H:%M'),
+                    'OOS Fim': pd.Timestamp(window['out_of_sample_end']).strftime('%d/%m/%Y %H:%M'),
+                    'OOS Retorno %': window['out_of_sample']['stats']['total_return_pct'],
+                    'OOS Profit Factor': window['out_of_sample']['stats']['profit_factor'],
+                    'OOS Expectancy %': window['out_of_sample']['stats']['expectancy_pct'],
+                    'Aprovada': 'Sim' if window['passed'] else 'Não',
+                })
+
+            st.dataframe(pd.DataFrame(walk_forward_rows), width='stretch', hide_index=True)
 
         # Detailed Performance Analysis
         st.markdown("---")
@@ -2358,7 +3080,7 @@ with tab2:
             )
 
             fig_portfolio.update_layout(
-                title=f"Evolução do Portfolio - {bt_symbol}",
+                title=f"Evolução do Portfolio - {result_symbol} {result_timeframe}",
                 xaxis_title="Data",
                 yaxis_title="Valor do Portfolio ($)",
                 height=400
@@ -2414,11 +3136,12 @@ with tab2:
         if st.button("💾 Salvar Teste Atual", key="save_current_test"):
             test_record = {
                 'timestamp': datetime.now().strftime('%d/%m/%Y %H:%M'),
-                'symbol': bt_symbol,
-                'timeframe': bt_timeframe,
+                'symbol': result_symbol,
+                'timeframe': result_timeframe,
+                'strategy_version': result_strategy_version,
                 'period_days': period_days,
-                'rsi_min': bt_rsi_min,
-                'rsi_max': bt_rsi_max,
+                'rsi_min': result_rsi_min,
+                'rsi_max': result_rsi_max,
                 'return_pct': stats['total_return_pct'],
                 'win_rate': stats['win_rate'],
                 'total_trades': stats['total_trades'],
@@ -2463,6 +3186,8 @@ with tab2:
         with col1:
             if st.button("🗑️ Limpar Resultados", key="clear_backtest_results"):
                 st.session_state.backtest_results = None
+                st.session_state.backtest_scan_results = None
+                st.session_state.backtest_optimization_results = None
                 st.rerun()
 
         with col2:

@@ -8,6 +8,11 @@ Variaveis minimas:
 
 - `TELEGRAM_BOT_TOKEN`
 - `ADMIN_USERS` opcional
+- `ENABLE_EDGE_GUARDRAIL=1` recomendado
+- `ENABLE_AI_SIGNAL_INFLUENCE=0` recomendado para manter a IA apenas em modo comparativo
+- `MIN_PAPER_TRADES_FOR_EDGE_VALIDATION=30` recomendado para validar edge live com amostra minima
+- `RISK_PER_TRADE_PCT=0.5` recomendado para disciplinar tamanho da posicao
+- `MAX_OPEN_PAPER_TRADES=3` recomendado para evitar excesso de exposicao simultanea
 
 Comando:
 
@@ -16,6 +21,10 @@ python start_telegram_bot.py
 ```
 
 Nesse modo, `TELEGRAM_CHAT_ID` nao e obrigatorio. Ele so e usado pelos recursos de alertas outbound do dashboard.
+
+O guardrail de edge usa o historico de `paper trades` para bloquear setups degradados quando houver amostra suficiente.
+A ativacao de setup promovido para paper agora exige criterios minimos de backtest: amostra minima, retorno positivo, `profit factor` acima do piso, `expectancy` positiva, drawdown controlado e OOS aprovado.
+O runtime agora tambem calcula um plano de risco por trade e bloqueia nova operacao quando o stop loss for invalido, o numero maximo de trades abertos for atingido ou o risco aberto do portfolio ultrapassar o limite configurado.
 
 ## Deploy no Railway
 
