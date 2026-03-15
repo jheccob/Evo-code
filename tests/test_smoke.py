@@ -104,6 +104,12 @@ class RailwayConfigSmokeTests(unittest.TestCase):
 
         self.assertIn("-r requirements_production.txt", content)
 
+    def test_default_requirements_entrypoint_points_to_production(self):
+        with open("requirements.txt", "r", encoding="utf-8") as req_file:
+            content = req_file.read()
+
+        self.assertIn("-r requirements_production.txt", content)
+
 
 class GcpDeploySmokeTests(unittest.TestCase):
     def test_gcp_setup_script_and_unit_file_exist(self):

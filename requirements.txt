@@ -1,0 +1,2 @@
+# Default Python dependency entrypoint for platforms that auto-detect requirements.txt.
+-r requirements_production.txt

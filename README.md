@@ -25,6 +25,7 @@ O repositorio agora inclui `railway.json` com:
 - instalacao por `requirements_railway.txt`
 - start command `python start_telegram_bot.py`
 - restart policy `ON_FAILURE`
+- fallback por `requirements.txt` para plataformas que autodetectam dependencias Python
 
 Passos:
 
