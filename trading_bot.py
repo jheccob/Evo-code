@@ -698,6 +698,11 @@ class TradingBot:
             if require_volume and last_row.get('volume_ratio', 1) < min_volume_ratio:
                 return "NEUTRO"
 
+        if require_trend:
+            if market_regime != "trending":
+                return "NEUTRO"
+            signal = self._generate_trend_signal(last_row, actual_rsi_min, actual_rsi_max)
+
         # Gerar sinal usando configurações atuais
         if signal is None:
             signal = self._generate_advanced_signal(last_row)
@@ -798,6 +803,24 @@ class TradingBot:
             return "NEUTRO"
 
         return signal
+
+    def _generate_trend_signal(self, row, rsi_min: float, rsi_max: float) -> str:
+        di_plus = row.get("di_plus", 0)
+        di_minus = row.get("di_minus", 0)
+        macd_hist = row.get("macd_histogram", row.get("macd", 0) - row.get("macd_signal", 0))
+        rsi = row.get("rsi", 50)
+        adx = row.get("adx", 0)
+
+        if pd.isna(di_plus) or pd.isna(di_minus) or pd.isna(macd_hist) or pd.isna(rsi) or pd.isna(adx):
+            return "NEUTRO"
+        if adx < 25:
+            return "NEUTRO"
+
+        if di_plus > di_minus and macd_hist > 0:
+            return "COMPRA" if rsi <= rsi_max else "COMPRA_FRACA"
+        if di_minus > di_plus and macd_hist < 0:
+            return "VENDA" if rsi >= rsi_min else "VENDA_FRACA"
+        return "NEUTRO"
 
     def get_signal_with_confidence(self, df):
         """Get signal with confidence score"""

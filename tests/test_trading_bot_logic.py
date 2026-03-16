@@ -138,5 +138,41 @@ class TradingBotLogicTests(unittest.TestCase):
         self.assertEqual(signal, "NEUTRO")
 
 
+
+    def test_require_trend_uses_di_alignment_for_trend_signal(self):
+        bot = TradingBot.__new__(TradingBot)
+        bot.rsi_min = 20
+        bot.rsi_max = 80
+        bot.rsi_period = 14
+        bot.timeframe = "15m"
+        bot._generate_advanced_signal = lambda row: "NEUTRO"
+        bot._calculate_signal_confidence = lambda row: 95.0
+        bot.calculate_advanced_score = lambda row, signal=None: 0.9
+
+        candle = pd.DataFrame(
+            [
+                {
+                    "rsi": 52.0,
+                    "macd": 0.6,
+                    "macd_signal": 0.2,
+                    "macd_histogram": 0.4,
+                    "adx": 32.0,
+                    "di_plus": 28.0,
+                    "di_minus": 12.0,
+                    "volume_ratio": 2.0,
+                    "atr": 1.2,
+                    "close": 100.0,
+                    "stoch_rsi_k": 45.0,
+                    "williams_r": -45.0,
+                    "bb_width": 0.06,
+                    "market_regime": "trending",
+                }
+            ],
+            index=[pd.Timestamp("2026-01-01 10:00:00")],
+        )
+
+        signal = TradingBot.check_signal(bot, candle, timeframe="15m", require_trend=True)
+
+        self.assertEqual(signal, "COMPRA")
 if __name__ == "__main__":
     unittest.main()
