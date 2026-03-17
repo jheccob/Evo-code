@@ -86,6 +86,110 @@ class PaperTradeServiceTests(unittest.TestCase):
         self.assertEqual(summary["wins"], 1)
         self.assertEqual(summary["win_rate"], 100.0)
 
+    def test_evaluate_open_trades_ignores_entry_candle_range(self):
+        self.service.register_signal(
+            symbol="BTC/USDT",
+            timeframe="5m",
+            signal="COMPRA",
+            entry_price=100.0,
+            entry_timestamp=datetime(2026, 1, 1, 10, 0),
+            source="test",
+            stop_loss_pct=2.0,
+            take_profit_pct=4.0,
+        )
+
+        market_data = pd.DataFrame(
+            {
+                "open": [100.0, 100.0],
+                "high": [104.5, 101.0],
+                "low": [99.5, 99.4],
+                "close": [100.5, 100.4],
+                "volume": [1_000.0, 1_000.0],
+            },
+            index=[
+                pd.Timestamp("2026-01-01 10:00:00"),
+                pd.Timestamp("2026-01-01 10:05:00"),
+            ],
+        )
+
+        closed = self.service.evaluate_open_trades("BTC/USDT", "5m", market_data)
+        summary = self.service.get_summary(symbol="BTC/USDT", timeframe="5m")
+
+        self.assertEqual(len(closed), 0)
+        self.assertEqual(summary["open_trades"], 1)
+
+    def test_evaluate_open_trades_uses_closed_candles_only_when_flag_present(self):
+        self.service.register_signal(
+            symbol="BTC/USDT",
+            timeframe="5m",
+            signal="COMPRA",
+            entry_price=100.0,
+            entry_timestamp=datetime(2026, 1, 1, 10, 0),
+            source="test",
+            stop_loss_pct=2.0,
+            take_profit_pct=4.0,
+        )
+
+        market_data = pd.DataFrame(
+            {
+                "open": [100.0, 100.0],
+                "high": [101.0, 104.5],
+                "low": [99.5, 99.9],
+                "close": [100.5, 104.0],
+                "volume": [1_000.0, 1_000.0],
+                "is_closed": [True, False],
+            },
+            index=[
+                pd.Timestamp("2026-01-01 10:05:00"),
+                pd.Timestamp("2026-01-01 10:10:00"),
+            ],
+        )
+
+        closed = self.service.evaluate_open_trades("BTC/USDT", "5m", market_data)
+        summary = self.service.get_summary(symbol="BTC/USDT", timeframe="5m")
+
+        self.assertEqual(len(closed), 0)
+        self.assertEqual(summary["open_trades"], 1)
+
+    def test_paper_trade_result_pct_includes_fee_and_slippage_costs(self):
+        service = PaperTradeService(
+            database=self.database,
+            max_hold_candles=3,
+            fee_rate=0.001,
+            slippage=0.0005,
+        )
+        service.register_signal(
+            symbol="BTC/USDT",
+            timeframe="5m",
+            signal="COMPRA",
+            entry_price=100.0,
+            entry_timestamp=datetime(2026, 1, 1, 10, 0),
+            source="test",
+            stop_loss_pct=2.0,
+            take_profit_pct=4.0,
+        )
+
+        market_data = pd.DataFrame(
+            {
+                "open": [100.0, 100.0],
+                "high": [101.0, 104.5],
+                "low": [99.5, 99.9],
+                "close": [100.5, 104.0],
+                "volume": [1_000.0, 1_000.0],
+            },
+            index=[
+                pd.Timestamp("2026-01-01 10:00:00"),
+                pd.Timestamp("2026-01-01 10:05:00"),
+            ],
+        )
+
+        closed = service.evaluate_open_trades("BTC/USDT", "5m", market_data)
+
+        self.assertEqual(len(closed), 1)
+        self.assertEqual(closed[0]["outcome"], "WIN")
+        self.assertLess(closed[0]["result_pct"], 4.0)
+        self.assertGreater(closed[0]["result_pct"], 3.0)
+
     def test_register_signal_flips_existing_trade(self):
         first_id = self.service.register_signal(
             symbol="BTC/USDT",
@@ -122,6 +226,7 @@ class PaperTradeServiceTests(unittest.TestCase):
             signal="COMPRA",
             entry_price=100.0,
             entry_timestamp=datetime(2026, 1, 1, 10, 0),
+            context_timeframe="1h",
             source="test",
             strategy_version=strategy_version,
             setup_name="setup-btc-5m",
@@ -137,6 +242,7 @@ class PaperTradeServiceTests(unittest.TestCase):
         self.assertEqual(trade_id, open_trades[0]["id"])
         self.assertEqual(open_trades[0]["setup_name"], "setup-btc-5m")
         self.assertEqual(open_trades[0]["strategy_version"], strategy_version)
+        self.assertEqual(open_trades[0]["context_timeframe"], "1h")
         self.assertEqual(open_trades[0]["regime"], "trending")
         self.assertEqual(open_trades[0]["signal_score"], 74.5)
         self.assertEqual(open_trades[0]["atr"], 1.23)
@@ -413,6 +519,102 @@ class PaperTradeServiceTests(unittest.TestCase):
         self.assertEqual(evaluations[0]["edge_status"], "awaiting_live_data")
         self.assertGreater(evaluations[0]["quality_score"], 0)
 
+    def test_backtest_performance_summary_uses_trade_level_aggregates(self):
+        self.database.save_backtest_result(
+            {
+                "symbol": "BTC/USDT",
+                "timeframe": "1h",
+                "strategy_version": "setup-a",
+                "start_date": "2026-01-01T00:00:00",
+                "end_date": "2026-01-10T00:00:00",
+                "initial_balance": 1000.0,
+                "final_balance": 1050.0,
+                "net_profit": 50.0,
+                "total_return_pct": 5.0,
+                "total_trades": 2,
+                "winning_trades": 1,
+                "losing_trades": 1,
+                "win_rate": 100.0,
+                "max_drawdown": 4.0,
+                "sharpe_ratio": 1.0,
+                "profit_factor": 9.9,
+                "avg_profit": 10.0,
+                "avg_loss": -5.0,
+                "expectancy_pct": 9.9,
+            },
+            [
+                {
+                    "entry_timestamp": "2026-01-02T10:00:00",
+                    "timestamp": "2026-01-02T11:00:00",
+                    "entry_price": 100.0,
+                    "price": 110.0,
+                    "profit_loss_pct": 10.0,
+                    "profit_loss": 100.0,
+                    "signal": "COMPRA",
+                    "side": "long",
+                    "reason": "TAKE_PROFIT",
+                },
+                {
+                    "entry_timestamp": "2026-01-03T10:00:00",
+                    "timestamp": "2026-01-03T11:00:00",
+                    "entry_price": 100.0,
+                    "price": 95.0,
+                    "profit_loss_pct": -5.0,
+                    "profit_loss": -50.0,
+                    "signal": "VENDA",
+                    "side": "short",
+                    "reason": "STOP_LOSS",
+                },
+            ],
+        )
+        self.database.save_backtest_result(
+            {
+                "symbol": "BTC/USDT",
+                "timeframe": "1h",
+                "strategy_version": "setup-b",
+                "start_date": "2026-01-11T00:00:00",
+                "end_date": "2026-01-20T00:00:00",
+                "initial_balance": 1000.0,
+                "final_balance": 1030.0,
+                "net_profit": 30.0,
+                "total_return_pct": 3.0,
+                "total_trades": 1,
+                "winning_trades": 1,
+                "losing_trades": 0,
+                "win_rate": 0.0,
+                "max_drawdown": 2.0,
+                "sharpe_ratio": 0.5,
+                "profit_factor": 0.1,
+                "avg_profit": 3.0,
+                "avg_loss": 0.0,
+                "expectancy_pct": -9.9,
+            },
+            [
+                {
+                    "entry_timestamp": "2026-01-12T10:00:00",
+                    "timestamp": "2026-01-12T11:00:00",
+                    "entry_price": 100.0,
+                    "price": 103.0,
+                    "profit_loss_pct": 3.0,
+                    "profit_loss": 30.0,
+                    "signal": "COMPRA",
+                    "side": "long",
+                    "reason": "TAKE_PROFIT",
+                }
+            ],
+        )
+
+        summary = self.database.get_backtest_performance_summary(symbol="BTC/USDT", timeframe="1h")
+        breakdown = summary["breakdown_by_market"][0]
+
+        self.assertEqual(summary["aggregate_total_trades"], 3)
+        self.assertEqual(summary["avg_profit_factor"], 2.6)
+        self.assertEqual(summary["avg_expectancy_pct"], 2.67)
+        self.assertEqual(summary["avg_win_rate"], 66.67)
+        self.assertEqual(breakdown["avg_profit_factor"], 2.6)
+        self.assertEqual(breakdown["avg_expectancy_pct"], 2.67)
+        self.assertEqual(breakdown["avg_win_rate"], 66.67)
+
     def test_close_paper_trade_creates_strategy_evaluation_snapshot(self):
         strategy_version = build_strategy_version("ETH/USDT", "15m", 14, 25, 75, 0.0, 0.0, True, False)
 
@@ -626,6 +828,77 @@ class PaperTradeServiceTests(unittest.TestCase):
 
         self.assertEqual(governance_by_version[strategy_ready], "ready_for_paper")
         self.assertEqual(governance_by_version[strategy_active], "approved")
+
+    def test_live_execution_readiness_is_blocked_when_live_is_disabled(self):
+        readiness = self.database.get_live_execution_readiness(symbol="BTC/USDT", timeframe="5m")
+
+        self.assertFalse(readiness["allowed"])
+        self.assertIn("Execucao live desabilitada por configuracao.", readiness["reasons"])
+
+    def test_live_execution_readiness_requires_approved_governance(self):
+        strategy_active = build_strategy_version("ETH/USDT", "15m", 14, 25, 75, 0.0, 0.0, True, False)
+        active_run = self.database.save_backtest_result(
+            {
+                "symbol": "ETH/USDT",
+                "timeframe": "15m",
+                "strategy_version": strategy_active,
+                "start_date": "2026-01-01T00:00:00",
+                "end_date": "2026-01-10T00:00:00",
+                "initial_balance": 1000.0,
+                "final_balance": 1080.0,
+                "net_profit": 80.0,
+                "total_return_pct": 8.0,
+                "total_trades": 20,
+                "winning_trades": 12,
+                "losing_trades": 8,
+                "win_rate": 60.0,
+                "max_drawdown": 9.0,
+                "sharpe_ratio": 1.4,
+                "profit_factor": 1.5,
+                "avg_profit": 1.2,
+                "avg_loss": -0.8,
+                "expectancy_pct": 0.5,
+                "rsi_period": 14,
+                "rsi_min": 25,
+                "rsi_max": 75,
+                "require_volume": True,
+                "out_of_sample_return_pct": 5.0,
+                "out_of_sample_profit_factor": 1.4,
+                "out_of_sample_expectancy_pct": 0.4,
+                "out_of_sample_passed": True,
+            },
+            [],
+        )
+
+        for result_pct in [1.0, 0.8, -0.2, 0.7, 0.6]:
+            self.database.create_paper_trade(
+                {
+                    "symbol": "ETH/USDT",
+                    "timeframe": "15m",
+                    "strategy_version": strategy_active,
+                    "signal": "COMPRA",
+                    "side": "long",
+                    "source": "test",
+                    "entry_timestamp": "2026-01-01T10:00:00",
+                    "entry_price": 100.0,
+                    "status": "CLOSED",
+                    "outcome": "WIN" if result_pct > 0 else "LOSS",
+                    "close_reason": "TAKE_PROFIT" if result_pct > 0 else "STOP_LOSS",
+                    "exit_timestamp": "2026-01-01T10:05:00",
+                    "exit_price": 101.0,
+                    "result_pct": result_pct,
+                }
+            )
+
+        with mock.patch.object(ProductionConfig, "ENABLE_LIVE_EXECUTION", True), \
+             mock.patch.object(ProductionConfig, "MIN_PAPER_TRADES_FOR_EDGE_VALIDATION", 5), \
+             mock.patch.object(ProductionConfig, "MIN_LIVE_QUALITY_SCORE", 40.0):
+            self.database.promote_backtest_run(active_run, notes="Aprovado para teste")
+            readiness = self.database.get_live_execution_readiness(symbol="ETH/USDT", timeframe="15m")
+
+        self.assertTrue(readiness["allowed"])
+        self.assertEqual(readiness["governance_status"], "approved")
+        self.assertEqual(readiness["edge_status"], "aligned")
 
 
 class PaperTradeIntegrationSourceTests(unittest.TestCase):

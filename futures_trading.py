@@ -6,7 +6,8 @@ import logging
 from datetime import datetime
 from typing import Dict, Optional, Tuple
 from trading_bot import TradingBot
-from config import ExchangeConfig
+from config import AppConfig, ExchangeConfig
+from database.database import TradingDatabase
 
 logger = logging.getLogger(__name__)
 
@@ -17,10 +18,11 @@ class FuturesTrading(TradingBot):
     """
     
     def __init__(self, exchange_name='binance'):
-        super().__init__()
+        super().__init__(allow_simulated_data=False)
         # Configurar exchange que funciona no Brasil
         self.exchange = ExchangeConfig.get_exchange_instance(exchange_name, testnet=False)
         self.exchange_name = exchange_name
+        self.database = TradingDatabase(AppConfig.DB_PATH)
         
         # Definir símbolo padrão em USDT
         self.symbol = "XLM/USDT"
@@ -89,6 +91,19 @@ class FuturesTrading(TradingBot):
         quantity = (position_value * self.leverage) / price
         
         return round(quantity, 6)
+
+    def get_live_execution_readiness(
+        self,
+        symbol: str = None,
+        timeframe: str = None,
+        strategy_version: str = None,
+    ) -> Dict:
+        """Consultar se o setup atual esta liberado para ordens reais."""
+        return self.database.get_live_execution_readiness(
+            symbol=symbol or self.symbol,
+            timeframe=timeframe or self.timeframe,
+            strategy_version=strategy_version,
+        )
     
     def create_futures_order(self, symbol: str, side: str, quantity: float, 
                            order_type: str = 'market', price: Optional[float] = None,
@@ -106,6 +121,10 @@ class FuturesTrading(TradingBot):
             take_profit: Preço do take profit
         """
         try:
+            readiness = self.get_live_execution_readiness(symbol=symbol, timeframe=self.timeframe)
+            if not readiness.get("allowed"):
+                return False, readiness.get("message", "Execucao live bloqueada")
+
             # Ordem principal
             if order_type == 'market':
                 order = self.exchange.create_market_order(symbol, side, quantity)

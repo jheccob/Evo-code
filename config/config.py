@@ -18,12 +18,16 @@ def _get_default_db_path() -> str:
     return "data/trading_bot.db"
 
 class AppConfig:
-    # Trading parameters - Optimized for maximum accuracy
-    DEFAULT_SYMBOL = "XLM/USDT"
-    DEFAULT_TIMEFRAME = "15m"
-    DEFAULT_RSI_PERIOD = 9
-    DEFAULT_RSI_MIN = 20
-    DEFAULT_RSI_MAX = 80
+    # Trading parameters - single-setup mode for robust OOS validation
+    SINGLE_SETUP_MODE = True
+    PRIMARY_SYMBOL = "BTC/USDT"
+    PRIMARY_TIMEFRAME = "1h"
+    PRIMARY_CONTEXT_TIMEFRAME = "4h"
+    DEFAULT_SYMBOL = PRIMARY_SYMBOL
+    DEFAULT_TIMEFRAME = PRIMARY_TIMEFRAME
+    DEFAULT_RSI_PERIOD = 14
+    DEFAULT_RSI_MIN = 30
+    DEFAULT_RSI_MAX = 70
 
     DEFAULT_EXCHANGE = "bybit"
     BRAZIL_SUPPORTED_EXCHANGES = ["bybit", "okx", "kucoin", "mexc"]
@@ -54,15 +58,35 @@ class AppConfig:
     ADX_PERIOD = 14
     STOCH_RSI_PERIOD = 14
     WILLIAMS_R_PERIOD = 14
+    SIMPLE_TREND_SIGNAL_MODE = True
+    ENABLE_PARAMETER_OPTIMIZATION = False
+    ENABLE_MARKET_SCAN = False
+    MULTI_TIMEFRAME_CONTEXT_MAP = {
+        "1h": "4h",
+    }
 
     @classmethod
     def get_supported_pairs(cls):
+        if cls.SINGLE_SETUP_MODE:
+            return [cls.PRIMARY_SYMBOL]
         return ["XLM/USDT", "BTC/USDT", "ETH/USDT", "ADA/USDT", "DOT/USDT",
                 "MATIC/USDT", "LINK/USDT", "UNI/USDT", "SOL/USDT", "AVAX/USDT"]
 
     @classmethod
     def get_supported_timeframes(cls):
+        if cls.SINGLE_SETUP_MODE:
+            ordered = [cls.PRIMARY_TIMEFRAME, cls.PRIMARY_CONTEXT_TIMEFRAME]
+            return list(dict.fromkeys(timeframe for timeframe in ordered if timeframe))
         return ["5m", "15m", "30m", "1h", "4h", "1d"]
+
+    @classmethod
+    def get_context_timeframe(cls, timeframe: Optional[str]) -> Optional[str]:
+        if not timeframe:
+            return None
+        context_timeframe = cls.MULTI_TIMEFRAME_CONTEXT_MAP.get(timeframe)
+        if not context_timeframe or context_timeframe == timeframe:
+            return None
+        return context_timeframe
 
     @classmethod
     def get_optimized_settings(cls, asset_class="crypto"):
@@ -411,6 +435,8 @@ class ProductionConfig:
     ENABLE_EDGE_GUARDRAIL = os.getenv("ENABLE_EDGE_GUARDRAIL", "true").strip().lower() in {"1", "true", "yes"}
     ENABLE_AI_SIGNAL_INFLUENCE = os.getenv("ENABLE_AI_SIGNAL_INFLUENCE", "false").strip().lower() in {"1", "true", "yes"}
     ENABLE_RISK_CIRCUIT_BREAKER = os.getenv("ENABLE_RISK_CIRCUIT_BREAKER", "true").strip().lower() in {"1", "true", "yes"}
+    ENABLE_LIVE_EXECUTION = os.getenv("ENABLE_LIVE_EXECUTION", "false").strip().lower() in {"1", "true", "yes"}
+    REQUIRE_APPROVED_GOVERNANCE_FOR_LIVE = os.getenv("REQUIRE_APPROVED_GOVERNANCE_FOR_LIVE", "true").strip().lower() in {"1", "true", "yes"}
     REDIS_URL = os.getenv("REDIS_URL", "").strip()
     STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY", "").strip()
     STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET", "").strip()
@@ -426,6 +452,10 @@ class ProductionConfig:
     MAX_PORTFOLIO_OPEN_RISK_PCT = _parse_float_env("MAX_PORTFOLIO_OPEN_RISK_PCT", 2.0)
     MAX_DAILY_PAPER_LOSS_PCT = _parse_float_env("MAX_DAILY_PAPER_LOSS_PCT", 2.0)
     MAX_CONSECUTIVE_PAPER_LOSSES = int(os.getenv("MAX_CONSECUTIVE_PAPER_LOSSES", "3").strip() or "3")
+    MIN_LIVE_QUALITY_SCORE = _parse_float_env("MIN_LIVE_QUALITY_SCORE", 60.0)
+    PAPER_FEE_RATE = _parse_float_env("PAPER_FEE_RATE", 0.001)
+    PAPER_SLIPPAGE = _parse_float_env("PAPER_SLIPPAGE", 0.0005)
+    REQUIRE_ACTIVE_PROFILE_FOR_RUNTIME = os.getenv("REQUIRE_ACTIVE_PROFILE_FOR_RUNTIME", "true").strip().lower() in {"1", "true", "yes"}
     DEFAULT_LIVE_STOP_LOSS_PCT = _parse_float_env("DEFAULT_LIVE_STOP_LOSS_PCT", 2.0)
     DEFAULT_LIVE_TAKE_PROFIT_PCT = _parse_float_env("DEFAULT_LIVE_TAKE_PROFIT_PCT", 4.0)
 

@@ -36,7 +36,7 @@ except ImportError as e:
 from user_manager import UserManager
 from trading_bot import TradingBot
 from ai_model import AIModel
-from config import TelegramBotConfig, ProductionConfig
+from config import AppConfig, TelegramBotConfig, ProductionConfig
 from database.database import build_strategy_version, db as runtime_db
 from services.paper_trade_service import PaperTradeService
 from services.risk_management_service import RiskManagementService
@@ -44,7 +44,7 @@ from services.risk_management_service import RiskManagementService
 class TelegramTradingBot:
     """Bot Telegram para Trading - Versão Consolidada"""
     
-    def __init__(self, allow_simulated_data=True, auto_configure_from_env=True):
+    def __init__(self, allow_simulated_data=False, auto_configure_from_env=True):
         self.allow_simulated_data = allow_simulated_data
         self.auto_configure_from_env = auto_configure_from_env
         self.ai_model = AIModel()
@@ -205,6 +205,7 @@ class TelegramTradingBot:
         return build_strategy_version(
             symbol=symbol,
             timeframe=timeframe,
+            context_timeframe=strategy_settings.get("context_timeframe"),
             rsi_period=strategy_settings.get("rsi_period", getattr(self.trading_bot, "rsi_period", 14)),
             rsi_min=strategy_settings.get("rsi_min", getattr(self.trading_bot, "rsi_min", 20)),
             rsi_max=strategy_settings.get("rsi_max", getattr(self.trading_bot, "rsi_max", 80)),
@@ -216,10 +217,12 @@ class TelegramTradingBot:
         )
 
     def _resolve_runtime_strategy_settings(self, symbol: str, timeframe: str) -> dict:
+        default_context_timeframe = AppConfig.get_context_timeframe(timeframe)
         if not self.trading_bot:
             return {
                 "symbol": symbol,
                 "timeframe": timeframe,
+                "context_timeframe": default_context_timeframe,
                 "rsi_period": 14,
                 "rsi_min": 20,
                 "rsi_max": 80,
@@ -228,6 +231,8 @@ class TelegramTradingBot:
                 "require_volume": True,
                 "require_trend": False,
                 "active_profile": None,
+                "runtime_allowed": False,
+                "runtime_block_reason": "Trading bot indisponivel para resolver setup ativo.",
             }
 
         active_profile = runtime_db.get_active_strategy_profile(symbol=symbol, timeframe=timeframe)
@@ -242,6 +247,7 @@ class TelegramTradingBot:
             settings = {
                 "symbol": symbol,
                 "timeframe": timeframe,
+                "context_timeframe": active_profile.get("context_timeframe"),
                 "rsi_period": active_profile.get("rsi_period"),
                 "rsi_min": active_profile.get("rsi_min"),
                 "rsi_max": active_profile.get("rsi_max"),
@@ -251,12 +257,23 @@ class TelegramTradingBot:
                 "require_trend": bool(active_profile.get("require_trend", False)),
                 "avoid_ranging": bool(active_profile.get("avoid_ranging", False)),
                 "active_profile": active_profile,
+                "runtime_allowed": True,
+                "runtime_block_reason": "",
             }
         else:
             self.trading_bot.update_config(symbol=symbol, timeframe=timeframe)
+            runtime_block_reason = ""
+            runtime_allowed = True
+            if ProductionConfig.REQUIRE_ACTIVE_PROFILE_FOR_RUNTIME:
+                runtime_allowed = False
+                runtime_block_reason = (
+                    "Nenhum setup ativo promovido para este mercado/timeframe. "
+                    "Runtime bloqueado ate existir perfil ativo."
+                )
             settings = {
                 "symbol": symbol,
                 "timeframe": timeframe,
+                "context_timeframe": default_context_timeframe,
                 "rsi_period": getattr(self.trading_bot, "rsi_period", 14),
                 "rsi_min": getattr(self.trading_bot, "rsi_min", 20),
                 "rsi_max": getattr(self.trading_bot, "rsi_max", 80),
@@ -266,6 +283,8 @@ class TelegramTradingBot:
                 "require_trend": False,
                 "avoid_ranging": True,
                 "active_profile": None,
+                "runtime_allowed": runtime_allowed,
+                "runtime_block_reason": runtime_block_reason,
             }
 
         settings["strategy_version"] = self._build_runtime_strategy_version(symbol, timeframe, settings)
@@ -463,14 +482,23 @@ class TelegramTradingBot:
 
             last_candle = data.iloc[-1]
             timeframe = strategy_settings["timeframe"]
-            signal = self.trading_bot.check_signal(
-                data,
-                timeframe=timeframe,
-                require_volume=strategy_settings.get("require_volume", True),
-                require_trend=strategy_settings.get("require_trend", False),
-                avoid_ranging=strategy_settings.get("avoid_ranging", True),
-            )
-            emoji = TelegramBotConfig.get_signal_emoji(signal)
+            runtime_block_reason = strategy_settings.get("runtime_block_reason", "")
+            if not strategy_settings.get("runtime_allowed", True):
+                signal = "NEUTRO"
+                final_signal = "NEUTRO"
+                edge_summary = None
+                risk_plan = {"allowed": False, "reason": runtime_block_reason}
+                emoji = TelegramBotConfig.get_signal_emoji(final_signal)
+            else:
+                signal = self.trading_bot.check_signal(
+                    data,
+                    timeframe=timeframe,
+                    require_volume=strategy_settings.get("require_volume", True),
+                    require_trend=strategy_settings.get("require_trend", False),
+                    avoid_ranging=strategy_settings.get("avoid_ranging", True),
+                    context_timeframe=strategy_settings.get("context_timeframe"),
+                )
+                emoji = TelegramBotConfig.get_signal_emoji(signal)
 
             ai_signal = "NEUTRO"
             ai_confidence = 0.0
@@ -483,19 +511,20 @@ class TelegramTradingBot:
                 self.logger.warning(f"Falha na IA: {e}")
 
             runtime_strategy_version = strategy_settings["strategy_version"]
-            final_signal = self._merge_rule_and_ai_signal(signal, ai_signal)
-            final_signal, edge_summary = self._apply_edge_guardrail(
-                final_signal,
-                symbol,
-                timeframe,
-                strategy_version=runtime_strategy_version,
-            )
-            final_signal, risk_plan = self._apply_risk_guardrail(
-                final_signal,
-                float(last_candle["close"]),
-                strategy_settings,
-            )
-            emoji = TelegramBotConfig.get_signal_emoji(final_signal)
+            if strategy_settings.get("runtime_allowed", True):
+                final_signal = self._merge_rule_and_ai_signal(signal, ai_signal)
+                final_signal, edge_summary = self._apply_edge_guardrail(
+                    final_signal,
+                    symbol,
+                    timeframe,
+                    strategy_version=runtime_strategy_version,
+                )
+                final_signal, risk_plan = self._apply_risk_guardrail(
+                    final_signal,
+                    float(last_candle["close"]),
+                    strategy_settings,
+                )
+                emoji = TelegramBotConfig.get_signal_emoji(final_signal)
             edge_guardrail_note = ""
             if edge_summary and edge_summary.get("status") == "degraded" and final_signal == "NEUTRO":
                 edge_guardrail_note = (
@@ -521,6 +550,7 @@ class TelegramTradingBot:
                 f"Sinal (IA - {ai_mode_note}): {ai_signal} (conf: {ai_confidence:.2f})\n"
                 f"Sinal (final): {final_signal}\n\n"
                 f"Estrategia ativa: {active_profile.get('strategy_version') if active_profile else runtime_strategy_version}\n"
+                f"Contexto: {strategy_settings.get('context_timeframe') or 'sem filtro superior'}\n"
                 f"Preco Atual: ${last_candle['close']:.6f}\n"
                 f"Variacao: {((last_candle['close'] - last_candle['open']) / last_candle['open'] * 100):+.2f}%\n\n"
                 f"Indicadores:\n"
@@ -542,6 +572,7 @@ class TelegramTradingBot:
                     {
                         "symbol": symbol,
                         "timeframe": timeframe,
+                        "context_timeframe": strategy_settings.get("context_timeframe"),
                         "strategy_version": runtime_strategy_version,
                         "signal": final_signal,
                         "price": last_candle["close"],
@@ -559,6 +590,7 @@ class TelegramTradingBot:
                         signal=final_signal,
                         entry_price=float(last_candle["close"]),
                         entry_timestamp=signal_timestamp,
+                        context_timeframe=strategy_settings.get("context_timeframe"),
                         source="telegram",
                         strategy_version=runtime_strategy_version,
                         stop_loss_pct=strategy_settings.get("stop_loss_pct"),

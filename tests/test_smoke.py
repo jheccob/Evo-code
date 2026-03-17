@@ -92,6 +92,10 @@ class ImportSmokeTests(unittest.TestCase):
         module = importlib.import_module("telegram_bot")
         self.assertTrue(hasattr(module, "TelegramTradingBot"))
 
+    def test_import_trading_bot_websocket(self):
+        module = importlib.import_module("trading_bot_websocket")
+        self.assertTrue(hasattr(module, "StreamlinedTradingBot"))
+
     def test_app_source_has_no_known_broken_imports_or_hardcoded_admin_password(self):
         with open("app.py", "r", encoding="utf-8") as app_file:
             source = app_file.read()
@@ -100,6 +104,7 @@ class ImportSmokeTests(unittest.TestCase):
         self.assertNotIn("config.app_config", source)
         self.assertNotIn("admin123", source)
         self.assertNotIn("use_container_width", source)
+        self.assertIn("TradingBot(allow_simulated_data=False)", source)
 
 
 class ProductionConfigSmokeTests(unittest.TestCase):

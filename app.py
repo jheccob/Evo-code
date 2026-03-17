@@ -121,11 +121,13 @@ def get_effective_strategy_settings(
 ) -> dict:
     active_profile = db.get_active_strategy_profile(symbol=symbol, timeframe=timeframe)
     trading_bot = st.session_state.get("trading_bot")
+    default_context_timeframe = AppConfig.get_context_timeframe(timeframe)
 
     if active_profile:
         settings = {
             "symbol": symbol,
             "timeframe": timeframe,
+            "context_timeframe": active_profile.get("context_timeframe"),
             "rsi_period": active_profile.get("rsi_period"),
             "rsi_min": active_profile.get("rsi_min"),
             "rsi_max": active_profile.get("rsi_max"),
@@ -136,11 +138,24 @@ def get_effective_strategy_settings(
             "avoid_ranging": bool(active_profile.get("avoid_ranging", False)),
             "active_profile": active_profile,
             "source": "active_profile",
+            "runtime_allowed": True,
+            "runtime_block_reason": "",
         }
     else:
+        runtime_block_reason = ""
+        runtime_allowed = True
+        runtime_source = "session"
+        if ProductionConfig.REQUIRE_ACTIVE_PROFILE_FOR_RUNTIME:
+            runtime_allowed = False
+            runtime_source = "blocked_no_active_profile"
+            runtime_block_reason = (
+                "Nenhum setup ativo promovido para este mercado/timeframe. "
+                "Runtime bloqueado ate existir perfil ativo."
+            )
         settings = {
             "symbol": symbol,
             "timeframe": timeframe,
+            "context_timeframe": default_context_timeframe,
             "rsi_period": getattr(trading_bot, "rsi_period", 14) if trading_bot else 14,
             "rsi_min": getattr(trading_bot, "rsi_min", 20) if trading_bot else 20,
             "rsi_max": getattr(trading_bot, "rsi_max", 80) if trading_bot else 80,
@@ -150,12 +165,15 @@ def get_effective_strategy_settings(
             "require_trend": require_trend,
             "avoid_ranging": avoid_ranging,
             "active_profile": None,
-            "source": "session",
+            "source": runtime_source,
+            "runtime_allowed": runtime_allowed,
+            "runtime_block_reason": runtime_block_reason,
         }
 
     settings["strategy_version"] = build_strategy_version(
         symbol=symbol,
         timeframe=timeframe,
+        context_timeframe=settings.get("context_timeframe"),
         rsi_period=settings["rsi_period"],
         rsi_min=settings["rsi_min"],
         rsi_max=settings["rsi_max"],
@@ -290,7 +308,7 @@ st.sidebar.info("🔹 Sem limite de requisições API - Dados streaming 24/7")
 
 # Initialize session state com cache inteligente
 if 'trading_bot' not in st.session_state:
-    st.session_state.trading_bot = TradingBot()
+    st.session_state.trading_bot = TradingBot(allow_simulated_data=False)
 
 # Cache inteligente para evitar reloads desnecessários
 if 'data_cache' not in st.session_state:
@@ -401,65 +419,79 @@ if st.sidebar.button("🔍 Diagnóstico WebSocket"):
 st.sidebar.subheader("📊 Configuração de Pares")
 
 # Pares USDT disponíveis na Binance via WebSocket
-available_pairs = ["BTC/USDT", "ETH/USDT", "ADA/USDT", "SOL/USDT", "XRP/USDT",
-                  "DOGE/USDT", "LTC/USDT", "AVAX/USDT", "MATIC/USDT", "DOT/USDT", 
-                  "LINK/USDT", "UNI/USDT", "ATOM/USDT", "FTM/USDT", "NEAR/USDT"]
+available_pairs = AppConfig.get_supported_pairs()
+supported_timeframes = AppConfig.get_supported_timeframes()
 
 # Escolha do modo de operação
-trading_mode = st.sidebar.radio(
-    "Modo de Análise:",
-    ["Par Único", "Múltiplos Pares"],
-    help="Escolha analisar um par ou monitorar vários simultaneamente"
-)
-
-if trading_mode == "Múltiplos Pares":
-    enable_multi_symbol = True
-    selected_symbols = st.sidebar.multiselect(
-        "📊 Selecionar pares para monitorar:",
-        available_pairs,
-        default=["BTC/USDT", "ETH/USDT", "ADA/USDT"],
-        help="Escolha até 10 pares para análise simultânea"
-    )
-
-    if not selected_symbols:
-        st.sidebar.warning("⚠️ Selecione pelo menos um par")
-        selected_symbols = ["BTC/USDT"]
-
-    # For multi-symbol mode, use the first selected as primary
-    symbol = selected_symbols[0] if selected_symbols else "BTC/USDT"
-
-else:
+if AppConfig.SINGLE_SETUP_MODE:
     enable_multi_symbol = False
-    symbol = st.sidebar.selectbox(
-        "📈 Par Principal de Trading:",
-        available_pairs,
-        index=0,
-        help="Par principal para análise detalhada"
-    )
+    symbol = AppConfig.DEFAULT_SYMBOL
     selected_symbols = [symbol]
+    st.sidebar.info(f"Setup unico ativo: {symbol} em {AppConfig.DEFAULT_TIMEFRAME}")
+else:
+    trading_mode = st.sidebar.radio(
+        "Modo de Análise:",
+        ["Par Único", "Múltiplos Pares"],
+        help="Escolha analisar um par ou monitorar vários simultaneamente"
+    )
+
+    if trading_mode == "Múltiplos Pares":
+        enable_multi_symbol = True
+        selected_symbols = st.sidebar.multiselect(
+            "📊 Selecionar pares para monitorar:",
+            available_pairs,
+            default=available_pairs[:3] if len(available_pairs) >= 3 else available_pairs,
+            help="Escolha até 10 pares para análise simultânea"
+        )
+
+        if not selected_symbols:
+            st.sidebar.warning("⚠️ Selecione pelo menos um par")
+            selected_symbols = [available_pairs[0]]
+
+        symbol = selected_symbols[0]
+
+    else:
+        enable_multi_symbol = False
+        symbol = st.sidebar.selectbox(
+            "📈 Par Principal de Trading:",
+            available_pairs,
+            index=available_pairs.index(AppConfig.DEFAULT_SYMBOL) if AppConfig.DEFAULT_SYMBOL in available_pairs else 0,
+            help="Par principal para análise detalhada"
+        )
+        selected_symbols = [symbol]
 
 st.sidebar.success(f"✅ Par ativo: {symbol}")
 st.sidebar.info(f"🔄 WebSocket conectará automaticamente ao {symbol.replace('/', '')}")
 
-# Timeframe selection - Coinbase supported timeframes
+# Timeframe selection
+timeframe_default = AppConfig.DEFAULT_TIMEFRAME if AppConfig.DEFAULT_TIMEFRAME in supported_timeframes else supported_timeframes[0]
 timeframe = st.sidebar.selectbox(
     "Timeframe",
-    ["1m", "5m", "15m", "1h", "6h", "1d"],
-    index=1
+    supported_timeframes,
+    index=supported_timeframes.index(timeframe_default),
+    disabled=AppConfig.SINGLE_SETUP_MODE
 )
 
 # RSI Parameters - Otimizado para máxima acurácia
 st.sidebar.subheader("📊 Parâmetros RSI (Otimizados)")
-rsi_period = st.sidebar.slider("Período RSI", 5, 50, 14, help="14 períodos é o padrão mais testado")
-rsi_min = st.sidebar.slider("RSI Mínimo (Compra)", 10, 40, 25, help="25 reduz falsos sinais")
-rsi_max = st.sidebar.slider("RSI Máximo (Venda)", 60, 90, 75, help="75 aumenta precisão")
+rsi_period = st.sidebar.slider("Período RSI", 5, 50, AppConfig.DEFAULT_RSI_PERIOD, help="14 períodos é o padrão mais testado")
+rsi_min = st.sidebar.slider("RSI Mínimo (Compra)", 10, 40, AppConfig.DEFAULT_RSI_MIN, help="Faixa base da estratégia ativa")
+rsi_max = st.sidebar.slider("RSI Máximo (Venda)", 60, 90, AppConfig.DEFAULT_RSI_MAX, help="Faixa base da estratégia ativa")
 
 # Configurações Avançadas para Day Trading
 with st.sidebar.expander("📈 Day Trading Otimizado", expanded=True):
     st.markdown("**⚡ Configurações para Day Trader**")
 
     # Modo Day Trading
-    day_trading_mode = st.checkbox("🚀 Modo Day Trading", value=True, help="Configurações otimizadas para operações rápidas")
+    day_trading_supported = timeframe in {"1m", "5m", "15m"} and not AppConfig.SINGLE_SETUP_MODE
+    day_trading_mode = st.checkbox(
+        "🚀 Modo Day Trading",
+        value=False,
+        disabled=not day_trading_supported,
+        help="Configurações otimizadas para operações rápidas"
+    )
+    if not day_trading_supported:
+        st.caption("Modo day trading indisponivel para o timeframe ou setup atual.")
 
     if day_trading_mode:
         day_settings = AppConfig.get_day_trading_settings(timeframe)
@@ -975,7 +1007,7 @@ with tab2:
 
     # Tabs dentro da análise de futuros
     futures_tab1, futures_tab2, futures_tab3 = st.tabs([
-        "🎯 Sinais & Análise", "⚖️ Calculadoras", "📊 Posições Simuladas"
+        "🎯 Sinais & Análise", "⚖️ Calculadoras", "📊 Cenários Teóricos"
     ])
 
 # Tab 1: Análise e Sinais para Futuros
@@ -1001,8 +1033,16 @@ with tab2:
             sym_data = None
 
             try:
+                symbol_strategy_settings = get_effective_strategy_settings(
+                    sym,
+                    timeframe,
+                    require_volume=require_volume,
+                    require_trend=require_trend,
+                    avoid_ranging=avoid_ranging,
+                )
+
                 # Check if we have cached data for this symbol that's less than 60 seconds old
-                cache_key = f"{sym}_{timeframe}"
+                cache_key = f"{sym}_{timeframe}_{symbol_strategy_settings['strategy_version']}"
                 should_refresh = True
                 cached_data = None
                 cache_age = 0
@@ -1023,12 +1063,27 @@ with tab2:
                     with st.spinner(f'📡 Atualizando {sym}...'):
                         try:
                             # Use shared trading bot instance
-                            st.session_state.trading_bot.update_config(symbol=sym, timeframe=timeframe, rsi_period=rsi_period, rsi_min=rsi_min, rsi_max=rsi_max)
+                            st.session_state.trading_bot.update_config(
+                                symbol=sym,
+                                timeframe=timeframe,
+                                rsi_period=symbol_strategy_settings["rsi_period"],
+                                rsi_min=symbol_strategy_settings["rsi_min"],
+                                rsi_max=symbol_strategy_settings["rsi_max"],
+                            )
                             sym_data = st.session_state.trading_bot.get_market_data(limit=200)
 
                             if sym_data is not None and not sym_data.empty:
                                 last_candle = sym_data.iloc[-1]
-                                signal = st.session_state.trading_bot.check_signal(sym_data)
+                                signal = st.session_state.trading_bot.check_signal(
+                                    sym_data,
+                                    min_confidence=min_confidence,
+                                    timeframe=timeframe,
+                                    require_volume=symbol_strategy_settings["require_volume"],
+                                    require_trend=symbol_strategy_settings["require_trend"],
+                                    avoid_ranging=symbol_strategy_settings.get("avoid_ranging", avoid_ranging),
+                                    day_trading_mode=day_trading_mode,
+                                    context_timeframe=symbol_strategy_settings.get("context_timeframe"),
+                                )
 
                                 # Cache the data com timestamp
                                 st.session_state.multi_symbol_data[cache_key] = {
@@ -1318,22 +1373,31 @@ if st.session_state.current_data is not None:
         avoid_ranging=avoid_ranging,
     )
     runtime_strategy_version = live_strategy_settings["strategy_version"]
-
-    # Calculate signal
-    signal = st.session_state.trading_bot.check_signal(
-        data,
-        timeframe=timeframe,
-        require_volume=live_strategy_settings["require_volume"],
-        require_trend=live_strategy_settings["require_trend"],
-        avoid_ranging=live_strategy_settings.get("avoid_ranging", avoid_ranging),
-    )
-    signal, guardrail_edge_summary = apply_edge_guardrail(
-        signal,
-        symbol,
-        timeframe,
-        strategy_version=runtime_strategy_version,
-    )
-    signal, risk_plan = apply_risk_guardrail(signal, float(last_candle['close']), live_strategy_settings)
+    if not live_strategy_settings.get("runtime_allowed", True):
+        signal = "NEUTRO"
+        risk_plan = {
+            "allowed": False,
+            "reason": live_strategy_settings.get("runtime_block_reason", "Runtime bloqueado"),
+        }
+    else:
+        # Calculate signal
+        signal = st.session_state.trading_bot.check_signal(
+            data,
+            min_confidence=min_confidence,
+            timeframe=timeframe,
+            require_volume=live_strategy_settings["require_volume"],
+            require_trend=live_strategy_settings["require_trend"],
+            avoid_ranging=live_strategy_settings.get("avoid_ranging", avoid_ranging),
+            day_trading_mode=day_trading_mode,
+            context_timeframe=live_strategy_settings.get("context_timeframe"),
+        )
+        signal, guardrail_edge_summary = apply_edge_guardrail(
+            signal,
+            symbol,
+            timeframe,
+            strategy_version=runtime_strategy_version,
+        )
+        signal, risk_plan = apply_risk_guardrail(signal, float(last_candle['close']), live_strategy_settings)
     risk_guardrail_blocked = bool(risk_plan and not risk_plan.get("allowed"))
 
     try:
@@ -1385,6 +1449,7 @@ if st.session_state.current_data is not None:
             'macd_signal': last_candle['macd_signal'],
             'signal': signal,
             'timeframe': timeframe,
+            'context_timeframe': live_strategy_settings.get("context_timeframe"),
             'strategy_version': runtime_strategy_version,
             'macd_value': last_candle['macd'],
             'signal_strength': abs(last_candle['rsi'] - 50) / 50,  # Força do sinal baseada no RSI
@@ -1405,6 +1470,7 @@ if st.session_state.current_data is not None:
                     signal=signal,
                     entry_price=float(last_candle['close']),
                     entry_timestamp=signal_data['timestamp'],
+                    context_timeframe=live_strategy_settings.get("context_timeframe"),
                     source="dashboard",
                     strategy_version=runtime_strategy_version,
                     stop_loss_pct=live_strategy_settings.get("stop_loss_pct"),
@@ -2052,11 +2118,11 @@ if auto_refresh:
                         color = "🟢" if pnl > 0 else "🔴"
                         st.write(f"**Cenário {i}:** {color} ${pnl:+.2f} ({price_change_pct * leverage_pnl * 100:+.1f}%)")
 
-        # Tab 3: Posições (simuladas)
+        # Tab 3: Cenários teóricos
         with futures_tab3:
-            st.markdown("### 📊 Gerenciamento de Posições Simuladas")
+            st.markdown("### 📊 Simulador Educacional de Cenários")
 
-            # Mock positions for demonstration
+            # Mock positions for educational demonstration only
             mock_positions = [
                 {
                     "Par": symbol,
@@ -2072,7 +2138,7 @@ if auto_refresh:
                 }
             ]
 
-            if st.button("🔄 Simular Posições"):
+            if st.button("🔄 Gerar Cenário Teórico"):
                 positions_df = pd.DataFrame(mock_positions)
                 st.dataframe(positions_df, width="stretch")
 
@@ -2080,9 +2146,9 @@ if auto_refresh:
                 profit_pct = futures_leverage * 1.5
                 st.success(f"💰 PnL Total Simulado: +${profit:.2f} (+{profit_pct:.1f}%)")
                 st.info(f"🏦 Margem Total Usada: $5,000 com {futures_mode}")
-                st.warning("⚠️ Esta é apenas uma simulação para fins educacionais")
+                st.warning("⚠️ Isto não representa posição real aberta nem paper trade salvo")
             else:
-                st.info("📭 Clique para ver posições simuladas com base na configuração atual")
+                st.info("📭 Clique para gerar um cenário teórico com base na configuração atual")
 
 # Backtesting Tab - Otimizado para foco em testes
 with tab2:
@@ -2106,14 +2172,15 @@ with tab2:
 
     with col3:
         if st.button("🛡️ Teste Conservador", help="RSI 30-70, 30 dias", width="stretch"):
-            st.session_state.bt_rsi_min = 30
-            st.session_state.bt_rsi_max = 70
+            st.session_state.bt_rsi_min = AppConfig.DEFAULT_RSI_MIN
+            st.session_state.bt_rsi_max = AppConfig.DEFAULT_RSI_MAX
             st.session_state.bt_start_date = date.today() - timedelta(days=30)
 
     with col4:
         if st.button("🔄 Reset Padrão", help="Voltar configurações padrão", width="stretch"):
-            st.session_state.bt_rsi_min = 20
-            st.session_state.bt_rsi_max = 80
+            st.session_state.bt_rsi_period = AppConfig.DEFAULT_RSI_PERIOD
+            st.session_state.bt_rsi_min = AppConfig.DEFAULT_RSI_MIN
+            st.session_state.bt_rsi_max = AppConfig.DEFAULT_RSI_MAX
             st.session_state.bt_start_date = date.today() - timedelta(days=30)
 
     st.markdown("---")
@@ -2203,7 +2270,7 @@ with tab2:
             bt_rsi_period = st.slider(
                 "Período RSI", 
                 5, 50, 
-                getattr(st.session_state, 'bt_rsi_period', 14),
+                getattr(st.session_state, 'bt_rsi_period', AppConfig.DEFAULT_RSI_PERIOD),
                 help="Janela de cálculo do RSI (14 é padrão)",
                 key="bt_rsi_period"
             )
@@ -2211,7 +2278,7 @@ with tab2:
             bt_rsi_min = st.slider(
                 "RSI Compra (Sobrevenda)", 
                 10, 40, 
-                getattr(st.session_state, 'bt_rsi_min', 20),
+                getattr(st.session_state, 'bt_rsi_min', AppConfig.DEFAULT_RSI_MIN),
                 help="Nível para sinal de compra",
                 key="bt_rsi_min"
             )
@@ -2219,7 +2286,7 @@ with tab2:
             bt_rsi_max = st.slider(
                 "RSI Venda (Sobrecompra)", 
                 60, 90, 
-                getattr(st.session_state, 'bt_rsi_max', 80),
+                getattr(st.session_state, 'bt_rsi_max', AppConfig.DEFAULT_RSI_MAX),
                 help="Nível para sinal de venda",
                 key="bt_rsi_max"
             )
@@ -2283,10 +2350,15 @@ with tab2:
         st.markdown("**🔍 Otimização de Parâmetros**")
 
         # Grid search para RSI
+        optimization_allowed = AppConfig.ENABLE_PARAMETER_OPTIMIZATION
         enable_optimization = st.checkbox(
             "🚀 Modo Otimização Automática",
+            value=False,
+            disabled=not optimization_allowed,
             help="Testa múltiplas combinações de RSI automaticamente"
         )
+        if not optimization_allowed:
+            st.caption("Otimização global desativada para manter um único setup fixo.")
 
         if enable_optimization:
             col1, col2 = st.columns(2)
@@ -2320,15 +2392,20 @@ with tab2:
                 )
 
         # Comparação de timeframes
+        scan_allowed = AppConfig.ENABLE_MARKET_SCAN
         compare_timeframes = st.checkbox(
             "📊 Comparar Timeframes",
+            disabled=not scan_allowed,
             help="Testa a mesma estratégia em diferentes timeframes"
         )
 
         compare_symbols = st.checkbox(
             "🪙 Comparar Pares",
+            disabled=not scan_allowed,
             help="Executa o mesmo backtest em múltiplos pares para encontrar onde o edge realmente se sustenta"
         )
+        if not scan_allowed:
+            st.caption("Scan comparativo desativado: foco em um único mercado e timeframe.")
 
         supported_scan_timeframes = AppConfig.get_supported_timeframes()
         default_scan_timeframes = list(dict.fromkeys([bt_timeframe, "15m", "1h"]))

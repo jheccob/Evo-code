@@ -4,23 +4,27 @@ import numpy as np
 import logging
 from datetime import datetime
 import os
+from typing import Dict, Optional
 from indicators import TechnicalIndicators
+from config import AppConfig
 
 logger = logging.getLogger(__name__)
 
 class TradingBot:
-    def __init__(self, allow_simulated_data=True):
+    def __init__(self, allow_simulated_data=False):
         # Usar sempre Binance WebSocket público
         from config import ExchangeConfig
         self.exchange = ExchangeConfig.get_exchange_instance('binance', testnet=False)
         self.exchange_name = 'binance'
-        self.symbol = "BTC/USDT"  # Símbolo padrão mais popular
-        self.timeframe = "5m"
-        self.rsi_period = 14  # Padrão RSI
-        self.rsi_min = 20
-        self.rsi_max = 80
+        self.symbol = AppConfig.DEFAULT_SYMBOL
+        self.timeframe = AppConfig.DEFAULT_TIMEFRAME
+        self.rsi_period = AppConfig.DEFAULT_RSI_PERIOD
+        self.rsi_min = AppConfig.DEFAULT_RSI_MIN
+        self.rsi_max = AppConfig.DEFAULT_RSI_MAX
         self.allow_simulated_data = allow_simulated_data
         self.indicators = TechnicalIndicators()
+        self._stream_clients = {}
+        self._last_context_evaluation = None
 
         logger.info("🚀 TradingBot inicializado com BINANCE WEBSOCKET PÚBLICO")
         logger.info("📡 Usando dados em tempo real sem necessidade de credenciais")
@@ -62,11 +66,13 @@ class TradingBot:
 
         return changed
 
-    def _fetch_public_ohlcv(self, limit=200):
+    def _fetch_public_ohlcv(self, limit=200, symbol: Optional[str] = None, timeframe: Optional[str] = None):
         """Fetch OHLCV data from Binance public APIs"""
         import requests
 
-        symbol_formatted = self.symbol.replace('/', '')  # BTC/USDT -> BTCUSDT
+        symbol = symbol or self.symbol
+        timeframe = timeframe or self.timeframe
+        symbol_formatted = symbol.replace('/', '')  # BTC/USDT -> BTCUSDT
 
         timeframe_map = {
             '1m': '1m', '3m': '3m', '5m': '5m', '15m': '15m',
@@ -74,7 +80,7 @@ class TradingBot:
             '6h': '6h', '8h': '8h', '12h': '12h', '1d': '1d'
         }
 
-        binance_timeframe = timeframe_map.get(self.timeframe, '5m')
+        binance_timeframe = timeframe_map.get(timeframe, '5m')
 
         endpoints = [
             f"https://api.binance.com/api/v3/klines?symbol={symbol_formatted}&interval={binance_timeframe}&limit={limit}",
@@ -156,10 +162,24 @@ class TradingBot:
         logger.info(f"📊 Dados simulados criados: {len(df)} candles para {self.symbol}")
         return df
 
-    def get_market_data(self, limit=200):
-        """Fetch OHLCV data with cache + retry + public fallback"""
+    def _get_realtime_stream_client(self, symbol: Optional[str] = None, timeframe: Optional[str] = None):
+        from trading_bot_websocket import StreamlinedTradingBot
+
+        symbol = symbol or self.symbol
+        timeframe = timeframe or self.timeframe
+        stream_key = f"{symbol}_{timeframe}"
+        if not hasattr(self, "_stream_clients"):
+            self._stream_clients = {}
+        if stream_key not in self._stream_clients:
+            self._stream_clients[stream_key] = StreamlinedTradingBot(symbol, timeframe)
+        return self._stream_clients[stream_key]
+
+    def get_market_data(self, limit=200, symbol: Optional[str] = None, timeframe: Optional[str] = None):
+        """Fetch real-only OHLCV data from websocket buffers using closed candles only."""
+        symbol = symbol or self.symbol
+        timeframe = timeframe or self.timeframe
         cache_key = (
-            f"{self.symbol}_{self.timeframe}_{limit}_"
+            f"{symbol}_{timeframe}_{limit}_"
             f"rsi{self.rsi_period}_{self.rsi_min}_{self.rsi_max}"
         )
         current_time = datetime.now()
@@ -167,27 +187,32 @@ class TradingBot:
         if hasattr(self, '_cache_data') and cache_key in self._cache_data:
             cached_item = self._cache_data[cache_key]
             cache_age = (current_time - cached_item['timestamp']).total_seconds()
-            if cache_age < 60:
-                logger.info(f"📊 Usando dados em cache para {self.symbol} (cache: {cache_age:.1f}s)")
+            if cache_age < 2:
                 return cached_item['data']
 
         df = None
-        for attempt in range(1, 4):
-            try:
-                logger.info(f"🔄 Buscando dados públicos (tentativa {attempt}/3) para {self.symbol}")
-                df = self._fetch_public_ohlcv(limit=limit)
-                break
-            except Exception as e:
-                logger.warning(f"⚠️ Tentativa {attempt} falhou: {e}")
+        realtime_error = None
+        try:
+            logger.info("Conectando ao stream real de mercado para %s %s", symbol, timeframe)
+            df = self._get_realtime_stream_client(symbol=symbol, timeframe=timeframe).get_market_data(limit=limit, timeout=20)
+        except Exception as e:
+            realtime_error = e
+            logger.warning("Falha ao obter dados pelo stream real: %s", e)
 
         if df is None:
             if not self.allow_simulated_data:
                 raise ConnectionError(
-                    "Nao foi possivel obter dados reais do mercado e o fallback simulado esta desabilitado"
-                )
+                    "Nao foi possivel obter dados reais via stream com failover; fallback simulado esta desabilitado"
+                ) from realtime_error
 
-            logger.warning("⚠️ Falha em toda tentativa pública, utilizando dados simulados")
-            df = self._simulate_market_data(limit=limit)
+            logger.warning("Stream indisponivel; tentando REST real antes do fallback local")
+            try:
+                df = self._fetch_public_ohlcv(limit=limit, symbol=symbol, timeframe=timeframe)
+                df["is_closed"] = True
+            except Exception:
+                logger.warning("Fallback REST tambem indisponivel, utilizando dados simulados")
+                df = self._simulate_market_data(limit=limit)
+                df["is_closed"] = True
 
         try:
             df = self.calculate_indicators(df)
@@ -206,6 +231,126 @@ class TradingBot:
         except Exception as e:
             logger.error(f"❌ Erro ao calcular indicadores: {e}")
             raise
+
+    def get_context_evaluation(
+        self,
+        context_df: Optional[pd.DataFrame],
+        as_of_timestamp=None,
+        context_timeframe: Optional[str] = None,
+    ) -> Dict[str, object]:
+        evaluation = {
+            "timeframe": context_timeframe,
+            "bias": "neutral",
+            "strength": 0.0,
+            "timestamp": None,
+            "reason": "Sem contexto configurado.",
+        }
+        if context_df is None or context_df.empty:
+            evaluation["reason"] = "Sem dados de contexto."
+            self._last_context_evaluation = evaluation
+            return evaluation
+
+        working_df = context_df
+        if "is_closed" in working_df.columns:
+            closed_context = working_df[working_df["is_closed"].fillna(False)]
+            if not closed_context.empty:
+                working_df = closed_context
+            elif len(working_df) > 1:
+                working_df = working_df.iloc[:-1]
+
+        if working_df.empty:
+            evaluation["reason"] = "Sem candle fechado no contexto."
+            self._last_context_evaluation = evaluation
+            return evaluation
+
+        if as_of_timestamp is not None:
+            working_df = working_df.loc[working_df.index <= pd.Timestamp(as_of_timestamp)]
+        if working_df.empty:
+            evaluation["reason"] = "Contexto ainda nao fechou candle util."
+            self._last_context_evaluation = evaluation
+            return evaluation
+
+        context_row = working_df.iloc[-1]
+        bullish_checks = 0
+        bearish_checks = 0
+        total_checks = 0
+
+        def register_check(bullish_condition: bool, bearish_condition: bool):
+            nonlocal bullish_checks, bearish_checks, total_checks
+            total_checks += 1
+            if bullish_condition:
+                bullish_checks += 1
+            if bearish_condition:
+                bearish_checks += 1
+
+        price = context_row.get("close", np.nan)
+        sma_21 = context_row.get("sma_21", np.nan)
+        sma_50 = context_row.get("sma_50", np.nan)
+        sma_200 = context_row.get("sma_200", np.nan)
+        macd_hist = context_row.get("macd_histogram", context_row.get("macd", 0) - context_row.get("macd_signal", 0))
+        adx = context_row.get("adx", np.nan)
+        di_plus = context_row.get("di_plus", np.nan)
+        di_minus = context_row.get("di_minus", np.nan)
+        rsi = context_row.get("rsi", np.nan)
+        regime = context_row.get("market_regime", "trending")
+
+        if not pd.isna(price) and not pd.isna(sma_21):
+            register_check(price >= sma_21, price <= sma_21)
+        if not pd.isna(sma_21) and not pd.isna(sma_50):
+            register_check(sma_21 >= sma_50, sma_21 <= sma_50)
+        if not pd.isna(sma_50) and not pd.isna(sma_200):
+            register_check(sma_50 >= sma_200, sma_50 <= sma_200)
+        if not pd.isna(macd_hist):
+            register_check(float(macd_hist) > 0, float(macd_hist) < 0)
+        if not pd.isna(di_plus) and not pd.isna(di_minus):
+            register_check(di_plus > di_minus, di_minus > di_plus)
+        if not pd.isna(rsi):
+            register_check(float(rsi) >= 52, float(rsi) <= 48)
+        if not pd.isna(adx) and float(adx) >= 22:
+            register_check(True, True)
+
+        bias = "neutral"
+        strength = 0.0
+        reason = "Contexto sem vies direcional claro."
+        directional_checks = max(total_checks - 1, 1)
+        if regime == "trending" and bullish_checks >= 5 and bullish_checks > bearish_checks + 1:
+            bias = "bullish"
+            strength = round(min(1.0, bullish_checks / directional_checks), 2)
+            reason = "Contexto confirmou vies de alta."
+        elif regime == "trending" and bearish_checks >= 5 and bearish_checks > bullish_checks + 1:
+            bias = "bearish"
+            strength = round(min(1.0, bearish_checks / directional_checks), 2)
+            reason = "Contexto confirmou vies de baixa."
+        elif regime != "trending":
+            reason = f"Contexto bloqueado por regime {regime}."
+
+        evaluation = {
+            "timeframe": context_timeframe,
+            "bias": bias,
+            "strength": strength,
+            "timestamp": pd.Timestamp(working_df.index[-1]).isoformat(),
+            "reason": reason,
+        }
+        self._last_context_evaluation = evaluation
+        return evaluation
+
+    def _fetch_context_df(self, context_timeframe: str, limit: int = 260) -> Optional[pd.DataFrame]:
+        if not context_timeframe or context_timeframe == self.timeframe:
+            return None
+        return self.get_market_data(limit=limit, symbol=self.symbol, timeframe=context_timeframe)
+
+    def _apply_context_alignment(self, signal: str, context_evaluation: Optional[Dict[str, object]]) -> str:
+        if signal not in {"COMPRA", "COMPRA_FRACA", "VENDA", "VENDA_FRACA"}:
+            return signal
+        if not context_evaluation:
+            return signal
+
+        bias = context_evaluation.get("bias", "neutral")
+        if signal.startswith("COMPRA") and bias != "bullish":
+            return "NEUTRO"
+        if signal.startswith("VENDA") and bias != "bearish":
+            return "NEUTRO"
+        return signal
 
     def calculate_indicators(self, df):
         """Calculate comprehensive technical indicators for the dataframe"""
@@ -587,10 +732,106 @@ class TradingBot:
         else:
             return "NEUTRO"
 
+    def _passes_signal_structure_guardrail(self, row, signal: str, timeframe: str) -> bool:
+        """Reject weak entries when the closed candle structure conflicts with the signal side."""
+        actionable_signals = {"COMPRA", "COMPRA_FRACA", "VENDA", "VENDA_FRACA"}
+        if signal not in actionable_signals or row is None:
+            return True
+
+        open_price = row.get("open", np.nan)
+        high_price = row.get("high", np.nan)
+        low_price = row.get("low", np.nan)
+        close_price = row.get("close", np.nan)
+        if any(pd.isna(value) for value in (open_price, high_price, low_price, close_price)):
+            return True
+
+        candle_range = float(high_price) - float(low_price)
+        if candle_range <= 0:
+            return False
+
+        timeframe = timeframe or self.timeframe or "5m"
+        body_size = abs(float(close_price) - float(open_price))
+        body_share = body_size / candle_range
+        close_location = (float(close_price) - float(low_price)) / candle_range
+        is_short_term = timeframe in {"5m", "15m"}
+        is_weak_signal = signal.endswith("_FRACA")
+        body_share_floor = 0.25 if is_short_term else 0.18
+        if is_weak_signal:
+            body_share_floor += 0.05
+        if body_share < body_share_floor:
+            return False
+
+        atr_value = row.get("atr", np.nan)
+        if not pd.isna(atr_value) and float(atr_value) > 0:
+            min_body_vs_atr = 0.18 if is_short_term else 0.12
+            if is_weak_signal:
+                min_body_vs_atr += 0.05
+            if body_size / float(atr_value) < min_body_vs_atr:
+                return False
+
+        sma_21 = row.get("sma_21", np.nan)
+        macd_hist = row.get("macd_histogram", row.get("macd", 0) - row.get("macd_signal", 0))
+        di_plus = row.get("di_plus", np.nan)
+        di_minus = row.get("di_minus", np.nan)
+        di_gap_floor = 4.0 if is_short_term else 3.0
+        if is_weak_signal:
+            di_gap_floor += 1.0
+        max_distance_from_sma_atr = 2.4 if is_short_term else 2.8
+
+        if signal.startswith("COMPRA"):
+            if float(close_price) <= float(open_price):
+                return False
+            if close_location < (0.58 if is_short_term else 0.55):
+                return False
+            if not pd.isna(macd_hist) and float(macd_hist) <= 0:
+                return False
+            if not pd.isna(sma_21) and float(close_price) < float(sma_21):
+                return False
+            if not pd.isna(di_plus) and not pd.isna(di_minus) and float(di_plus) < float(di_minus) + di_gap_floor:
+                return False
+            if (
+                not pd.isna(sma_21)
+                and not pd.isna(atr_value)
+                and float(atr_value) > 0
+                and (float(close_price) - float(sma_21)) / float(atr_value) > max_distance_from_sma_atr
+            ):
+                return False
+            return True
+
+        if float(close_price) >= float(open_price):
+            return False
+        if close_location > (0.42 if is_short_term else 0.45):
+            return False
+        if not pd.isna(macd_hist) and float(macd_hist) >= 0:
+            return False
+        if not pd.isna(sma_21) and float(close_price) > float(sma_21):
+            return False
+        if not pd.isna(di_plus) and not pd.isna(di_minus) and float(di_minus) < float(di_plus) + di_gap_floor:
+            return False
+        if (
+            not pd.isna(sma_21)
+            and not pd.isna(atr_value)
+            and float(atr_value) > 0
+            and (float(sma_21) - float(close_price)) / float(atr_value) > max_distance_from_sma_atr
+        ):
+            return False
+        return True
+
     def check_signal(self, df, min_confidence=60, require_volume=True, require_trend=False, avoid_ranging=False,
-                    crypto_optimized=True, timeframe="5m", day_trading_mode=False):
+                    crypto_optimized=True, timeframe="5m", day_trading_mode=False, context_df=None,
+                    context_timeframe: Optional[str] = None):
         """Check trading signal with special optimization for 5m timeframe"""
         if df is None or df.empty:
+            return "NEUTRO"
+
+        if "is_closed" in df.columns:
+            closed_df = df[df["is_closed"].fillna(False)]
+            if not closed_df.empty:
+                df = closed_df
+            elif len(df) > 1:
+                df = df.iloc[:-1]
+
+        if df.empty:
             return "NEUTRO"
 
         last_row = df.iloc[-1]
@@ -601,7 +842,32 @@ class TradingBot:
         actual_rsi_max = self.rsi_max
         actual_rsi_period = self.rsi_period
         current_timeframe = timeframe or self.timeframe or "5m"
+        resolved_context_timeframe = context_timeframe or AppConfig.get_context_timeframe(current_timeframe)
         market_regime = last_row.get('market_regime', 'trending')
+        context_evaluation = None
+
+        if resolved_context_timeframe and resolved_context_timeframe != current_timeframe:
+            if context_df is None:
+                if hasattr(self, "_stream_clients") and getattr(self, "symbol", None):
+                    try:
+                        context_df = self._fetch_context_df(resolved_context_timeframe)
+                    except Exception as exc:
+                        logger.warning(
+                            "Falha ao obter contexto %s para %s %s: %s",
+                            resolved_context_timeframe,
+                            self.symbol,
+                            current_timeframe,
+                            exc,
+                        )
+                        return "NEUTRO"
+            if context_df is not None:
+                context_evaluation = self.get_context_evaluation(
+                    context_df=context_df,
+                    as_of_timestamp=df.index[-1],
+                    context_timeframe=resolved_context_timeframe,
+                )
+                if context_evaluation.get("bias") == "neutral":
+                    return "NEUTRO"
 
         if market_regime == 'ranging' and (avoid_ranging or current_timeframe in {"5m", "15m"}):
             return "NEUTRO"
@@ -624,7 +890,6 @@ class TradingBot:
 
         # Configurações otimizadas para mais trades com melhor precisão
         if day_trading_mode:
-            from config import AppConfig
             day_settings = AppConfig.get_day_trading_settings(timeframe)
 
             min_confidence = max(68, day_settings['min_confidence'] - 2)
@@ -644,7 +909,6 @@ class TradingBot:
             # Removed lunch time filter to allow more trades
 
         elif crypto_optimized:
-            from config import AppConfig
             crypto_settings = AppConfig.get_crypto_timeframe_settings(timeframe)
 
             min_confidence = max(64, crypto_settings['min_confidence'])
@@ -697,6 +961,42 @@ class TradingBot:
 
             if require_volume and last_row.get('volume_ratio', 1) < min_volume_ratio:
                 return "NEUTRO"
+
+        if require_trend and AppConfig.SIMPLE_TREND_SIGNAL_MODE:
+            if market_regime != "trending":
+                return "NEUTRO"
+            if avoid_ranging and market_regime == "ranging":
+                return "NEUTRO"
+            if last_row.get('adx', 0) < min_adx_threshold:
+                return "NEUTRO"
+            if require_volume and last_row.get('volume_ratio', 1) < min_volume_ratio:
+                return "NEUTRO"
+
+            signal = self._generate_trend_signal(last_row, actual_rsi_min, actual_rsi_max)
+            if signal == "NEUTRO":
+                return "NEUTRO"
+
+            effective_min_confidence = max(62, min_confidence - 1)
+            if current_timeframe == "5m" or self.timeframe == "5m":
+                effective_min_confidence = max(effective_min_confidence, 68)
+            elif current_timeframe == "15m":
+                effective_min_confidence = max(effective_min_confidence, 66)
+            elif current_timeframe in {"30m", "1h"}:
+                effective_min_confidence = max(effective_min_confidence, 63)
+
+            confidence = self._calculate_signal_confidence(last_row)
+            if confidence < effective_min_confidence:
+                return "NEUTRO"
+
+            atr_pct = last_row.get('atr', 0) / last_row.get('close', 1) * 100
+            max_volatility = (volatility_threshold * 100) * 1.5
+            if atr_pct > max_volatility:
+                return "NEUTRO"
+
+            if not self._passes_signal_structure_guardrail(last_row, signal, current_timeframe):
+                return "NEUTRO"
+
+            return self._apply_context_alignment(signal, context_evaluation)
 
         if require_trend:
             if market_regime != "trending":
@@ -774,6 +1074,10 @@ class TradingBot:
                 if signal == 'VENDA':
                     signal = 'VENDA_FRACA'
 
+        if not self._passes_signal_structure_guardrail(last_row, signal, current_timeframe):
+            logger.debug("Guardrail estrutural bloqueou o sinal %s", signal)
+            return "NEUTRO"
+
         # Combine rule-based signal with advanced score for robust decision
         advanced_score = self.calculate_advanced_score(last_row, signal=signal)
         self.logger = logger
@@ -785,24 +1089,24 @@ class TradingBot:
 
         if advanced_score >= 0.82:
             if signal in ['COMPRA', 'COMPRA_FRACA']:
-                return "COMPRA"
+                return self._apply_context_alignment("COMPRA", context_evaluation)
             if signal in ['VENDA', 'VENDA_FRACA']:
-                return "VENDA"
+                return self._apply_context_alignment("VENDA", context_evaluation)
 
         if advanced_score >= 0.68:
-            return signal
+            return self._apply_context_alignment(signal, context_evaluation)
 
         # Se score intermediário e sinal fraco, devolver NEUTRO
         if signal == 'COMPRA' and advanced_score >= 0.62:
-            return 'COMPRA_FRACA'
+            return self._apply_context_alignment('COMPRA_FRACA', context_evaluation)
         if signal == 'VENDA' and advanced_score >= 0.62:
-            return 'VENDA_FRACA'
+            return self._apply_context_alignment('VENDA_FRACA', context_evaluation)
 
         if signal in ['COMPRA_FRACA', 'VENDA_FRACA'] and advanced_score < 0.72:
             logger.debug("🔁 sinal fraco + score médio, NEUTRO")
             return "NEUTRO"
 
-        return signal
+        return self._apply_context_alignment(signal, context_evaluation)
 
     def _generate_trend_signal(self, row, rsi_min: float, rsi_max: float) -> str:
         di_plus = row.get("di_plus", 0)
@@ -956,6 +1260,16 @@ class TradingBot:
     def get_market_summary(self, df):
         """Get market summary statistics"""
         if df is None or df.empty:
+            return None
+
+        if "is_closed" in df.columns:
+            closed_df = df[df["is_closed"].fillna(False)]
+            if not closed_df.empty:
+                df = closed_df
+            elif len(df) > 1:
+                df = df.iloc[:-1]
+
+        if df.empty:
             return None
 
         last_candle = df.iloc[-1]

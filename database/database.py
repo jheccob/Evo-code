@@ -21,6 +21,7 @@ def build_strategy_version(
     require_volume: bool = False,
     require_trend: bool = False,
     avoid_ranging: bool = False,
+    context_timeframe: Optional[str] = None,
 ) -> str:
     safe_symbol = (symbol or "UNKNOWN").replace("/", "").upper()
     safe_timeframe = timeframe or "na"
@@ -30,13 +31,16 @@ def build_strategy_version(
     stop_loss_pct = float(stop_loss_pct or 0.0)
     take_profit_pct = float(take_profit_pct or 0.0)
 
-    return (
+    version = (
         f"{safe_symbol}-{safe_timeframe}-"
         f"rsi{rsi_period}-{rsi_min}-{rsi_max}-"
         f"sl{stop_loss_pct:.2f}-tp{take_profit_pct:.2f}-"
         f"v{int(bool(require_volume))}-t{int(bool(require_trend))}-"
         f"r{int(bool(avoid_ranging))}"
     )
+    if context_timeframe and context_timeframe != timeframe:
+        version += f"-ctx{context_timeframe}"
+    return version
 
 class TradingDatabase:
     def __init__(self, db_path: str = AppConfig.DB_PATH):
@@ -62,6 +66,7 @@ class TradingDatabase:
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 symbol TEXT NOT NULL,
                 timeframe TEXT NOT NULL,
+                context_timeframe TEXT,
                 strategy_version TEXT,
                 signal_type TEXT NOT NULL,  -- 'buy', 'sell', 'hold'
                 price REAL NOT NULL,
@@ -117,6 +122,7 @@ class TradingDatabase:
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 symbol TEXT NOT NULL,
                 timeframe TEXT NOT NULL,
+                context_timeframe TEXT,
                 strategy_version TEXT,
                 start_date TEXT NOT NULL,
                 end_date TEXT NOT NULL,
@@ -175,6 +181,7 @@ class TradingDatabase:
                 run_id INTEGER NOT NULL,
                 symbol TEXT NOT NULL,
                 timeframe TEXT NOT NULL,
+                context_timeframe TEXT,
                 setup_name TEXT,
                 strategy_version TEXT,
                 regime TEXT,
@@ -202,6 +209,7 @@ class TradingDatabase:
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 symbol TEXT NOT NULL,
                 timeframe TEXT NOT NULL,
+                context_timeframe TEXT,
                 setup_name TEXT,
                 strategy_version TEXT,
                 regime TEXT,
@@ -216,6 +224,8 @@ class TradingDatabase:
                 entry_price REAL NOT NULL,
                 stop_loss_pct REAL NOT NULL DEFAULT 0.0,
                 take_profit_pct REAL NOT NULL DEFAULT 0.0,
+                fee_rate REAL DEFAULT 0.0,
+                slippage REAL DEFAULT 0.0,
                 stop_loss_price REAL,
                 take_profit_price REAL,
                 status TEXT NOT NULL DEFAULT 'OPEN',
@@ -235,6 +245,7 @@ class TradingDatabase:
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 symbol TEXT NOT NULL,
                 timeframe TEXT NOT NULL,
+                context_timeframe TEXT,
                 strategy_version TEXT NOT NULL,
                 status TEXT NOT NULL DEFAULT 'draft',
                 rsi_period INTEGER,
@@ -293,9 +304,13 @@ class TradingDatabase:
             )
         ''')
 
+        self._ensure_column(cursor, 'trading_signals', 'context_timeframe', 'TEXT')
         self._ensure_column(cursor, 'trading_signals', 'strategy_version', 'TEXT')
+        self._ensure_column(cursor, 'backtest_runs', 'context_timeframe', 'TEXT')
         self._ensure_column(cursor, 'backtest_runs', 'strategy_version', 'TEXT')
+        self._ensure_column(cursor, 'backtest_trades', 'context_timeframe', 'TEXT')
         self._ensure_column(cursor, 'backtest_trades', 'strategy_version', 'TEXT')
+        self._ensure_column(cursor, 'paper_trades', 'context_timeframe', 'TEXT')
         self._ensure_column(cursor, 'paper_trades', 'strategy_version', 'TEXT')
         self._ensure_column(cursor, 'backtest_trades', 'setup_name', 'TEXT')
         self._ensure_column(cursor, 'backtest_trades', 'regime', 'TEXT')
@@ -311,6 +326,8 @@ class TradingDatabase:
         self._ensure_column(cursor, 'paper_trades', 'entry_reason', 'TEXT')
         self._ensure_column(cursor, 'paper_trades', 'exit_reason', 'TEXT')
         self._ensure_column(cursor, 'paper_trades', 'sample_type', "TEXT DEFAULT 'paper'")
+        self._ensure_column(cursor, 'paper_trades', 'fee_rate', 'REAL DEFAULT 0.0')
+        self._ensure_column(cursor, 'paper_trades', 'slippage', 'REAL DEFAULT 0.0')
         self._ensure_column(cursor, 'backtest_runs', 'avoid_ranging', 'BOOLEAN DEFAULT FALSE')
         self._ensure_column(cursor, 'paper_trades', 'planned_risk_pct', 'REAL DEFAULT 0.0')
         self._ensure_column(cursor, 'paper_trades', 'planned_risk_amount', 'REAL DEFAULT 0.0')
@@ -336,6 +353,7 @@ class TradingDatabase:
         self._ensure_column(cursor, 'backtest_runs', 'walk_forward_avg_oos_return_pct', 'REAL DEFAULT 0.0')
         self._ensure_column(cursor, 'backtest_runs', 'walk_forward_avg_oos_profit_factor', 'REAL DEFAULT 0.0')
         self._ensure_column(cursor, 'backtest_runs', 'walk_forward_avg_oos_expectancy_pct', 'REAL DEFAULT 0.0')
+        self._ensure_column(cursor, 'strategy_profiles', 'context_timeframe', 'TEXT')
         self._ensure_column(cursor, 'strategy_profiles', 'source_run_id', 'INTEGER')
         self._ensure_column(cursor, 'strategy_profiles', 'avoid_ranging', 'BOOLEAN DEFAULT FALSE')
         self._ensure_column(cursor, 'strategy_profiles', 'notes', 'TEXT')
@@ -380,6 +398,7 @@ class TradingDatabase:
                 'rsi_period': profile_data.get('rsi_period'),
                 'rsi_min': profile_data.get('rsi_min'),
                 'rsi_max': profile_data.get('rsi_max'),
+                'context_timeframe': profile_data.get('context_timeframe'),
                 'stop_loss_pct': profile_data.get('stop_loss_pct', 0.0),
                 'take_profit_pct': profile_data.get('take_profit_pct', 0.0),
                 'require_volume': int(bool(profile_data.get('require_volume', False))),
@@ -397,7 +416,7 @@ class TradingDatabase:
                     '''
                     UPDATE strategy_profiles
                     SET status = ?, rsi_period = ?, rsi_min = ?, rsi_max = ?,
-                        stop_loss_pct = ?, take_profit_pct = ?, require_volume = ?, require_trend = ?, avoid_ranging = ?,
+                        context_timeframe = ?, stop_loss_pct = ?, take_profit_pct = ?, require_volume = ?, require_trend = ?, avoid_ranging = ?,
                         source_run_id = ?, notes = ?, promoted_at_br = ?, deactivated_at_br = ?,
                         updated_at = CURRENT_TIMESTAMP, updated_at_br = ?
                     WHERE id = ?
@@ -407,6 +426,7 @@ class TradingDatabase:
                         values['rsi_period'],
                         values['rsi_min'],
                         values['rsi_max'],
+                        values['context_timeframe'],
                         values['stop_loss_pct'],
                         values['take_profit_pct'],
                         values['require_volume'],
@@ -425,14 +445,15 @@ class TradingDatabase:
                 cursor.execute(
                     '''
                     INSERT INTO strategy_profiles (
-                        symbol, timeframe, strategy_version, status, rsi_period, rsi_min, rsi_max,
+                        symbol, timeframe, context_timeframe, strategy_version, status, rsi_period, rsi_min, rsi_max,
                         stop_loss_pct, take_profit_pct, require_volume, require_trend, avoid_ranging, source_run_id,
                         notes, promoted_at_br, deactivated_at_br, created_at_br, updated_at_br
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ''',
                     (
                         symbol,
                         timeframe,
+                        values['context_timeframe'],
                         strategy_version,
                         values['status'],
                         values['rsi_period'],
@@ -636,6 +657,7 @@ class TradingDatabase:
         strategy_version = run.get('strategy_version') or build_strategy_version(
             symbol=run.get('symbol'),
             timeframe=run.get('timeframe'),
+            context_timeframe=run.get('context_timeframe'),
             rsi_period=run.get('rsi_period'),
             rsi_min=run.get('rsi_min'),
             rsi_max=run.get('rsi_max'),
@@ -649,6 +671,7 @@ class TradingDatabase:
             {
                 'symbol': run.get('symbol'),
                 'timeframe': run.get('timeframe'),
+                'context_timeframe': run.get('context_timeframe'),
                 'strategy_version': strategy_version,
                 'status': 'active',
                 'rsi_period': run.get('rsi_period'),
@@ -673,12 +696,13 @@ class TradingDatabase:
         
         cursor.execute('''
             INSERT INTO trading_signals 
-            (symbol, timeframe, strategy_version, signal_type, price, rsi, macd_signal, macd_value, 
+            (symbol, timeframe, context_timeframe, strategy_version, signal_type, price, rsi, macd_signal, macd_value, 
              signal_strength, volume, created_at_br)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''', (
             signal_data.get('symbol'),
             signal_data.get('timeframe'),
+            signal_data.get('context_timeframe'),
             signal_data.get('strategy_version'),
             signal_data.get('signal'),
             signal_data.get('price'),
@@ -701,9 +725,9 @@ class TradingDatabase:
         try:
             cursor = conn.cursor()
             columns = [
-                'symbol', 'timeframe', 'setup_name', 'strategy_version', 'regime', 'signal_score', 'atr', 'sample_type',
+                'symbol', 'timeframe', 'context_timeframe', 'setup_name', 'strategy_version', 'regime', 'signal_score', 'atr', 'sample_type',
                 'signal', 'side', 'source', 'entry_timestamp', 'entry_reason', 'entry_price',
-                'stop_loss_pct', 'take_profit_pct', 'stop_loss_price', 'take_profit_price',
+                'stop_loss_pct', 'take_profit_pct', 'fee_rate', 'slippage', 'stop_loss_price', 'take_profit_price',
                 'planned_risk_pct', 'planned_risk_amount', 'planned_position_notional', 'planned_quantity',
                 'account_reference_balance',
                 'status', 'outcome', 'close_reason', 'exit_reason', 'exit_timestamp', 'exit_price', 'result_pct',
@@ -712,6 +736,7 @@ class TradingDatabase:
             values = {
                 'symbol': trade_data.get('symbol'),
                 'timeframe': trade_data.get('timeframe'),
+                'context_timeframe': trade_data.get('context_timeframe'),
                 'setup_name': trade_data.get('setup_name') or trade_data.get('strategy_version'),
                 'strategy_version': trade_data.get('strategy_version'),
                 'regime': trade_data.get('regime'),
@@ -726,6 +751,8 @@ class TradingDatabase:
                 'entry_price': trade_data.get('entry_price'),
                 'stop_loss_pct': trade_data.get('stop_loss_pct', 0.0),
                 'take_profit_pct': trade_data.get('take_profit_pct', 0.0),
+                'fee_rate': trade_data.get('fee_rate', 0.0),
+                'slippage': trade_data.get('slippage', 0.0),
                 'stop_loss_price': trade_data.get('stop_loss_price'),
                 'take_profit_price': trade_data.get('take_profit_price'),
                 'planned_risk_pct': trade_data.get('planned_risk_pct', 0.0),
@@ -987,6 +1014,31 @@ class TradingDatabase:
             summary['profit_factor'] = 0.0
         conn.close()
         return summary
+
+    def _merge_backtest_trade_aggregates(self, target: Dict[str, Any], trade_summary: Dict[str, Any]) -> Dict[str, Any]:
+        total_trade_rows = int(trade_summary.get("total_trade_rows", 0) or 0)
+        if total_trade_rows <= 0:
+            return target
+
+        gross_profit = float(trade_summary.get("gross_profit", 0.0) or 0.0)
+        gross_loss = float(trade_summary.get("gross_loss", 0.0) or 0.0)
+        avg_trade_result_pct = float(trade_summary.get("avg_trade_result_pct", 0.0) or 0.0)
+        winning_trades = int(trade_summary.get("winning_trades", 0) or 0)
+        aggregate_win_rate = (winning_trades / total_trade_rows) * 100
+
+        if gross_loss > 0:
+            aggregate_profit_factor = gross_profit / gross_loss
+        else:
+            aggregate_profit_factor = 999.0 if gross_profit > 0 else 0.0
+
+        target["avg_profit_factor"] = round(aggregate_profit_factor, 2)
+        target["avg_expectancy_pct"] = round(avg_trade_result_pct, 2)
+        target["avg_win_rate"] = round(aggregate_win_rate, 2)
+        target["aggregate_total_trades"] = total_trade_rows
+        target["aggregate_profit_factor"] = round(aggregate_profit_factor, 4)
+        target["aggregate_expectancy_pct"] = round(avg_trade_result_pct, 4)
+        target["aggregate_win_rate"] = round(aggregate_win_rate, 2)
+        return target
     
     def get_recent_signals(self, limit: int = 100, symbol: str = None) -> List[Dict]:
         """Buscar sinais recentes"""
@@ -1076,6 +1128,7 @@ class TradingDatabase:
             column_values = {
                 'symbol': run_data.get('symbol'),
                 'timeframe': run_data.get('timeframe'),
+                'context_timeframe': run_data.get('context_timeframe'),
                 'strategy_version': run_data.get('strategy_version'),
                 'start_date': run_data.get('start_date'),
                 'end_date': run_data.get('end_date'),
@@ -1139,6 +1192,7 @@ class TradingDatabase:
                     run_id,
                     run_data.get('symbol'),
                     run_data.get('timeframe'),
+                    trade.get('context_timeframe') or run_data.get('context_timeframe'),
                     trade.get('setup_name') or run_data.get('strategy_version'),
                     run_data.get('strategy_version'),
                     trade.get('regime'),
@@ -1163,10 +1217,10 @@ class TradingDatabase:
             if trade_rows:
                 cursor.executemany('''
                     INSERT INTO backtest_trades (
-                        run_id, symbol, timeframe, setup_name, strategy_version, regime, signal_score, atr, entry_timestamp,
+                        run_id, symbol, timeframe, context_timeframe, setup_name, strategy_version, regime, signal_score, atr, entry_timestamp,
                         entry_reason, exit_timestamp, entry_price, exit_price, exit_reason, profit_loss_pct, profit_loss,
                         signal, side, reason, sample_type
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ''', trade_rows)
 
             conn.commit()
@@ -1262,6 +1316,24 @@ class TradingDatabase:
         ''', (symbol, symbol, timeframe, timeframe, strategy_version, strategy_version))
         summary = dict(cursor.fetchone())
 
+        cursor.execute(
+            '''
+            SELECT
+                COUNT(bt.id) AS total_trade_rows,
+                COALESCE(SUM(CASE WHEN bt.profit_loss > 0 THEN bt.profit_loss ELSE 0 END), 0) AS gross_profit,
+                COALESCE(SUM(CASE WHEN bt.profit_loss < 0 THEN -bt.profit_loss ELSE 0 END), 0) AS gross_loss,
+                COALESCE(AVG(bt.profit_loss_pct), 0) AS avg_trade_result_pct,
+                COALESCE(SUM(CASE WHEN bt.profit_loss > 0 THEN 1 ELSE 0 END), 0) AS winning_trades
+            FROM backtest_trades bt
+            JOIN backtest_runs br ON bt.run_id = br.id
+            WHERE (? IS NULL OR br.symbol = ?)
+              AND (? IS NULL OR br.timeframe = ?)
+              AND (? IS NULL OR br.strategy_version = ?)
+            ''',
+            (symbol, symbol, timeframe, timeframe, strategy_version, strategy_version),
+        )
+        summary = self._merge_backtest_trade_aggregates(summary, dict(cursor.fetchone()))
+
         cursor.execute('''
             SELECT
                 symbol,
@@ -1289,7 +1361,38 @@ class TradingDatabase:
             GROUP BY symbol, timeframe
             ORDER BY avg_return_pct DESC, total_runs DESC
         ''', (symbol, symbol, timeframe, timeframe, strategy_version, strategy_version))
-        summary['breakdown_by_market'] = [dict(row) for row in cursor.fetchall()]
+        breakdown_rows = [dict(row) for row in cursor.fetchall()]
+
+        cursor.execute(
+            '''
+            SELECT
+                br.symbol AS symbol,
+                br.timeframe AS timeframe,
+                COUNT(bt.id) AS total_trade_rows,
+                COALESCE(SUM(CASE WHEN bt.profit_loss > 0 THEN bt.profit_loss ELSE 0 END), 0) AS gross_profit,
+                COALESCE(SUM(CASE WHEN bt.profit_loss < 0 THEN -bt.profit_loss ELSE 0 END), 0) AS gross_loss,
+                COALESCE(AVG(bt.profit_loss_pct), 0) AS avg_trade_result_pct,
+                COALESCE(SUM(CASE WHEN bt.profit_loss > 0 THEN 1 ELSE 0 END), 0) AS winning_trades
+            FROM backtest_trades bt
+            JOIN backtest_runs br ON bt.run_id = br.id
+            WHERE (? IS NULL OR br.symbol = ?)
+              AND (? IS NULL OR br.timeframe = ?)
+              AND (? IS NULL OR br.strategy_version = ?)
+            GROUP BY br.symbol, br.timeframe
+            ''',
+            (symbol, symbol, timeframe, timeframe, strategy_version, strategy_version),
+        )
+        aggregate_rows = {
+            (row["symbol"], row["timeframe"]): dict(row)
+            for row in cursor.fetchall()
+        }
+
+        for row in breakdown_rows:
+            trade_summary = aggregate_rows.get((row["symbol"], row["timeframe"]))
+            if trade_summary:
+                self._merge_backtest_trade_aggregates(row, trade_summary)
+
+        summary['breakdown_by_market'] = breakdown_rows
 
         conn.close()
         return summary
@@ -1752,6 +1855,112 @@ class TradingDatabase:
             "profiles": rows,
             "counts": counts,
             "total_profiles": len(rows),
+        }
+
+    def get_live_execution_readiness(
+        self,
+        symbol: str = None,
+        timeframe: str = None,
+        strategy_version: str = None,
+    ) -> Dict[str, Any]:
+        """Determinar se um setup esta objetivamente apto para execucao live."""
+        resolved_symbol = symbol
+        resolved_timeframe = timeframe
+        resolved_strategy_version = strategy_version
+        active_profile = None
+
+        if resolved_symbol and resolved_timeframe:
+            active_profile = self.get_active_strategy_profile(resolved_symbol, resolved_timeframe)
+            if active_profile and resolved_strategy_version is None:
+                resolved_strategy_version = active_profile.get("strategy_version")
+
+        if active_profile is None and resolved_strategy_version is not None:
+            profiles = self.get_strategy_profiles(
+                symbol=resolved_symbol,
+                timeframe=resolved_timeframe,
+                status="active",
+                limit=100,
+            )
+            for profile in profiles:
+                if profile.get("strategy_version") != resolved_strategy_version:
+                    continue
+                active_profile = profile
+                resolved_symbol = profile.get("symbol") or resolved_symbol
+                resolved_timeframe = profile.get("timeframe") or resolved_timeframe
+                break
+
+        governance_row = None
+        if resolved_symbol and resolved_timeframe:
+            governance_summary = self.get_strategy_governance_summary(
+                symbol=resolved_symbol,
+                timeframe=resolved_timeframe,
+                active_only=True,
+                limit=50,
+            )
+            for row in governance_summary.get("profiles", []):
+                if resolved_strategy_version is not None and row.get("strategy_version") != resolved_strategy_version:
+                    continue
+                governance_row = row
+                resolved_strategy_version = row.get("strategy_version") or resolved_strategy_version
+                break
+
+        metrics = self.compute_strategy_metrics(
+            symbol=resolved_symbol,
+            timeframe=resolved_timeframe,
+            strategy_version=resolved_strategy_version,
+            persist=False,
+        )
+
+        governance_status = (governance_row or {}).get("governance_status") or metrics.get("governance_status") or "unknown"
+        edge_status = metrics.get("edge_status") or "unknown"
+        paper_closed_trades = int(metrics.get("paper_closed_trades", 0) or 0)
+        quality_score = float(metrics.get("quality_score", 0.0) or 0.0)
+        reasons = []
+
+        if not ProductionConfig.ENABLE_LIVE_EXECUTION:
+            reasons.append("Execucao live desabilitada por configuracao.")
+
+        if not active_profile:
+            reasons.append("Nenhum setup ativo encontrado para execucao live.")
+
+        if ProductionConfig.REQUIRE_APPROVED_GOVERNANCE_FOR_LIVE and governance_status != "approved":
+            reasons.append(f"Governanca atual do setup: {governance_status}.")
+
+        if edge_status != "aligned":
+            reasons.append(f"Edge monitor atual: {edge_status}.")
+
+        if paper_closed_trades < int(ProductionConfig.MIN_PAPER_TRADES_FOR_EDGE_VALIDATION):
+            reasons.append(
+                "Amostra paper insuficiente para live "
+                f"({paper_closed_trades}/{ProductionConfig.MIN_PAPER_TRADES_FOR_EDGE_VALIDATION})."
+            )
+
+        if quality_score < float(ProductionConfig.MIN_LIVE_QUALITY_SCORE):
+            reasons.append(
+                f"Quality score abaixo do minimo ({quality_score:.2f}/{ProductionConfig.MIN_LIVE_QUALITY_SCORE:.2f})."
+            )
+
+        allowed = not reasons
+        message = (
+            "Setup apto para execucao live."
+            if allowed
+            else "Execucao live bloqueada: " + " ".join(reasons)
+        )
+
+        return {
+            "allowed": allowed,
+            "message": message,
+            "reasons": reasons,
+            "symbol": resolved_symbol,
+            "timeframe": resolved_timeframe,
+            "strategy_version": resolved_strategy_version,
+            "active_profile": active_profile,
+            "governance_status": governance_status,
+            "edge_status": edge_status,
+            "paper_closed_trades": paper_closed_trades,
+            "quality_score": round(quality_score, 2),
+            "required_quality_score": float(ProductionConfig.MIN_LIVE_QUALITY_SCORE),
+            "config_enabled": bool(ProductionConfig.ENABLE_LIVE_EXECUTION),
         }
 
     def get_statistics(self) -> Dict[str, Any]:

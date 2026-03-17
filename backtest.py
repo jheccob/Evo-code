@@ -9,6 +9,7 @@ import numpy as np
 import pandas as pd
 import requests
 
+from config import AppConfig
 from database.database import build_strategy_version, db as runtime_db
 from trading_bot import TradingBot
 
@@ -25,6 +26,7 @@ class Position:
     signal: str
     setup_name: str
     strategy_version: Optional[str]
+    context_timeframe: Optional[str]
     regime: Optional[str]
     signal_score: float
     atr: float
@@ -64,6 +66,7 @@ class BacktestEngine:
         require_volume: bool = False,
         require_trend: bool = False,
         avoid_ranging: bool = False,
+        context_timeframe: Optional[str] = None,
         validation_split_pct: float = 0.0,
         walk_forward_windows: int = 0,
         persist_result: bool = True,
@@ -79,9 +82,11 @@ class BacktestEngine:
         normalized_position_size = min(max(self._normalize_position_size(position_size_pct), 0.0), 1.0)
         normalized_validation_split = min(max(self._normalize_ratio(validation_split_pct), 0.0), 0.5)
         normalized_walk_forward_windows = max(int(walk_forward_windows or 0), 0)
+        resolved_context_timeframe = context_timeframe or AppConfig.get_context_timeframe(timeframe)
         strategy_version = build_strategy_version(
             symbol=symbol,
             timeframe=timeframe,
+            context_timeframe=resolved_context_timeframe,
             rsi_period=rsi_period,
             rsi_min=rsi_min,
             rsi_max=rsi_max,
@@ -109,11 +114,25 @@ class BacktestEngine:
         raw_df = self._fetch_historical_ohlcv(symbol, timeframe, lookback_start.to_pydatetime(), end_date)
         if raw_df.empty:
             raise ValueError("Dados insuficientes para backtest")
+        raw_context_df = None
+        if resolved_context_timeframe:
+            context_lookback_start = pd.Timestamp(start_date) - pd.to_timedelta(
+                self._timeframe_to_milliseconds(resolved_context_timeframe) * warmup_candles,
+                unit="ms",
+            )
+            raw_context_df = self._fetch_historical_ohlcv(
+                symbol,
+                resolved_context_timeframe,
+                context_lookback_start.to_pydatetime(),
+                end_date,
+            )
 
         return self._run_backtest_with_preloaded_df(
             df=raw_df,
+            context_df=raw_context_df,
             symbol=symbol,
             timeframe=timeframe,
+            context_timeframe=resolved_context_timeframe,
             start_date=start_date,
             end_date=end_date,
             initial_balance=float(initial_balance),
@@ -155,6 +174,8 @@ class BacktestEngine:
         require_volume: bool = False,
         require_trend: bool = False,
         avoid_ranging: bool = False,
+        context_df: Optional[pd.DataFrame] = None,
+        context_timeframe: Optional[str] = None,
         validation_split_pct: float = 0.0,
         walk_forward_windows: int = 0,
         persist_result: bool = False,
@@ -174,9 +195,11 @@ class BacktestEngine:
         normalized_position_size = min(max(self._normalize_position_size(position_size_pct), 0.0), 1.0)
         normalized_validation_split = min(max(self._normalize_ratio(validation_split_pct), 0.0), 0.5)
         normalized_walk_forward_windows = max(int(walk_forward_windows or 0), 0)
+        resolved_context_timeframe = context_timeframe or AppConfig.get_context_timeframe(timeframe)
         strategy_version = build_strategy_version(
             symbol=symbol,
             timeframe=timeframe,
+            context_timeframe=resolved_context_timeframe,
             rsi_period=rsi_period,
             rsi_min=rsi_min,
             rsi_max=rsi_max,
@@ -200,8 +223,10 @@ class BacktestEngine:
 
         return self._run_backtest_with_preloaded_df(
             df=df.copy(),
+            context_df=None if context_df is None else context_df.copy(),
             symbol=symbol,
             timeframe=timeframe,
+            context_timeframe=resolved_context_timeframe,
             start_date=resolved_start_date,
             end_date=resolved_end_date,
             initial_balance=float(initial_balance),
@@ -358,8 +383,10 @@ class BacktestEngine:
     def _run_backtest_with_preloaded_df(
         self,
         df: pd.DataFrame,
+        context_df: Optional[pd.DataFrame],
         symbol: str,
         timeframe: str,
+        context_timeframe: Optional[str],
         start_date: datetime,
         end_date: datetime,
         initial_balance: float,
@@ -382,13 +409,18 @@ class BacktestEngine:
         persist_result: bool,
     ) -> Dict:
         df = self.trading_bot.calculate_indicators(df.copy())
+        resolved_context_df = None
+        if context_df is not None and not context_df.empty:
+            resolved_context_df = self.trading_bot.calculate_indicators(context_df.copy())
         warmup_candles = max(210, int(rsi_period) + 5)
         if len(df) <= warmup_candles + 1:
             raise ValueError("Dados insuficientes para backtest")
 
         self._trade_history, self._portfolio_history, final_balance = self._run_simulation(
             df=df,
+            context_df=resolved_context_df,
             timeframe=timeframe,
+            context_timeframe=context_timeframe,
             start_date=start_date,
             end_date=end_date,
             initial_balance=float(initial_balance),
@@ -416,6 +448,7 @@ class BacktestEngine:
             "meta": {
                 "symbol": symbol,
                 "timeframe": timeframe,
+                "context_timeframe": context_timeframe,
                 "strategy_version": strategy_version,
                 "start_date": pd.Timestamp(start_date).isoformat(),
                 "end_date": pd.Timestamp(end_date).isoformat(),
@@ -429,7 +462,9 @@ class BacktestEngine:
         }
         validation = self._build_validation_results(
             df=df,
+            context_df=resolved_context_df,
             timeframe=timeframe,
+            context_timeframe=context_timeframe,
             start_date=start_date,
             end_date=end_date,
             initial_balance=float(initial_balance),
@@ -447,7 +482,9 @@ class BacktestEngine:
             results["validation"] = validation
         walk_forward = self._build_walk_forward_results(
             df=df,
+            context_df=resolved_context_df,
             timeframe=timeframe,
+            context_timeframe=context_timeframe,
             start_date=start_date,
             end_date=end_date,
             initial_balance=float(initial_balance),
@@ -467,6 +504,7 @@ class BacktestEngine:
             results["saved_run_id"] = self._persist_backtest_run(
                 symbol=symbol,
                 timeframe=timeframe,
+                context_timeframe=context_timeframe,
                 start_date=start_date,
                 end_date=end_date,
                 stats=stats,
@@ -533,6 +571,7 @@ class BacktestEngine:
         return {
             "symbol": meta.get("symbol"),
             "timeframe": meta.get("timeframe"),
+            "context_timeframe": meta.get("context_timeframe"),
             "total_return_pct": round(float(stats.get("total_return_pct", 0.0)), 2),
             "profit_factor": round(float(stats.get("profit_factor", 0.0)), 2),
             "expectancy_pct": round(float(stats.get("expectancy_pct", 0.0)), 2),
@@ -745,7 +784,9 @@ class BacktestEngine:
     def _run_simulation(
         self,
         df: pd.DataFrame,
+        context_df: Optional[pd.DataFrame],
         timeframe: str,
+        context_timeframe: Optional[str],
         start_date: datetime,
         end_date: datetime,
         initial_balance: float,
@@ -764,6 +805,7 @@ class BacktestEngine:
         warmup_candles = max(210, int(getattr(self.trading_bot, "rsi_period", 14)) + 5)
         start_idx = max(warmup_candles, int(df.index.searchsorted(pd.Timestamp(start_date), side="left")))
         end_idx = min(int(df.index.searchsorted(pd.Timestamp(end_date), side="right")) - 1, len(df) - 1)
+        effective_context_timeframe = context_timeframe if context_df is not None else None
 
         if start_idx >= len(df) - 1 or end_idx <= start_idx:
             raise ValueError("Dados insuficientes para backtest")
@@ -790,12 +832,14 @@ class BacktestEngine:
                     trade_history.append(intrabar_trade)
                     open_position = None
 
-            signal = self.trading_bot.check_signal(
-                current_slice,
+            signal = self._check_signal_with_optional_context(
+                current_slice=current_slice,
                 timeframe=timeframe,
                 require_volume=require_volume,
                 require_trend=require_trend,
                 avoid_ranging=avoid_ranging,
+                context_df=context_df,
+                context_timeframe=effective_context_timeframe,
             )
 
             if open_position is not None and self._is_opposite_signal(open_position.side, signal):
@@ -823,6 +867,7 @@ class BacktestEngine:
                     stop_loss_pct=stop_loss_pct,
                     take_profit_pct=take_profit_pct,
                     strategy_version=strategy_version,
+                    context_timeframe=effective_context_timeframe,
                     setup_name=setup_name,
                     sample_type=sample_type,
                 )
@@ -862,6 +907,35 @@ class BacktestEngine:
         )
         return trade_history, portfolio_history, float(balance)
 
+    def _check_signal_with_optional_context(
+        self,
+        current_slice: pd.DataFrame,
+        timeframe: str,
+        require_volume: bool,
+        require_trend: bool,
+        avoid_ranging: bool,
+        context_df: Optional[pd.DataFrame],
+        context_timeframe: Optional[str],
+    ) -> str:
+        kwargs = {
+            "timeframe": timeframe,
+            "require_volume": require_volume,
+            "require_trend": require_trend,
+            "avoid_ranging": avoid_ranging,
+        }
+        if context_timeframe and context_df is not None:
+            kwargs["context_df"] = context_df
+            kwargs["context_timeframe"] = context_timeframe
+
+        try:
+            return self.trading_bot.check_signal(current_slice, **kwargs)
+        except TypeError as exc:
+            if "unexpected keyword argument" not in str(exc):
+                raise
+            kwargs.pop("context_df", None)
+            kwargs.pop("context_timeframe", None)
+            return self.trading_bot.check_signal(current_slice, **kwargs)
+
     def _open_position(
         self,
         signal: str,
@@ -874,6 +948,7 @@ class BacktestEngine:
         stop_loss_pct: float,
         take_profit_pct: float,
         strategy_version: Optional[str],
+        context_timeframe: Optional[str],
         setup_name: Optional[str],
         sample_type: str,
     ) -> Optional[Position]:
@@ -908,6 +983,7 @@ class BacktestEngine:
             signal=signal,
             setup_name=setup_name,
             strategy_version=strategy_version,
+            context_timeframe=context_timeframe,
             regime=current_row.get("market_regime"),
             signal_score=float(signal_score or 0.0),
             atr=float(atr_value or 0.0),
@@ -1009,6 +1085,7 @@ class BacktestEngine:
             "entry_timestamp": open_position.entry_timestamp,
             "setup_name": open_position.setup_name,
             "strategy_version": open_position.strategy_version,
+            "context_timeframe": open_position.context_timeframe,
             "regime": open_position.regime,
             "signal_score": round(float(open_position.signal_score or 0.0), 4),
             "atr": round(float(open_position.atr or 0.0), 6),
@@ -1071,7 +1148,9 @@ class BacktestEngine:
     def _build_validation_results(
         self,
         df: pd.DataFrame,
+        context_df: Optional[pd.DataFrame],
         timeframe: str,
+        context_timeframe: Optional[str],
         start_date: datetime,
         end_date: datetime,
         initial_balance: float,
@@ -1095,7 +1174,9 @@ class BacktestEngine:
         try:
             in_sample_trades, in_sample_portfolio, in_sample_balance = self._run_simulation(
                 df=df,
+                context_df=context_df,
                 timeframe=timeframe,
+                context_timeframe=context_timeframe,
                 start_date=start_date,
                 end_date=split_date.to_pydatetime(),
                 initial_balance=initial_balance,
@@ -1113,7 +1194,9 @@ class BacktestEngine:
             )
             out_sample_trades, out_sample_portfolio, out_sample_balance = self._run_simulation(
                 df=df,
+                context_df=context_df,
                 timeframe=timeframe,
+                context_timeframe=context_timeframe,
                 start_date=out_of_sample_start.to_pydatetime(),
                 end_date=end_date,
                 initial_balance=initial_balance,
@@ -1174,7 +1257,9 @@ class BacktestEngine:
     def _build_walk_forward_results(
         self,
         df: pd.DataFrame,
+        context_df: Optional[pd.DataFrame],
         timeframe: str,
+        context_timeframe: Optional[str],
         start_date: datetime,
         end_date: datetime,
         initial_balance: float,
@@ -1213,7 +1298,9 @@ class BacktestEngine:
             try:
                 in_sample_trades, in_sample_portfolio, in_sample_balance = self._run_simulation(
                     df=df,
+                    context_df=context_df,
                     timeframe=timeframe,
+                    context_timeframe=context_timeframe,
                     start_date=start_date,
                     end_date=in_sample_end.to_pydatetime(),
                     initial_balance=initial_balance,
@@ -1231,7 +1318,9 @@ class BacktestEngine:
                 )
                 out_sample_trades, out_sample_portfolio, out_sample_balance = self._run_simulation(
                     df=df,
+                    context_df=context_df,
                     timeframe=timeframe,
+                    context_timeframe=context_timeframe,
                     start_date=out_of_sample_start.to_pydatetime(),
                     end_date=out_of_sample_end.to_pydatetime(),
                     initial_balance=initial_balance,
@@ -1313,6 +1402,7 @@ class BacktestEngine:
         self,
         symbol: str,
         timeframe: str,
+        context_timeframe: Optional[str],
         start_date: datetime,
         end_date: datetime,
         stats: Dict,
@@ -1337,6 +1427,7 @@ class BacktestEngine:
         run_data = {
             "symbol": symbol,
             "timeframe": timeframe,
+            "context_timeframe": context_timeframe,
             "strategy_version": strategy_version,
             "start_date": pd.Timestamp(start_date).isoformat(),
             "end_date": pd.Timestamp(end_date).isoformat(),

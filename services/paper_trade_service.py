@@ -4,6 +4,7 @@ from typing import Dict, List, Optional
 
 import pandas as pd
 
+from config import ProductionConfig
 from database.database import db as runtime_db
 
 logger = logging.getLogger(__name__)
@@ -21,11 +22,15 @@ class PaperTradeService:
         default_stop_loss_pct: float = 2.0,
         default_take_profit_pct: float = 4.0,
         max_hold_candles: int = 288,
+        fee_rate: Optional[float] = None,
+        slippage: Optional[float] = None,
     ):
         self.database = database or runtime_db
         self.default_stop_loss_pct = float(default_stop_loss_pct)
         self.default_take_profit_pct = float(default_take_profit_pct)
         self.max_hold_candles = int(max_hold_candles)
+        self.fee_rate = float(ProductionConfig.PAPER_FEE_RATE if fee_rate is None else fee_rate)
+        self.slippage = float(ProductionConfig.PAPER_SLIPPAGE if slippage is None else slippage)
 
     def register_signal(
         self,
@@ -34,6 +39,7 @@ class PaperTradeService:
         signal: str,
         entry_price: float,
         entry_timestamp,
+        context_timeframe: str = None,
         source: str = "system",
         strategy_version: str = None,
         stop_loss_pct: Optional[float] = None,
@@ -50,6 +56,7 @@ class PaperTradeService:
             return None
 
         side = self._signal_to_side(signal)
+        executed_entry_price = self._apply_slippage(float(entry_price), side=side, is_entry=True, slippage=self.slippage)
         stop_loss_pct = self._normalize_pct(
             self.default_stop_loss_pct if stop_loss_pct is None else stop_loss_pct
         )
@@ -81,6 +88,7 @@ class PaperTradeService:
         trade_data = {
             "symbol": symbol,
             "timeframe": timeframe,
+            "context_timeframe": context_timeframe,
             "setup_name": setup_name or strategy_version,
             "strategy_version": strategy_version,
             "regime": regime,
@@ -92,11 +100,13 @@ class PaperTradeService:
             "source": source,
             "entry_timestamp": timestamp_iso,
             "entry_reason": entry_reason or signal,
-            "entry_price": float(entry_price),
+            "entry_price": executed_entry_price,
             "stop_loss_pct": stop_loss_pct * 100,
             "take_profit_pct": take_profit_pct * 100,
-            "stop_loss_price": self._build_stop_loss_price(side, float(entry_price), stop_loss_pct),
-            "take_profit_price": self._build_take_profit_price(side, float(entry_price), take_profit_pct),
+            "fee_rate": self.fee_rate,
+            "slippage": self.slippage,
+            "stop_loss_price": self._build_stop_loss_price(side, executed_entry_price, stop_loss_pct),
+            "take_profit_price": self._build_take_profit_price(side, executed_entry_price, take_profit_pct),
             "planned_risk_pct": (risk_plan or {}).get("risk_per_trade_pct", 0.0),
             "planned_risk_amount": (risk_plan or {}).get("risk_amount", 0.0),
             "planned_position_notional": (risk_plan or {}).get("position_notional", 0.0),
@@ -117,13 +127,20 @@ class PaperTradeService:
         if market_data is None or market_data.empty:
             return []
 
+        market_data = market_data.sort_index()
+        if "is_closed" in market_data.columns:
+            closed_market_data = market_data[market_data["is_closed"].fillna(False)]
+            if not closed_market_data.empty:
+                market_data = closed_market_data
+
         open_trades = self.database.get_open_paper_trades(symbol=symbol, timeframe=timeframe)
         if not open_trades:
             return []
 
         closed_trades = []
         for trade in open_trades:
-            candles = market_data.loc[market_data.index >= pd.Timestamp(trade["entry_timestamp"])]
+            entry_timestamp = pd.Timestamp(trade["entry_timestamp"])
+            candles = market_data.loc[market_data.index > entry_timestamp]
             if candles.empty:
                 continue
 
@@ -179,10 +196,19 @@ class PaperTradeService:
 
     def _build_close_result(self, trade: Dict, exit_price: float, exit_timestamp: str, close_reason: str) -> Dict:
         entry_price = float(trade["entry_price"])
+        persisted_fee_rate = trade.get("fee_rate")
+        fee_rate = self.fee_rate if persisted_fee_rate in (None, 0, 0.0) else float(persisted_fee_rate)
+        persisted_slippage = trade.get("slippage")
+        slippage = self.slippage if persisted_slippage in (None, 0, 0.0) else float(persisted_slippage)
+        exit_price = self._apply_slippage(float(exit_price), side=trade["side"], is_entry=False, slippage=slippage)
         if trade["side"] == "long":
-            result_pct = ((exit_price - entry_price) / entry_price) * 100
+            gross_result_pct = ((exit_price - entry_price) / entry_price) * 100
         else:
-            result_pct = ((entry_price - exit_price) / entry_price) * 100
+            gross_result_pct = ((entry_price - exit_price) / entry_price) * 100
+
+        entry_fee_pct = fee_rate * 100
+        exit_fee_pct = ((exit_price / entry_price) * fee_rate * 100) if entry_price > 0 else fee_rate * 100
+        result_pct = gross_result_pct - entry_fee_pct - exit_fee_pct
 
         if result_pct > 0:
             outcome = "WIN"
@@ -199,6 +225,14 @@ class PaperTradeService:
             "exit_reason": close_reason,
             "result_pct": round(float(result_pct), 4),
         }
+
+    def _apply_slippage(self, price: float, side: str, is_entry: bool, slippage: Optional[float] = None) -> float:
+        effective_slippage = self.slippage if slippage is None else float(slippage)
+        if effective_slippage <= 0:
+            return float(price)
+        if side == "long":
+            return price * (1 + effective_slippage) if is_entry else price * (1 - effective_slippage)
+        return price * (1 - effective_slippage) if is_entry else price * (1 + effective_slippage)
 
     def _signal_to_side(self, signal: str) -> str:
         return "long" if signal in LONG_SIGNALS else "short"

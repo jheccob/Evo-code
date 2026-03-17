@@ -87,6 +87,33 @@ class RegimeAwareTradingBot(DeterministicTradingBot):
         return "NEUTRO"
 
 
+class ContextAwareTradingBot(DeterministicTradingBot):
+    def calculate_indicators(self, df):
+        return df
+
+    def check_signal(
+        self,
+        df,
+        timeframe="5m",
+        require_volume=False,
+        require_trend=False,
+        avoid_ranging=False,
+        context_df=None,
+        context_timeframe=None,
+    ):
+        self.check_calls.append(
+            {
+                "length": len(df),
+                "timeframe": timeframe,
+                "context_timeframe": context_timeframe,
+                "has_context_df": context_df is not None,
+            }
+        )
+        if len(df) == 211 and context_timeframe == "4h" and context_df is not None:
+            return "COMPRA"
+        return "NEUTRO"
+
+
 class FixedDataBacktestEngine(BacktestEngine):
     def __init__(self, data_frame, trading_bot):
         super().__init__(trading_bot=trading_bot)
@@ -339,6 +366,70 @@ class BacktestEngineTests(unittest.TestCase):
 
         self.assertEqual(without_filter["stats"]["total_trades"], 1)
         self.assertEqual(with_filter["stats"]["total_trades"], 0)
+
+    def test_run_backtest_from_dataframe_persists_context_timeframe_for_multi_timeframe_setup(self):
+        timestamps = pd.date_range("2026-01-01", periods=260, freq="1h")
+        entry_df = pd.DataFrame(
+            {
+                "open": [100.0] * len(timestamps),
+                "high": [100.1] * len(timestamps),
+                "low": [99.9] * len(timestamps),
+                "close": [100.0] * len(timestamps),
+                "volume": [1_000.0] * len(timestamps),
+            },
+            index=timestamps,
+        )
+        entry_df.iloc[211, entry_df.columns.get_loc("high")] = 100.7
+
+        context_timestamps = pd.date_range("2025-12-01", periods=120, freq="4h")
+        context_df = pd.DataFrame(
+            {
+                "open": [100.0] * len(context_timestamps),
+                "high": [101.0] * len(context_timestamps),
+                "low": [99.0] * len(context_timestamps),
+                "close": [100.5] * len(context_timestamps),
+                "volume": [5_000.0] * len(context_timestamps),
+            },
+            index=context_timestamps,
+        )
+
+        temp_db = tempfile.NamedTemporaryFile(delete=False, suffix=".db")
+        temp_db.close()
+
+        try:
+            if os.path.exists(temp_db.name):
+                os.remove(temp_db.name)
+
+            database = TradingDatabase(db_path=temp_db.name)
+            engine = BacktestEngine(trading_bot=ContextAwareTradingBot(), database=database)
+
+            results = engine.run_backtest_from_dataframe(
+                df=entry_df,
+                context_df=context_df,
+                symbol="BTC/USDT",
+                timeframe="1h",
+                context_timeframe="4h",
+                start_date=datetime(2026, 1, 1, 0, 0),
+                end_date=datetime(2026, 1, 11, 19, 0),
+                initial_balance=1_000,
+                take_profit_pct=0.5,
+                fee_rate=0.0,
+                slippage=0.0,
+                persist_result=True,
+            )
+
+            run = database.get_backtest_runs(limit=1)[0]
+            trade = database.get_backtest_trades(results["saved_run_id"])[0]
+
+            self.assertEqual(results["meta"]["context_timeframe"], "4h")
+            self.assertEqual(run["context_timeframe"], "4h")
+            self.assertEqual(trade["context_timeframe"], "4h")
+            self.assertIn("-ctx4h", run["strategy_version"])
+            self.assertTrue(engine.trading_bot.check_calls)
+            self.assertEqual(engine.trading_bot.check_calls[0]["context_timeframe"], "4h")
+        finally:
+            if os.path.exists(temp_db.name):
+                os.remove(temp_db.name)
 
     def test_run_backtest_builds_in_sample_and_out_of_sample_validation(self):
         bot = TemporalSignalTradingBot(
