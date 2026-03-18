@@ -168,6 +168,31 @@ class TelegramTradingBot:
             self.logger.error(f"❌ Erro inesperado ao responder Telegram: {err}")
             return None
     
+    @staticmethod
+    def _resolve_locale(update: Optional[Update] = None, language_code: Optional[str] = None) -> str:
+        resolved_code = language_code
+        if not resolved_code and update is not None and getattr(update, "effective_user", None):
+            resolved_code = getattr(update.effective_user, "language_code", None)
+        resolved_code = str(resolved_code or "pt").lower()
+        return "en" if resolved_code.startswith("en") else "pt"
+
+    @staticmethod
+    def _display_signal(signal: str, locale: str = "pt") -> str:
+        if locale != "en":
+            return str(signal or "").replace("_", " ")
+
+        mapping = {
+            "COMPRA": "BUY",
+            "COMPRA_FRACA": "WEAK BUY",
+            "VENDA": "SELL",
+            "VENDA_FRACA": "WEAK SELL",
+            "NEUTRO": "WAIT",
+            "BUY": "BUY",
+            "SELL": "SELL",
+            "WAIT": "WAIT",
+        }
+        return mapping.get(str(signal or "").upper(), str(signal or "").replace("_", " "))
+
     def _apply_edge_guardrail(self, signal: str, symbol: str, timeframe: str, strategy_version: Optional[str] = None):
         if signal not in {"COMPRA", "VENDA", "COMPRA_FRACA", "VENDA_FRACA"}:
             return signal, None
@@ -217,9 +242,9 @@ class TelegramTradingBot:
         )
 
     @staticmethod
-    def _build_structure_note(structure_evaluation: Optional[dict]) -> str:
+    def _build_structure_note(structure_evaluation: Optional[dict], locale: str = "pt") -> str:
         if not structure_evaluation:
-            return "Estrutura: indisponivel"
+            return "Structure: unavailable" if locale == "en" else "Estrutura: indisponivel"
 
         distance_from_ema_pct = structure_evaluation.get("distance_from_ema_pct")
         if isinstance(distance_from_ema_pct, (int, float)):
@@ -228,45 +253,93 @@ class TelegramTradingBot:
             distance_text = "-"
 
         notes = structure_evaluation.get("notes") or []
-        notes_preview = ", ".join(str(note) for note in notes[:2]) or "sem observacoes relevantes"
+        notes_preview = ", ".join(str(note) for note in notes[:2]) or (
+            "no relevant notes" if locale == "en" else "sem observacoes relevantes"
+        )
 
         return (
-            f"Estrutura: {structure_evaluation.get('structure_state', 'weak_structure')} | "
+            f"{'Structure' if locale == 'en' else 'Estrutura'}: {structure_evaluation.get('structure_state', 'weak_structure')} | "
             f"{structure_evaluation.get('price_location', 'mid_range')} | "
-            f"qualidade {structure_evaluation.get('structure_quality', 0):.2f}/10 | "
+            f"{'quality' if locale == 'en' else 'qualidade'} {structure_evaluation.get('structure_quality', 0):.2f}/10 | "
             f"breakout {bool(structure_evaluation.get('breakout', False))} | "
             f"reversal_risk {bool(structure_evaluation.get('reversal_risk', False))} | "
             f"dist EMA {distance_text} | "
-            f"notas: {notes_preview}"
+            f"{'notes' if locale == 'en' else 'notas'}: {notes_preview}"
         )
 
     @staticmethod
-    def _build_confirmation_note(confirmation_evaluation: Optional[dict]) -> str:
+    def _build_confirmation_note(confirmation_evaluation: Optional[dict], locale: str = "pt") -> str:
         if not confirmation_evaluation:
-            return "Confirmacao: indisponivel"
+            return "Confirmation: unavailable" if locale == "en" else "Confirmacao: indisponivel"
 
-        conflicts_preview = ", ".join(confirmation_evaluation.get("conflicts", [])[:2]) or "sem conflitos relevantes"
-        notes_preview = ", ".join(confirmation_evaluation.get("notes", [])[:2]) or "sem notas relevantes"
+        conflicts_preview = ", ".join(confirmation_evaluation.get("conflicts", [])[:2]) or (
+            "no relevant conflicts" if locale == "en" else "sem conflitos relevantes"
+        )
+        notes_preview = ", ".join(confirmation_evaluation.get("notes", [])[:2]) or (
+            "no relevant notes" if locale == "en" else "sem notas relevantes"
+        )
 
         return (
-            f"Confirmacao: {confirmation_evaluation.get('confirmation_state', 'weak')} | "
+            f"{'Confirmation' if locale == 'en' else 'Confirmacao'}: {confirmation_evaluation.get('confirmation_state', 'weak')} | "
             f"score {confirmation_evaluation.get('confirmation_score', 0):.2f}/10 | "
-            f"conflitos: {conflicts_preview} | "
-            f"notas: {notes_preview}"
+            f"{'conflicts' if locale == 'en' else 'conflitos'}: {conflicts_preview} | "
+            f"{'notes' if locale == 'en' else 'notas'}: {notes_preview}"
         )
 
     @staticmethod
-    def _build_entry_quality_note(entry_quality_evaluation: Optional[dict]) -> str:
+    def _build_entry_quality_note(entry_quality_evaluation: Optional[dict], locale: str = "pt") -> str:
         if not entry_quality_evaluation:
-            return "Entrada: indisponivel"
+            return "Entry: unavailable" if locale == "en" else "Entrada: indisponivel"
 
-        notes_preview = ", ".join(entry_quality_evaluation.get("notes", [])[:2]) or "sem notas relevantes"
+        notes_preview = ", ".join(entry_quality_evaluation.get("notes", [])[:2]) or (
+            "no relevant notes" if locale == "en" else "sem notas relevantes"
+        )
         return (
-            f"Entrada: {entry_quality_evaluation.get('entry_quality', 'bad')} | "
+            f"{'Entry' if locale == 'en' else 'Entrada'}: {entry_quality_evaluation.get('entry_quality', 'bad')} | "
             f"RR {entry_quality_evaluation.get('rr_estimate', 0):.2f} | "
             f"late {entry_quality_evaluation.get('late_entry', False)} | "
             f"stretched {entry_quality_evaluation.get('stretched_price', False)} | "
-            f"notas: {notes_preview}"
+            f"{'notes' if locale == 'en' else 'notas'}: {notes_preview}"
+        )
+
+    @staticmethod
+    def _build_strategy_runtime_note(strategy_settings: Optional[dict], locale: str = "pt") -> str:
+        strategy_settings = strategy_settings or {}
+        active_profile = strategy_settings.get("active_profile")
+        runtime_strategy_version = strategy_settings.get("strategy_version", "-")
+        runtime_allowed = bool(strategy_settings.get("runtime_allowed", True))
+        runtime_block_reason = strategy_settings.get("runtime_block_reason", "")
+
+        if active_profile:
+            return (
+                f"Active profile: {active_profile.get('strategy_version', runtime_strategy_version)}"
+                if locale == "en"
+                else f"Perfil ativo: {active_profile.get('strategy_version', runtime_strategy_version)}"
+            )
+
+        if not runtime_allowed:
+            if locale == "en":
+                return (
+                    "Active profile: none\n"
+                    f"Configured strategy: {runtime_strategy_version}\n"
+                    f"Runtime status: blocked by governance ({runtime_block_reason})"
+                )
+            return (
+                "Perfil ativo: nenhum\n"
+                f"Estrategia configurada: {runtime_strategy_version}\n"
+                f"Status do runtime: bloqueado por governanca ({runtime_block_reason})"
+            )
+
+        if locale == "en":
+            return (
+                "Active profile: none\n"
+                f"Configured strategy: {runtime_strategy_version}\n"
+                "Runtime status: no active profile, but allowed by configuration"
+            )
+        return (
+            "Perfil ativo: nenhum\n"
+            f"Estrategia configurada: {runtime_strategy_version}\n"
+            "Status do runtime: sem perfil ativo, mas liberado por configuracao"
         )
 
     def _resolve_runtime_strategy_settings(self, symbol: str, timeframe: str) -> dict:
@@ -463,6 +536,7 @@ class TelegramTradingBot:
     async def analyze_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /analise command"""
         try:
+            locale = self._resolve_locale(update)
             user_id = update.effective_user.id
 
             self.user_manager.get_or_create_user(
@@ -474,6 +548,17 @@ class TelegramTradingBot:
             if not self.user_manager.can_analyze(user_id):
                 await self._safe_reply(
                     update,
+                    (
+                        "Limit reached!\n\n"
+                        "Free users can request 1 analysis per day.\n\n"
+                        "Upgrade to Premium and get:\n"
+                        "- Unlimited analyses\n"
+                        "- Real-time alerts\n"
+                        "- More detailed analyses\n\n"
+                        "Use /premium for more details!"
+                    )
+                    if locale == "en"
+                    else
                     "Limite atingido!\n\n"
                     "Usuarios Free tem direito a 1 analise por dia.\n\n"
                     "Upgrade para Premium e tenha:\n"
@@ -487,10 +572,18 @@ class TelegramTradingBot:
             if not context.args:
                 await self._safe_reply(
                     update,
-                    "Formato incorreto!\n\n"
-                    "Uso correto:\n"
-                    "/analise BTC/USDT\n\n"
-                    "Pares disponiveis:\n"
+                    (
+                        "Invalid format!\n\n"
+                        "Correct usage:\n"
+                        "/analise BTC/USDT\n\n"
+                        "Available pairs:\n"
+                        if locale == "en"
+                        else
+                        "Formato incorreto!\n\n"
+                        "Uso correto:\n"
+                        "/analise BTC/USDT\n\n"
+                        "Pares disponiveis:\n"
+                    )
                     + ", ".join(TelegramBotConfig.SUPPORTED_PAIRS[:6]) + "..."
                 )
                 return
@@ -500,18 +593,27 @@ class TelegramTradingBot:
             if not TelegramBotConfig.is_valid_pair(symbol):
                 await self._safe_reply(
                     update,
+                    (
+                        f"Unsupported pair: {symbol}\n\n"
+                        f"Available pairs:\n{', '.join(TelegramBotConfig.SUPPORTED_PAIRS)}"
+                    )
+                    if locale == "en"
+                    else
                     f"Par nao suportado: {symbol}\n\n"
                     f"Pares disponiveis:\n{', '.join(TelegramBotConfig.SUPPORTED_PAIRS)}"
                 )
                 return
 
-            loading_msg = await self._safe_reply(update, "Analisando...\nPor favor aguarde...")
+            loading_msg = await self._safe_reply(
+                update,
+                "Analyzing...\nPlease wait..." if locale == "en" else "Analisando...\nPor favor aguarde...",
+            )
 
             if loading_msg is None:
                 return
 
             if not self.trading_bot:
-                await loading_msg.edit_text("Erro: TradingBot não inicializado")
+                await loading_msg.edit_text("Error: TradingBot not initialized" if locale == "en" else "Erro: TradingBot não inicializado")
                 return
 
             initial_timeframe = getattr(self.trading_bot, "timeframe", "5m")
@@ -535,10 +637,13 @@ class TelegramTradingBot:
                         await asyncio.sleep(1)
 
             if data is None or data.empty:
-                error_suffix = f"\nDetalhe: {market_data_error}" if market_data_error else ""
+                error_suffix = (
+                    f"\nDetail: {market_data_error}" if locale == "en" and market_data_error else
+                    f"\nDetalhe: {market_data_error}" if market_data_error else ""
+                )
                 await loading_msg.edit_text(
-                    "Erro: Nao foi possivel obter dados reais do mercado no momento."
-                    f"{error_suffix}"
+                    ("Error: Could not obtain real market data right now." if locale == "en" else "Erro: Nao foi possivel obter dados reais do mercado no momento.")
+                    + error_suffix
                 )
                 return
 
@@ -555,11 +660,20 @@ class TelegramTradingBot:
                 final_signal = "NEUTRO"
                 edge_summary = None
                 risk_plan = {"allowed": False, "reason": runtime_block_reason}
-                hard_block_evaluation = {
-                    "hard_block": True,
-                    "block_reason": runtime_block_reason,
-                    "block_source": "runtime_governance",
-                }
+                if self.trading_bot and hasattr(self.trading_bot, "check_hard_blocks"):
+                    hard_block_evaluation = self.trading_bot.check_hard_blocks(
+                        signal=signal,
+                        runtime_allowed=False,
+                        runtime_block_reason=runtime_block_reason,
+                        active_profile=active_profile,
+                    )
+                else:
+                    hard_block_evaluation = {
+                        "hard_block": True,
+                        "block_reason": runtime_block_reason,
+                        "block_source": "runtime_governance",
+                        "notes": [runtime_block_reason] if runtime_block_reason else [],
+                    }
                 emoji = TelegramBotConfig.get_signal_emoji(final_signal)
             else:
                 signal = self.trading_bot.check_signal(
@@ -608,17 +722,29 @@ class TelegramTradingBot:
                         "hard_block": True,
                         "block_reason": edge_summary.get("status_message") or "Edge monitor bloqueou o setup.",
                         "block_source": "edge_guardrail",
+                        "notes": [edge_summary.get("status_message") or "edge monitor bloqueou o setup"],
                     }
                 elif risk_plan and not risk_plan.get("allowed"):
-                    hard_block_evaluation = {
-                        "hard_block": True,
-                        "block_reason": risk_plan.get("reason") or "Risco operacional bloqueou a entrada.",
-                        "block_source": "risk_guardrail",
-                    }
+                    if self.trading_bot and hasattr(self.trading_bot, "check_hard_blocks"):
+                        hard_block_evaluation = self.trading_bot.check_hard_blocks(
+                            signal=final_signal,
+                            risk_plan=risk_plan,
+                        )
+                    else:
+                        hard_block_evaluation = {
+                            "hard_block": True,
+                            "block_reason": risk_plan.get("reason") or "Risco operacional bloqueou a entrada.",
+                            "block_source": "risk_guardrail",
+                            "notes": [risk_plan.get("reason") or "risco operacional bloqueou a entrada"],
+                        }
                 emoji = TelegramBotConfig.get_signal_emoji(final_signal)
             edge_guardrail_note = ""
             if edge_summary and edge_summary.get("status") == "degraded" and final_signal == "NEUTRO":
                 edge_guardrail_note = (
+                    f"\nGuardrail: setup blocked by paper-trade degradation "
+                    f"({edge_summary.get('paper_closed_trades', 0)} closed trades)."
+                    if locale == "en"
+                    else
                     f"\nGuardrail: setup bloqueado por degradacao no paper trade "
                     f"({edge_summary.get('paper_closed_trades', 0)} trades fechados)."
                 )
@@ -627,33 +753,45 @@ class TelegramTradingBot:
             if risk_plan:
                 if risk_plan.get("allowed"):
                     risk_plan_note = (
+                        f"\nRisk plan: {risk_plan.get('risk_per_trade_pct', 0):.2f}% "
+                        f"(${risk_plan.get('risk_amount', 0):.2f}) | "
+                        f"Position ${risk_plan.get('position_notional', 0):.2f}"
+                        if locale == "en"
+                        else
                         f"\nPlano de risco: {risk_plan.get('risk_per_trade_pct', 0):.2f}% "
                         f"(${risk_plan.get('risk_amount', 0):.2f}) | "
                         f"Posicao ${risk_plan.get('position_notional', 0):.2f}"
                     )
                 else:
                     risk_guardrail_note = f"\nRisk guardrail: {risk_plan.get('reason')}"
-            ai_mode_note = "comparativo" if not ProductionConfig.ENABLE_AI_SIGNAL_INFLUENCE else "influencia"
-            context_note = "Contexto superior: sem filtro"
+            ai_mode_note = "comparative" if locale == "en" and not ProductionConfig.ENABLE_AI_SIGNAL_INFLUENCE else "comparativo" if not ProductionConfig.ENABLE_AI_SIGNAL_INFLUENCE else "influence" if locale == "en" else "influencia"
+            context_note = "Higher timeframe: no filter" if locale == "en" else "Contexto superior: sem filtro"
+            if not strategy_settings.get("runtime_allowed", True):
+                context_note = "Higher timeframe: unavailable (runtime blocked)" if locale == "en" else "Contexto superior: indisponivel (runtime bloqueado)"
             if context_evaluation:
                 context_note = (
+                    f"Higher timeframe: {context_evaluation.get('market_bias', 'neutral')} | "
+                    f"{context_evaluation.get('regime', '-')} | "
+                    f"strength {context_evaluation.get('context_strength', 0):.2f}/10"
+                    if locale == "en"
+                    else
                     f"Contexto superior: {context_evaluation.get('market_bias', 'neutral')} | "
                     f"{context_evaluation.get('regime', '-')} | "
                     f"forca {context_evaluation.get('context_strength', 0):.2f}/10"
                 )
-            structure_note = "Estrutura: indisponivel"
+            structure_note = "Structure: unavailable" if locale == "en" else "Estrutura: indisponivel"
             if structure_evaluation:
-                structure_note = self._build_structure_note(structure_evaluation)
-            confirmation_note = "Confirmacao: indisponivel"
+                structure_note = self._build_structure_note(structure_evaluation, locale=locale)
+            confirmation_note = "Confirmation: unavailable" if locale == "en" else "Confirmacao: indisponivel"
             if confirmation_evaluation:
-                confirmation_note = self._build_confirmation_note(confirmation_evaluation)
-            entry_quality_note = "Entrada: indisponivel"
+                confirmation_note = self._build_confirmation_note(confirmation_evaluation, locale=locale)
+            entry_quality_note = "Entry: unavailable" if locale == "en" else "Entrada: indisponivel"
             if entry_quality_evaluation:
-                entry_quality_note = self._build_entry_quality_note(entry_quality_evaluation)
+                entry_quality_note = self._build_entry_quality_note(entry_quality_evaluation, locale=locale)
             hard_block_note = ""
             if hard_block_evaluation and hard_block_evaluation.get("hard_block"):
                 hard_block_note = (
-                    f"Hard block: {hard_block_evaluation.get('block_reason')} "
+                    f"{'Hard block' if locale == 'en' else 'Hard block'}: {hard_block_evaluation.get('block_reason')} "
                     f"({hard_block_evaluation.get('block_source', 'signal_engine')})\n"
                 )
             entry_reason = final_signal
@@ -678,28 +816,28 @@ class TelegramTradingBot:
                 entry_reason = " | ".join(reason_parts)
 
             analysis_message = (
-                f"Analise Tecnica - {symbol}\n\n"
-                f"{emoji} Sinal (regras): {signal.replace('_', ' ')}\n"
-                f"Sinal (IA - {ai_mode_note}): {ai_signal} (conf: {ai_confidence:.2f})\n"
-                f"Sinal (final): {final_signal}\n\n"
-                f"Estrategia ativa: {active_profile.get('strategy_version') if active_profile else runtime_strategy_version}\n"
-                f"Contexto: {strategy_settings.get('context_timeframe') or 'sem filtro superior'}\n"
+                f"{'Technical Analysis' if locale == 'en' else 'Analise Tecnica'} - {symbol}\n\n"
+                f"{emoji} {'Signal (rules)' if locale == 'en' else 'Sinal (regras)'}: {self._display_signal(signal, locale)}\n"
+                f"{'Signal (AI - ' if locale == 'en' else 'Sinal (IA - '}{ai_mode_note}): {self._display_signal(ai_signal, locale)} (conf: {ai_confidence:.2f})\n"
+                f"{'Signal (final)' if locale == 'en' else 'Sinal (final)'}: {self._display_signal(final_signal, locale)}\n\n"
+                f"{self._build_strategy_runtime_note(strategy_settings, locale=locale)}\n"
+                f"{'Context' if locale == 'en' else 'Contexto'}: {strategy_settings.get('context_timeframe') or ('no higher filter' if locale == 'en' else 'sem filtro superior')}\n"
                 f"{context_note}\n"
                 f"{structure_note}\n"
                 f"{confirmation_note}\n"
                 f"{entry_quality_note}\n"
                 f"{hard_block_note}"
-                f"Preco Atual: ${last_candle['close']:.6f}\n"
-                f"Variacao: {((last_candle['close'] - last_candle['open']) / last_candle['open'] * 100):+.2f}%\n\n"
-                f"Indicadores:\n"
+                f"{'Current Price' if locale == 'en' else 'Preco Atual'}: ${last_candle['close']:.6f}\n"
+                f"{'Change' if locale == 'en' else 'Variacao'}: {((last_candle['close'] - last_candle['open']) / last_candle['open'] * 100):+.2f}%\n\n"
+                f"{'Indicators' if locale == 'en' else 'Indicadores'}:\n"
                 f"- RSI: {last_candle['rsi']:.2f}\n"
                 f"- MACD: {last_candle['macd']:.4f}\n"
                 f"- MACD Signal: {last_candle['macd_signal']:.4f}\n\n"
-                f"Atualizado: {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}\n"
+                f"{'Updated' if locale == 'en' else 'Atualizado'}: {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}\n"
                 f"{edge_guardrail_note}"
                 f"{risk_guardrail_note}"
                 f"{risk_plan_note}\n\n"
-                f"Lembre-se: Esta e uma analise tecnica automatizada. Sempre faca sua propria pesquisa!"
+                f"{'Remember: This is an automated technical analysis. Always do your own research!' if locale == 'en' else 'Lembre-se: Esta e uma analise tecnica automatizada. Sempre faca sua propria pesquisa!'}"
             )
 
             signal_timestamp = datetime.now()
@@ -749,7 +887,7 @@ class TelegramTradingBot:
 
         except Exception as e:
             self.logger.exception(e)
-            await self._safe_reply(update, f"Erro no /analise: {e}")
+            await self._safe_reply(update, f"{'Error in /analise' if self._resolve_locale(update) == 'en' else 'Erro no /analise'}: {e}")
 
     # Admin commands (simplified)
     async def premium_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):

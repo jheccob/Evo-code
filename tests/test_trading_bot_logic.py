@@ -1553,6 +1553,119 @@ class TradingBotLogicTests(unittest.TestCase):
         self.assertEqual(evaluation["block_source"], "entry_quality")
         self.assertEqual(evaluation["block_reason"], "Risco retorno insuficiente")
 
+    def test_check_hard_blocks_blocks_runtime_governance_without_active_profile(self):
+        bot = TradingBot.__new__(TradingBot)
+
+        evaluation = TradingBot.check_hard_blocks(
+            bot,
+            signal="NEUTRO",
+            runtime_allowed=False,
+            runtime_block_reason="Nenhum setup ativo promovido para este mercado/timeframe. Runtime bloqueado ate existir perfil ativo.",
+            active_profile=None,
+        )
+
+        self.assertTrue(evaluation["hard_block"])
+        self.assertEqual(evaluation["block_source"], "runtime_governance")
+        self.assertIn("Nenhum setup ativo", evaluation["block_reason"])
+        self.assertTrue(any("setup ativo" in note for note in evaluation["notes"]))
+
+    def test_check_hard_blocks_blocks_weak_structure(self):
+        bot = TradingBot.__new__(TradingBot)
+
+        evaluation = TradingBot.check_hard_blocks(
+            bot,
+            signal="COMPRA",
+            structure_evaluation={
+                "has_minimum_history": True,
+                "structure_state": "weak_structure",
+                "structure_quality": 3.4,
+                "reason": "Estrutura ruim para entrada.",
+                "notes": ["estrutura fraca"],
+            },
+            confirmation_evaluation={"has_minimum_history": True, "confirmation_state": "confirmed", "conflicts": []},
+            entry_quality_evaluation={"has_minimum_history": True, "entry_quality": "good", "rr_estimate": 2.0},
+            atr_pct=0.8,
+            min_atr_pct=0.12,
+        )
+
+        self.assertTrue(evaluation["hard_block"])
+        self.assertEqual(evaluation["block_source"], "price_structure")
+        self.assertIn("Estrutura ruim", evaluation["block_reason"])
+
+    def test_check_hard_blocks_blocks_reversal_risk_against_bias(self):
+        bot = TradingBot.__new__(TradingBot)
+
+        evaluation = TradingBot.check_hard_blocks(
+            bot,
+            signal="COMPRA",
+            context_evaluation={"is_tradeable": True, "market_bias": "bullish", "bias": "bullish"},
+            structure_evaluation={
+                "has_minimum_history": True,
+                "structure_state": "reversal_risk",
+                "structure_quality": 6.2,
+                "reversal_risk": True,
+                "against_market_bias": True,
+                "reason": "Estrutura mostra risco de reversao contra o vies.",
+                "notes": ["contra o vies bullish"],
+            },
+            confirmation_evaluation={"has_minimum_history": True, "confirmation_state": "confirmed", "conflicts": []},
+            entry_quality_evaluation={"has_minimum_history": True, "entry_quality": "good", "rr_estimate": 2.0},
+            atr_pct=0.8,
+            min_atr_pct=0.12,
+        )
+
+        self.assertTrue(evaluation["hard_block"])
+        self.assertEqual(evaluation["block_source"], "price_structure")
+        self.assertIn("reversao", evaluation["block_reason"])
+
+    def test_check_hard_blocks_blocks_bad_entry_quality(self):
+        bot = TradingBot.__new__(TradingBot)
+
+        evaluation = TradingBot.check_hard_blocks(
+            bot,
+            signal="COMPRA",
+            structure_evaluation={"has_minimum_history": True, "structure_state": "continuation", "structure_quality": 7.0},
+            confirmation_evaluation={"has_minimum_history": True, "confirmation_state": "confirmed", "conflicts": []},
+            entry_quality_evaluation={
+                "has_minimum_history": True,
+                "entry_quality": "bad",
+                "rr_estimate": 0.95,
+                "conflicts": ["Risco retorno insuficiente"],
+                "notes": ["entrada ruim"],
+            },
+            atr_pct=0.8,
+            min_atr_pct=0.12,
+        )
+
+        self.assertTrue(evaluation["hard_block"])
+        self.assertEqual(evaluation["block_source"], "entry_quality")
+        self.assertEqual(evaluation["block_reason"], "Risco retorno insuficiente")
+
+    def test_check_hard_blocks_returns_clear_when_no_block_exists(self):
+        bot = TradingBot.__new__(TradingBot)
+
+        evaluation = TradingBot.check_hard_blocks(
+            bot,
+            signal="COMPRA",
+            context_evaluation={"is_tradeable": True, "market_bias": "bullish", "bias": "bullish"},
+            structure_evaluation={"has_minimum_history": True, "structure_state": "continuation", "structure_quality": 7.4},
+            confirmation_evaluation={"has_minimum_history": True, "confirmation_state": "confirmed", "conflicts": []},
+            entry_quality_evaluation={"has_minimum_history": True, "entry_quality": "good", "rr_estimate": 2.1},
+            require_volume=True,
+            volume_ratio=1.8,
+            min_volume_ratio=1.2,
+            require_trend=True,
+            adx=31.0,
+            min_adx_threshold=22.0,
+            atr_pct=0.8,
+            min_atr_pct=0.12,
+            runtime_allowed=True,
+        )
+
+        self.assertFalse(evaluation["hard_block"])
+        self.assertIsNone(evaluation["block_reason"])
+        self.assertEqual(evaluation["notes"], [])
+
     def test_check_signal_records_hard_block_reason_for_ranging_market(self):
         bot = TradingBot.__new__(TradingBot)
         bot.rsi_min = 30

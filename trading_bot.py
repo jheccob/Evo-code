@@ -58,8 +58,9 @@ class TradingBot:
     def _clear_hard_block(self):
         self._last_hard_block_evaluation = {
             "hard_block": False,
-            "block_reason": "",
-            "block_source": "",
+            "block_reason": None,
+            "block_source": None,
+            "notes": [],
         }
 
     def _set_hard_block(self, block_reason: str, block_source: str = "signal_engine") -> str:
@@ -67,6 +68,7 @@ class TradingBot:
             "hard_block": True,
             "block_reason": str(block_reason or "").strip(),
             "block_source": block_source,
+            "notes": [str(block_reason or "").strip()] if block_reason else [],
         }
         return "NEUTRO"
 
@@ -1591,6 +1593,166 @@ class TradingBot:
         self._last_entry_quality_evaluation = evaluation
         return evaluation
 
+    def check_hard_blocks(
+        self,
+        signal: str,
+        context_evaluation: Optional[Dict[str, object]] = None,
+        structure_evaluation: Optional[Dict[str, object]] = None,
+        confirmation_evaluation: Optional[Dict[str, object]] = None,
+        entry_quality_evaluation: Optional[Dict[str, object]] = None,
+        market_regime: Optional[str] = None,
+        require_volume: bool = False,
+        volume_ratio: Optional[float] = None,
+        min_volume_ratio: Optional[float] = None,
+        require_trend: bool = False,
+        adx: Optional[float] = None,
+        min_adx_threshold: Optional[float] = None,
+        atr_pct: Optional[float] = None,
+        min_atr_pct: Optional[float] = None,
+        runtime_allowed: Optional[bool] = None,
+        runtime_block_reason: Optional[str] = None,
+        active_profile: Optional[Dict[str, object]] = None,
+        risk_plan: Optional[Dict[str, object]] = None,
+    ) -> Dict[str, object]:
+        evaluation = {
+            "hard_block": False,
+            "block_reason": None,
+            "block_source": None,
+            "notes": [],
+        }
+        notes = []
+
+        def block(reason: str, source: str, extra_notes: Optional[list] = None) -> Dict[str, object]:
+            payload = {
+                "hard_block": True,
+                "block_reason": str(reason or "").strip() or None,
+                "block_source": source,
+                "notes": list(dict.fromkeys(
+                    [str(item).strip() for item in ((extra_notes or []) + ([reason] if reason else [])) if str(item).strip()]
+                )),
+            }
+            self._last_hard_block_evaluation = payload
+            return payload
+
+        if runtime_allowed is False:
+            governance_reason = runtime_block_reason or "Runtime bloqueado por governanca."
+            if not active_profile:
+                notes.append("nenhum setup ativo promovido para este mercado/timeframe")
+            notes.append(governance_reason)
+            return block(governance_reason, "runtime_governance", notes)
+
+        if risk_plan and not risk_plan.get("allowed", True):
+            notes.append(risk_plan.get("reason") or "risco operacional bloqueado")
+            return block(
+                risk_plan.get("reason") or "Risco operacional bloqueou a entrada.",
+                "risk_guardrail",
+                notes,
+            )
+
+        actionable_signals = {"COMPRA", "COMPRA_FRACA", "VENDA", "VENDA_FRACA"}
+        if signal not in actionable_signals:
+            self._last_hard_block_evaluation = evaluation
+            return evaluation
+
+        if context_evaluation:
+            bias = context_evaluation.get("market_bias") or context_evaluation.get("bias")
+            if not context_evaluation.get("is_tradeable", True):
+                return block(
+                    context_evaluation.get("reason") or "Contexto superior nao esta operavel.",
+                    "higher_timeframe_context",
+                    [context_evaluation.get("reason") or "contexto superior sem operabilidade"],
+                )
+            elif signal.startswith("COMPRA") and bias not in {"bullish"}:
+                return block("Entrada contra o timeframe maior.", "higher_timeframe_conflict", ["contexto superior contra compra"])
+            elif signal.startswith("VENDA") and bias not in {"bearish"}:
+                return block("Entrada contra o timeframe maior.", "higher_timeframe_conflict", ["contexto superior contra venda"])
+
+        if market_regime == "ranging":
+            return block("Mercado lateral demais para operar.", "market_regime", ["regime lateral"])
+
+        if atr_pct is not None and not pd.isna(atr_pct):
+            effective_min_atr_pct = min_atr_pct if min_atr_pct is not None else 0.12
+            if float(atr_pct) < float(effective_min_atr_pct):
+                return block(
+                    "ATR muito baixo; volatilidade insuficiente para a entrada.",
+                    "atr_floor",
+                    [f"atr_pct {float(atr_pct):.4f} abaixo do minimo"],
+                )
+
+        if require_trend and adx is not None and min_adx_threshold is not None and not pd.isna(adx):
+            if float(adx) < float(min_adx_threshold):
+                return block("ADX fraco; sem forca direcional suficiente.", "adx_floor", [f"adx {float(adx):.2f}"])
+
+        if require_volume and volume_ratio is not None and min_volume_ratio is not None and not pd.isna(volume_ratio):
+            if float(volume_ratio) < float(min_volume_ratio):
+                return block(
+                    "Volume muito fraco para validar a entrada.",
+                    "volume_floor",
+                    [f"volume_ratio {float(volume_ratio):.2f} abaixo do minimo"],
+                )
+
+        if structure_evaluation and structure_evaluation.get("has_minimum_history"):
+            structure_state = structure_evaluation.get("structure_state", "weak_structure")
+            structure_quality = float(structure_evaluation.get("structure_quality", 0.0) or 0.0)
+            reversal_risk = bool(structure_evaluation.get("reversal_risk", structure_state == "reversal_risk"))
+            against_market_bias = bool(structure_evaluation.get("against_market_bias", reversal_risk))
+            if structure_state == "weak_structure":
+                return block(
+                    structure_evaluation.get("reason") or "Estrutura ruim para entrada.",
+                    "price_structure",
+                    structure_evaluation.get("notes", []),
+                )
+            elif reversal_risk and against_market_bias:
+                return block(
+                    structure_evaluation.get("reason") or "Estrutura mostra risco de reversao contra o vies.",
+                    "price_structure",
+                    structure_evaluation.get("notes", []),
+                )
+            elif structure_quality < 5.5:
+                return block(
+                    "Qualidade estrutural abaixo do minimo para operar.",
+                    "price_structure_quality",
+                    [f"structure_quality {structure_quality:.2f}"],
+                )
+
+        if confirmation_evaluation and confirmation_evaluation.get("has_minimum_history"):
+            confirmation_state = confirmation_evaluation.get("confirmation_state", "weak")
+            conflicts = confirmation_evaluation.get("conflicts", []) or []
+            if confirmation_state == "weak":
+                return block(
+                    conflicts[0] if conflicts else "Conflito tecnico forte entre indicadores.",
+                    "technical_confirmation",
+                    list(conflicts) + list(confirmation_evaluation.get("notes", []) or []),
+                )
+
+        if entry_quality_evaluation and entry_quality_evaluation.get("has_minimum_history"):
+            if entry_quality_evaluation.get("entry_quality") == "bad":
+                conflicts = entry_quality_evaluation.get("conflicts", []) or []
+                return block(
+                    conflicts[0] if conflicts else (
+                        entry_quality_evaluation.get("reason") or "Qualidade da entrada ruim."
+                    ),
+                    "entry_quality",
+                    list(conflicts) + list(entry_quality_evaluation.get("notes", []) or []),
+                )
+            structure_state = entry_quality_evaluation.get("structure_state")
+            if entry_quality_evaluation.get("stretched_price") and structure_state != "breakout":
+                return block(
+                    "Entrada muito esticada para operar agora.",
+                    "stretched_entry",
+                    list(entry_quality_evaluation.get("notes", []) or []),
+                )
+            rr_estimate = float(entry_quality_evaluation.get("rr_estimate", 0.0) or 0.0)
+            if rr_estimate < 1.2:
+                return block(
+                    "Risco retorno ruim para esta entrada.",
+                    "risk_reward",
+                    [f"rr_estimate {rr_estimate:.2f}"],
+                )
+
+        self._last_hard_block_evaluation = evaluation
+        return evaluation
+
     def get_hard_block_evaluation(
         self,
         signal: str,
@@ -1605,143 +1767,33 @@ class TradingBot:
         require_trend: bool = False,
         adx: Optional[float] = None,
         min_adx_threshold: Optional[float] = None,
+        atr_pct: Optional[float] = None,
+        min_atr_pct: Optional[float] = None,
+        runtime_allowed: Optional[bool] = None,
+        runtime_block_reason: Optional[str] = None,
+        active_profile: Optional[Dict[str, object]] = None,
+        risk_plan: Optional[Dict[str, object]] = None,
     ) -> Dict[str, object]:
-        evaluation = {
-            "hard_block": False,
-            "block_reason": "",
-            "block_source": "",
-        }
-
-        actionable_signals = {"COMPRA", "COMPRA_FRACA", "VENDA", "VENDA_FRACA"}
-        if signal not in actionable_signals:
-            self._last_hard_block_evaluation = evaluation
-            return evaluation
-
-        if context_evaluation:
-            bias = context_evaluation.get("market_bias") or context_evaluation.get("bias")
-            if not context_evaluation.get("is_tradeable", True):
-                evaluation = {
-                    "hard_block": True,
-                    "block_reason": context_evaluation.get("reason") or "Contexto superior nao esta operavel.",
-                    "block_source": "higher_timeframe_context",
-                }
-            elif signal.startswith("COMPRA") and bias not in {"bullish"}:
-                evaluation = {
-                    "hard_block": True,
-                    "block_reason": "Entrada contra o timeframe maior.",
-                    "block_source": "higher_timeframe_conflict",
-                }
-            elif signal.startswith("VENDA") and bias not in {"bearish"}:
-                evaluation = {
-                    "hard_block": True,
-                    "block_reason": "Entrada contra o timeframe maior.",
-                    "block_source": "higher_timeframe_conflict",
-                }
-            if evaluation["hard_block"]:
-                self._last_hard_block_evaluation = evaluation
-                return evaluation
-
-        if market_regime == "ranging":
-            evaluation = {
-                "hard_block": True,
-                "block_reason": "Mercado lateral demais para operar.",
-                "block_source": "market_regime",
-            }
-            self._last_hard_block_evaluation = evaluation
-            return evaluation
-
-        if require_trend and adx is not None and min_adx_threshold is not None and not pd.isna(adx):
-            if float(adx) < float(min_adx_threshold):
-                evaluation = {
-                    "hard_block": True,
-                    "block_reason": "ADX fraco; sem forca direcional suficiente.",
-                    "block_source": "adx_floor",
-                }
-                self._last_hard_block_evaluation = evaluation
-                return evaluation
-
-        if require_volume and volume_ratio is not None and min_volume_ratio is not None and not pd.isna(volume_ratio):
-            if float(volume_ratio) < float(min_volume_ratio):
-                evaluation = {
-                    "hard_block": True,
-                    "block_reason": "Volume muito fraco para validar a entrada.",
-                    "block_source": "volume_floor",
-                }
-                self._last_hard_block_evaluation = evaluation
-                return evaluation
-
-        if structure_evaluation and structure_evaluation.get("has_minimum_history"):
-            structure_state = structure_evaluation.get("structure_state", "weak_structure")
-            structure_quality = float(structure_evaluation.get("structure_quality", 0.0) or 0.0)
-            reversal_risk = bool(structure_evaluation.get("reversal_risk", structure_state == "reversal_risk"))
-            against_market_bias = bool(structure_evaluation.get("against_market_bias", reversal_risk))
-            if structure_state == "weak_structure":
-                evaluation = {
-                    "hard_block": True,
-                    "block_reason": structure_evaluation.get("reason") or "Estrutura ruim para entrada.",
-                    "block_source": "price_structure",
-                }
-            elif reversal_risk and against_market_bias:
-                evaluation = {
-                    "hard_block": True,
-                    "block_reason": structure_evaluation.get("reason") or "Estrutura mostra risco de reversao contra o vies.",
-                    "block_source": "price_structure",
-                }
-            elif structure_quality < 5.5:
-                evaluation = {
-                    "hard_block": True,
-                    "block_reason": "Qualidade estrutural abaixo do minimo para operar.",
-                    "block_source": "price_structure_quality",
-                }
-            if evaluation["hard_block"]:
-                self._last_hard_block_evaluation = evaluation
-                return evaluation
-
-        if confirmation_evaluation and confirmation_evaluation.get("has_minimum_history"):
-            confirmation_state = confirmation_evaluation.get("confirmation_state", "weak")
-            conflicts = confirmation_evaluation.get("conflicts", []) or []
-            if confirmation_state == "weak":
-                evaluation = {
-                    "hard_block": True,
-                    "block_reason": conflicts[0] if conflicts else "Conflito tecnico forte entre indicadores.",
-                    "block_source": "technical_confirmation",
-                }
-                self._last_hard_block_evaluation = evaluation
-                return evaluation
-
-        if entry_quality_evaluation and entry_quality_evaluation.get("has_minimum_history"):
-            if entry_quality_evaluation.get("entry_quality") == "bad":
-                conflicts = entry_quality_evaluation.get("conflicts", []) or []
-                evaluation = {
-                    "hard_block": True,
-                    "block_reason": conflicts[0] if conflicts else (
-                        entry_quality_evaluation.get("reason") or "Qualidade da entrada ruim."
-                    ),
-                    "block_source": "entry_quality",
-                }
-                self._last_hard_block_evaluation = evaluation
-                return evaluation
-            structure_state = entry_quality_evaluation.get("structure_state")
-            if entry_quality_evaluation.get("stretched_price") and structure_state != "breakout":
-                evaluation = {
-                    "hard_block": True,
-                    "block_reason": "Entrada muito esticada para operar agora.",
-                    "block_source": "stretched_entry",
-                }
-                self._last_hard_block_evaluation = evaluation
-                return evaluation
-            rr_estimate = float(entry_quality_evaluation.get("rr_estimate", 0.0) or 0.0)
-            if rr_estimate < 1.2:
-                evaluation = {
-                    "hard_block": True,
-                    "block_reason": "Risco retorno ruim para esta entrada.",
-                    "block_source": "risk_reward",
-                }
-                self._last_hard_block_evaluation = evaluation
-                return evaluation
-
-        self._last_hard_block_evaluation = evaluation
-        return evaluation
+        return self.check_hard_blocks(
+            signal=signal,
+            context_evaluation=context_evaluation,
+            structure_evaluation=structure_evaluation,
+            confirmation_evaluation=confirmation_evaluation,
+            entry_quality_evaluation=entry_quality_evaluation,
+            market_regime=market_regime,
+            require_volume=require_volume,
+            volume_ratio=volume_ratio,
+            min_volume_ratio=min_volume_ratio,
+            require_trend=require_trend,
+            adx=adx,
+            min_adx_threshold=min_adx_threshold,
+            atr_pct=atr_pct,
+            min_atr_pct=min_atr_pct,
+            runtime_allowed=runtime_allowed,
+            runtime_block_reason=runtime_block_reason,
+            active_profile=active_profile,
+            risk_plan=risk_plan,
+        )
 
     def _fetch_context_df(self, context_timeframe: str, limit: int = 260) -> Optional[pd.DataFrame]:
         if not context_timeframe or context_timeframe == self.timeframe:
@@ -1851,8 +1903,10 @@ class TradingBot:
         require_trend: bool = False,
         adx: Optional[float] = None,
         min_adx_threshold: Optional[float] = None,
+        atr_pct: Optional[float] = None,
+        min_atr_pct: Optional[float] = None,
     ) -> str:
-        hard_block_evaluation = self.get_hard_block_evaluation(
+        hard_block_evaluation = self.check_hard_blocks(
             signal=signal,
             context_evaluation=context_evaluation,
             structure_evaluation=structure_evaluation,
@@ -1865,6 +1919,8 @@ class TradingBot:
             require_trend=require_trend,
             adx=adx,
             min_adx_threshold=min_adx_threshold,
+            atr_pct=atr_pct,
+            min_atr_pct=min_atr_pct,
         )
         if hard_block_evaluation.get("hard_block"):
             return "NEUTRO"
@@ -2379,6 +2435,12 @@ class TradingBot:
         actual_rsi_period = self.rsi_period
         current_timeframe = timeframe or self.timeframe or "5m"
         resolved_context_timeframe = context_timeframe or AppConfig.get_context_timeframe(current_timeframe)
+        current_atr_pct = (
+            float(last_row.get('atr', 0) or 0.0) / float(last_row.get('close', 1) or 1.0) * 100.0
+            if float(last_row.get('close', 1) or 1.0) != 0
+            else 0.0
+        )
+        min_atr_floor_pct = 0.18 if current_timeframe in {"5m", "15m"} else 0.12 if current_timeframe in {"30m", "1h"} else 0.08
         market_regime = last_row.get('market_regime', 'trending')
         context_evaluation = None
         structure_evaluation = None
@@ -2543,9 +2605,8 @@ class TradingBot:
             if confidence < effective_min_confidence:
                 return self._set_hard_block("Confianca insuficiente para validar a entrada.", "signal_confidence")
 
-            atr_pct = last_row.get('atr', 0) / last_row.get('close', 1) * 100
             max_volatility = (volatility_threshold * 100) * 1.5
-            if atr_pct > max_volatility:
+            if current_atr_pct > max_volatility:
                 return self._set_hard_block("ATR excessivo; mercado desordenado para entrada.", "atr_extreme")
 
             if not self._passes_signal_structure_guardrail(last_row, signal, current_timeframe):
@@ -2579,6 +2640,8 @@ class TradingBot:
                 require_trend=require_trend,
                 adx=last_row.get('adx', 0),
                 min_adx_threshold=min_adx_threshold,
+                atr_pct=current_atr_pct,
+                min_atr_pct=min_atr_floor_pct,
             )
 
         if require_trend:
@@ -2612,9 +2675,8 @@ class TradingBot:
             return self._set_hard_block("Confianca insuficiente para validar a entrada.", "signal_confidence")
 
         # Relaxed volatility check - crypto markets need volatility
-        atr_pct = last_row.get('atr', 0) / last_row.get('close', 1) * 100
         max_volatility = (volatility_threshold * 100) * 1.5
-        if atr_pct > max_volatility:
+        if current_atr_pct > max_volatility:
             return self._set_hard_block("ATR excessivo; mercado desordenado para entrada.", "atr_extreme")
 
         # More intelligent RSI validation
@@ -2701,6 +2763,8 @@ class TradingBot:
                     require_trend=require_trend,
                     adx=last_row.get('adx', 0),
                     min_adx_threshold=min_adx_threshold,
+                    atr_pct=current_atr_pct,
+                    min_atr_pct=min_atr_floor_pct,
                 )
             if signal in ['VENDA', 'VENDA_FRACA']:
                 return self._apply_signal_guardrails(
@@ -2716,6 +2780,8 @@ class TradingBot:
                     require_trend=require_trend,
                     adx=last_row.get('adx', 0),
                     min_adx_threshold=min_adx_threshold,
+                    atr_pct=current_atr_pct,
+                    min_atr_pct=min_atr_floor_pct,
                 )
 
         if advanced_score >= 0.68:
@@ -2732,6 +2798,8 @@ class TradingBot:
                 require_trend=require_trend,
                 adx=last_row.get('adx', 0),
                 min_adx_threshold=min_adx_threshold,
+                atr_pct=current_atr_pct,
+                min_atr_pct=min_atr_floor_pct,
             )
 
         # Se score intermediário e sinal fraco, devolver NEUTRO
@@ -2749,6 +2817,8 @@ class TradingBot:
                 require_trend=require_trend,
                 adx=last_row.get('adx', 0),
                 min_adx_threshold=min_adx_threshold,
+                atr_pct=current_atr_pct,
+                min_atr_pct=min_atr_floor_pct,
             )
         if signal == 'VENDA' and advanced_score >= 0.62:
             return self._apply_signal_guardrails(
@@ -2764,6 +2834,8 @@ class TradingBot:
                 require_trend=require_trend,
                 adx=last_row.get('adx', 0),
                 min_adx_threshold=min_adx_threshold,
+                atr_pct=current_atr_pct,
+                min_atr_pct=min_atr_floor_pct,
             )
 
         if signal in ['COMPRA_FRACA', 'VENDA_FRACA'] and advanced_score < 0.72:
@@ -2783,6 +2855,8 @@ class TradingBot:
             require_trend=require_trend,
             adx=last_row.get('adx', 0),
             min_adx_threshold=min_adx_threshold,
+            atr_pct=current_atr_pct,
+            min_atr_pct=min_atr_floor_pct,
         )
 
     def _generate_trend_signal(self, row, rsi_min: float, rsi_max: float) -> str:

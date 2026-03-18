@@ -60,6 +60,51 @@ class TelegramTradingBotLogicTests(unittest.TestCase):
 
         self.assertIn("-ctx4h", strategy_version)
 
+    def test_display_signal_translates_known_signals_to_english(self):
+        self.assertEqual(TelegramTradingBot._display_signal("COMPRA", locale="en"), "BUY")
+        self.assertEqual(TelegramTradingBot._display_signal("VENDA_FRACA", locale="en"), "WEAK SELL")
+        self.assertEqual(TelegramTradingBot._display_signal("NEUTRO", locale="en"), "WAIT")
+
+    def test_build_strategy_runtime_note_marks_runtime_as_blocked_without_active_profile(self):
+        note = TelegramTradingBot._build_strategy_runtime_note(
+            {
+                "strategy_version": "BTCUSDT-1h-rsi14-30-70-sl2.00-tp4.00-v1-t0-r1-ctx4h",
+                "active_profile": None,
+                "runtime_allowed": False,
+                "runtime_block_reason": "Nenhum setup ativo promovido para este mercado/timeframe.",
+            }
+        )
+
+        self.assertIn("Perfil ativo: nenhum", note)
+        self.assertIn("Estrategia configurada:", note)
+        self.assertIn("bloqueado por governanca", note)
+
+    def test_build_strategy_runtime_note_supports_english(self):
+        note = TelegramTradingBot._build_strategy_runtime_note(
+            {
+                "strategy_version": "BTCUSDT-1h-rsi14-30-70-sl2.00-tp4.00-v1-t0-r1-ctx4h",
+                "active_profile": None,
+                "runtime_allowed": False,
+                "runtime_block_reason": "No promoted setup is active for this market/timeframe.",
+            },
+            locale="en",
+        )
+
+        self.assertIn("Active profile: none", note)
+        self.assertIn("Configured strategy:", note)
+        self.assertIn("blocked by governance", note)
+
+    def test_build_strategy_runtime_note_prefers_active_profile_when_present(self):
+        note = TelegramTradingBot._build_strategy_runtime_note(
+            {
+                "strategy_version": "fallback-version",
+                "active_profile": {"strategy_version": "BTCUSDT-4h-rsi14-30-70-sl1.50-tp4.00-v1-t1-r1"},
+                "runtime_allowed": True,
+            }
+        )
+
+        self.assertEqual(note, "Perfil ativo: BTCUSDT-4h-rsi14-30-70-sl1.50-tp4.00-v1-t1-r1")
+
     def test_build_structure_note_uses_standardized_structure_fields(self):
         note = TelegramTradingBot._build_structure_note(
             {
@@ -77,6 +122,24 @@ class TelegramTradingBotLogicTests(unittest.TestCase):
         self.assertIn("reversal_risk False", note)
         self.assertIn("dist EMA 1.37%", note)
         self.assertIn("rompimento confirmado", note)
+
+    def test_build_structure_note_supports_english(self):
+        note = TelegramTradingBot._build_structure_note(
+            {
+                "structure_state": "breakout",
+                "price_location": "resistance",
+                "structure_quality": 6.8,
+                "breakout": True,
+                "reversal_risk": False,
+                "distance_from_ema_pct": 1.37,
+                "notes": ["breakout confirmed", "price above EMA 21"],
+            },
+            locale="en",
+        )
+
+        self.assertIn("Structure:", note)
+        self.assertIn("quality 6.80/10", note)
+        self.assertIn("notes: breakout confirmed", note)
 
     def test_build_confirmation_note_uses_standardized_confirmation_fields(self):
         note = TelegramTradingBot._build_confirmation_note(
