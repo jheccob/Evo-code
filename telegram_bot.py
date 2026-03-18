@@ -255,6 +255,20 @@ class TelegramTradingBot:
             f"notas: {notes_preview}"
         )
 
+    @staticmethod
+    def _build_entry_quality_note(entry_quality_evaluation: Optional[dict]) -> str:
+        if not entry_quality_evaluation:
+            return "Entrada: indisponivel"
+
+        notes_preview = ", ".join(entry_quality_evaluation.get("notes", [])[:2]) or "sem notas relevantes"
+        return (
+            f"Entrada: {entry_quality_evaluation.get('entry_quality', 'bad')} | "
+            f"RR {entry_quality_evaluation.get('rr_estimate', 0):.2f} | "
+            f"late {entry_quality_evaluation.get('late_entry', False)} | "
+            f"stretched {entry_quality_evaluation.get('stretched_price', False)} | "
+            f"notas: {notes_preview}"
+        )
+
     def _resolve_runtime_strategy_settings(self, symbol: str, timeframe: str) -> dict:
         default_context_timeframe = AppConfig.get_context_timeframe(timeframe)
         if not self.trading_bot:
@@ -635,12 +649,7 @@ class TelegramTradingBot:
                 confirmation_note = self._build_confirmation_note(confirmation_evaluation)
             entry_quality_note = "Entrada: indisponivel"
             if entry_quality_evaluation:
-                entry_quality_note = (
-                    f"Entrada: {entry_quality_evaluation.get('entry_quality', 'bad')} | "
-                    f"RR {entry_quality_evaluation.get('rr_estimate', 0):.2f} | "
-                    f"late {entry_quality_evaluation.get('late_entry', False)} | "
-                    f"stretched {entry_quality_evaluation.get('stretched_price', False)}"
-                )
+                entry_quality_note = self._build_entry_quality_note(entry_quality_evaluation)
             hard_block_note = ""
             if hard_block_evaluation and hard_block_evaluation.get("hard_block"):
                 hard_block_note = (

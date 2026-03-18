@@ -93,6 +93,22 @@ class TelegramTradingBotLogicTests(unittest.TestCase):
         self.assertIn("MACD conflita com o vies bullish", note)
         self.assertIn("RSI em faixa favoravel para compra", note)
 
+    def test_build_entry_quality_note_uses_standardized_entry_fields(self):
+        note = TelegramTradingBot._build_entry_quality_note(
+            {
+                "entry_quality": "acceptable",
+                "rr_estimate": 1.34,
+                "late_entry": False,
+                "stretched_price": True,
+                "notes": ["risco retorno aceitavel", "preco esta esticado em relacao a ema 21"],
+            }
+        )
+
+        self.assertIn("acceptable", note)
+        self.assertIn("RR 1.34", note)
+        self.assertIn("stretched True", note)
+        self.assertIn("risco retorno aceitavel", note)
+
 
 if __name__ == "__main__":
     unittest.main()

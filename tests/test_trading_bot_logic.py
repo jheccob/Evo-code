@@ -1284,6 +1284,60 @@ class TradingBotLogicTests(unittest.TestCase):
         self.assertFalse(evaluation["late_entry"])
         self.assertFalse(evaluation["stretched_price"])
 
+    def test_validate_entry_quality_returns_acceptable_when_rr_is_only_marginal(self):
+        bot = TradingBot.__new__(TradingBot)
+        bot.timeframe = "1h"
+
+        data = _build_confirmation_frame(
+            closes=[100.0, 100.6, 101.0, 101.4, 101.8, 101.9],
+            rsis=[48.0, 50.0, 53.0, 55.0, 56.0, 55.0],
+            macds=[0.10, 0.14, 0.19, 0.23, 0.24, 0.20],
+            macd_signals=[0.05, 0.08, 0.12, 0.16, 0.18, 0.18],
+            macd_histograms=[0.05, 0.06, 0.07, 0.07, 0.06, 0.02],
+            adx_values=[22.0, 24.0, 26.0, 27.0, 27.0, 26.0],
+            volume_ratios=[1.02, 1.06, 1.08, 1.10, 1.04, 1.00],
+            atr_values=[0.90, 0.92, 0.94, 0.95, 0.96, 0.97],
+            sma_21_values=[99.8, 100.1, 100.4, 100.8, 101.1, 101.3],
+            sma_50_values=[99.2, 99.4, 99.7, 100.0, 100.3, 100.6],
+            sma_200_values=[98.0, 98.1, 98.2, 98.3, 98.4, 98.5],
+        )
+        data.iloc[-1, data.columns.get_loc("open")] = 101.55
+        data.iloc[-1, data.columns.get_loc("high")] = 102.10
+        data.iloc[-1, data.columns.get_loc("low")] = 101.42
+
+        evaluation = TradingBot.validate_entry_quality(bot, data, market_bias="bullish", structure_state="continuation")
+
+        self.assertEqual(evaluation["entry_quality"], "acceptable")
+        self.assertGreaterEqual(evaluation["rr_estimate"], 1.1)
+        self.assertLess(evaluation["rr_estimate"], 1.8)
+
+    def test_validate_entry_quality_returns_bad_when_risk_reward_is_weak(self):
+        bot = TradingBot.__new__(TradingBot)
+        bot.timeframe = "1h"
+
+        data = _build_confirmation_frame(
+            closes=[100.0, 100.5, 100.9, 101.0, 101.05, 101.08],
+            rsis=[50.0, 52.0, 54.0, 55.0, 55.0, 54.0],
+            macds=[0.09, 0.12, 0.16, 0.17, 0.16, 0.14],
+            macd_signals=[0.04, 0.07, 0.10, 0.12, 0.13, 0.13],
+            macd_histograms=[0.05, 0.05, 0.06, 0.05, 0.03, 0.01],
+            adx_values=[20.0, 22.0, 23.0, 23.0, 22.0, 21.0],
+            volume_ratios=[1.00, 1.02, 1.05, 1.03, 0.98, 0.95],
+            atr_values=[1.10, 1.12, 1.14, 1.15, 1.14, 1.13],
+            sma_21_values=[99.7, 99.9, 100.2, 100.5, 100.7, 100.8],
+            sma_50_values=[99.1, 99.3, 99.5, 99.7, 99.9, 100.0],
+            sma_200_values=[98.0, 98.1, 98.2, 98.3, 98.4, 98.5],
+        )
+        data.iloc[-1, data.columns.get_loc("open")] = 100.95
+        data.iloc[-1, data.columns.get_loc("high")] = 101.20
+        data.iloc[-1, data.columns.get_loc("low")] = 99.95
+
+        evaluation = TradingBot.validate_entry_quality(bot, data, market_bias="bullish", structure_state="continuation")
+
+        self.assertEqual(evaluation["entry_quality"], "bad")
+        self.assertLess(evaluation["rr_estimate"], 1.1)
+        self.assertIn("risco retorno insuficiente", evaluation["conflicts"])
+
     def test_entry_quality_evaluation_returns_bad_for_late_stretched_entry(self):
         bot = TradingBot.__new__(TradingBot)
         bot.timeframe = "1h"
