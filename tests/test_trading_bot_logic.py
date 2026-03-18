@@ -1512,6 +1512,295 @@ class TradingBotLogicTests(unittest.TestCase):
 
         self.assertEqual(signal, "NEUTRO")
 
+    def test_build_scenario_score_returns_grade_a_for_strong_setup(self):
+        bot = TradingBot.__new__(TradingBot)
+
+        evaluation = TradingBot.build_scenario_score(
+            bot,
+            context_result={"context_strength": 8.8, "is_tradeable": True, "has_minimum_history": True},
+            structure_result={"structure_quality": 8.0, "has_minimum_history": True},
+            confirmation_result={"confirmation_score": 7.8, "has_minimum_history": True},
+            entry_result={
+                "entry_quality": "good",
+                "quality_score": 7.2,
+                "rr_estimate": 2.0,
+                "late_entry": False,
+                "stretched_price": False,
+                "has_minimum_history": True,
+            },
+        )
+
+        self.assertGreaterEqual(evaluation["scenario_score"], 8.0)
+        self.assertEqual(evaluation["scenario_grade"], "A")
+        self.assertGreaterEqual(evaluation["score_breakdown"]["context"], 8.5)
+
+    def test_build_scenario_score_returns_grade_c_for_medium_setup(self):
+        bot = TradingBot.__new__(TradingBot)
+
+        evaluation = TradingBot.build_scenario_score(
+            bot,
+            context_result={"context_strength": 6.2, "is_tradeable": True, "has_minimum_history": True},
+            structure_result={"structure_quality": 5.8, "has_minimum_history": True},
+            confirmation_result={"confirmation_score": 5.0, "has_minimum_history": True},
+            entry_result={
+                "entry_quality": "acceptable",
+                "quality_score": 4.6,
+                "rr_estimate": 1.35,
+                "late_entry": False,
+                "stretched_price": False,
+                "has_minimum_history": True,
+            },
+        )
+
+        self.assertGreaterEqual(evaluation["scenario_score"], 5.0)
+        self.assertLess(evaluation["scenario_score"], 6.5)
+        self.assertEqual(evaluation["scenario_grade"], "C")
+
+    def test_build_scenario_score_returns_grade_d_for_weak_setup(self):
+        bot = TradingBot.__new__(TradingBot)
+
+        evaluation = TradingBot.build_scenario_score(
+            bot,
+            context_result={"context_strength": 3.4, "is_tradeable": False, "has_minimum_history": True},
+            structure_result={"structure_quality": 3.2, "has_minimum_history": True},
+            confirmation_result={"confirmation_score": 2.8, "has_minimum_history": True},
+            entry_result={
+                "entry_quality": "bad",
+                "quality_score": 2.4,
+                "rr_estimate": 0.95,
+                "late_entry": True,
+                "stretched_price": True,
+                "has_minimum_history": True,
+            },
+        )
+
+        self.assertLess(evaluation["scenario_score"], 5.0)
+        self.assertEqual(evaluation["scenario_grade"], "D")
+        self.assertTrue(any("fraco" in note for note in evaluation["notes"]))
+
+    def test_check_signal_downgrades_when_scenario_grade_is_c(self):
+        bot = TradingBot.__new__(TradingBot)
+        bot.rsi_min = 30
+        bot.rsi_max = 70
+        bot.rsi_period = 14
+        bot.timeframe = "1h"
+        bot._last_context_evaluation = None
+        bot._last_confirmation_evaluation = None
+        bot._last_entry_quality_evaluation = None
+        bot._last_scenario_evaluation = None
+        bot._generate_advanced_signal = lambda row: "COMPRA"
+        bot._calculate_signal_confidence = lambda row: 95.0
+        bot.calculate_advanced_score = lambda row, signal=None: 0.9
+        bot._passes_signal_structure_guardrail = lambda row, signal, timeframe: True
+        bot.get_price_structure_evaluation = lambda df, timeframe=None, market_bias=None: {
+            "has_minimum_history": True,
+            "structure_state": "continuation",
+            "price_location": "trend_zone",
+            "structure_quality": 7.0,
+        }
+        bot.get_confirmation_evaluation = lambda *args, **kwargs: {
+            "has_minimum_history": True,
+            "confirmation_state": "confirmed",
+            "confirmation_score": 7.4,
+            "conflicts": [],
+        }
+        bot.get_entry_quality_evaluation = lambda *args, **kwargs: {
+            "has_minimum_history": True,
+            "entry_quality": "good",
+            "rr_estimate": 2.0,
+            "late_entry": False,
+            "stretched_price": False,
+        }
+        bot.build_scenario_score = lambda *args, **kwargs: {
+            "scenario_score": 5.6,
+            "scenario_grade": "C",
+            "score_breakdown": {"context": 6.0, "structure": 6.0, "confirmation": 5.0, "entry": 5.0},
+            "notes": ["cenario medio"],
+            "has_minimum_history": True,
+        }
+
+        candle = pd.DataFrame(
+            [
+                {
+                    "open": 100.0,
+                    "high": 101.5,
+                    "low": 99.8,
+                    "close": 101.2,
+                    "rsi": 38.0,
+                    "macd": 0.7,
+                    "macd_signal": 0.2,
+                    "macd_histogram": 0.5,
+                    "adx": 31.0,
+                    "volume_ratio": 1.6,
+                    "atr": 1.1,
+                    "stoch_rsi_k": 45.0,
+                    "williams_r": -50.0,
+                    "bb_width": 0.06,
+                    "market_regime": "trending",
+                    "is_closed": True,
+                }
+            ],
+            index=[pd.Timestamp("2026-01-01 10:00:00")],
+        )
+
+        signal = TradingBot.check_signal(bot, candle, timeframe="1h")
+
+        self.assertEqual(signal, "COMPRA_FRACA")
+
+    def test_check_signal_blocks_when_scenario_grade_is_d(self):
+        bot = TradingBot.__new__(TradingBot)
+        bot.rsi_min = 30
+        bot.rsi_max = 70
+        bot.rsi_period = 14
+        bot.timeframe = "1h"
+        bot._last_context_evaluation = None
+        bot._last_confirmation_evaluation = None
+        bot._last_entry_quality_evaluation = None
+        bot._last_scenario_evaluation = None
+        bot._generate_advanced_signal = lambda row: "COMPRA"
+        bot._calculate_signal_confidence = lambda row: 95.0
+        bot.calculate_advanced_score = lambda row, signal=None: 0.9
+        bot._passes_signal_structure_guardrail = lambda row, signal, timeframe: True
+        bot.get_price_structure_evaluation = lambda df, timeframe=None, market_bias=None: {
+            "has_minimum_history": True,
+            "structure_state": "continuation",
+            "price_location": "trend_zone",
+            "structure_quality": 7.0,
+        }
+        bot.get_confirmation_evaluation = lambda *args, **kwargs: {
+            "has_minimum_history": True,
+            "confirmation_state": "confirmed",
+            "confirmation_score": 7.4,
+            "conflicts": [],
+        }
+        bot.get_entry_quality_evaluation = lambda *args, **kwargs: {
+            "has_minimum_history": True,
+            "entry_quality": "good",
+            "rr_estimate": 2.0,
+            "late_entry": False,
+            "stretched_price": False,
+        }
+        bot.build_scenario_score = lambda *args, **kwargs: {
+            "scenario_score": 3.8,
+            "scenario_grade": "D",
+            "score_breakdown": {"context": 3.0, "structure": 4.0, "confirmation": 4.0, "entry": 4.0},
+            "notes": ["cenario fraco"],
+            "has_minimum_history": True,
+        }
+
+        candle = pd.DataFrame(
+            [
+                {
+                    "open": 100.0,
+                    "high": 101.5,
+                    "low": 99.8,
+                    "close": 101.2,
+                    "rsi": 38.0,
+                    "macd": 0.7,
+                    "macd_signal": 0.2,
+                    "macd_histogram": 0.5,
+                    "adx": 31.0,
+                    "volume_ratio": 1.6,
+                    "atr": 1.1,
+                    "stoch_rsi_k": 45.0,
+                    "williams_r": -50.0,
+                    "bb_width": 0.06,
+                    "market_regime": "trending",
+                    "is_closed": True,
+                }
+            ],
+            index=[pd.Timestamp("2026-01-01 10:00:00")],
+        )
+
+        signal = TradingBot.check_signal(bot, candle, timeframe="1h")
+
+        self.assertEqual(signal, "NEUTRO")
+
+    def test_make_trade_decision_returns_buy_for_valid_bullish_setup(self):
+        bot = TradingBot.__new__(TradingBot)
+
+        decision = TradingBot.make_trade_decision(
+            bot,
+            context_result={"market_bias": "bullish", "is_tradeable": True},
+            structure_result={"structure_state": "pullback", "price_location": "trend_zone"},
+            confirmation_result={"confirmation_state": "confirmed", "hypothesis_side": "bullish"},
+            entry_result={"entry_quality": "good"},
+            hard_block_result={"hard_block": False, "block_reason": None},
+            scenario_score_result={"scenario_score": 7.8, "scenario_grade": "B"},
+        )
+
+        self.assertEqual(decision["action"], "buy")
+        self.assertEqual(decision["market_bias"], "bullish")
+        self.assertEqual(decision["setup_type"], "pullback")
+        self.assertIsNone(decision["block_reason"])
+        self.assertIn("bullish pullback", decision["entry_reason"])
+
+    def test_make_trade_decision_returns_sell_for_valid_bearish_setup(self):
+        bot = TradingBot.__new__(TradingBot)
+
+        decision = TradingBot.make_trade_decision(
+            bot,
+            context_result={"market_bias": "bearish", "is_tradeable": True},
+            structure_result={"structure_state": "continuation", "price_location": "trend_zone"},
+            confirmation_result={"confirmation_state": "confirmed", "hypothesis_side": "bearish"},
+            entry_result={"entry_quality": "acceptable"},
+            hard_block_result={"hard_block": False, "block_reason": None},
+            scenario_score_result={"scenario_score": 7.1, "scenario_grade": "B"},
+        )
+
+        self.assertEqual(decision["action"], "sell")
+        self.assertEqual(decision["market_bias"], "bearish")
+        self.assertEqual(decision["setup_type"], "continuation")
+        self.assertIsNone(decision["block_reason"])
+
+    def test_make_trade_decision_waits_when_hard_block_is_active(self):
+        bot = TradingBot.__new__(TradingBot)
+
+        decision = TradingBot.make_trade_decision(
+            bot,
+            context_result={"market_bias": "bullish", "is_tradeable": True},
+            structure_result={"structure_state": "breakout", "price_location": "trend_zone"},
+            confirmation_result={"confirmation_state": "confirmed", "hypothesis_side": "bullish"},
+            entry_result={"entry_quality": "good"},
+            hard_block_result={"hard_block": True, "block_reason": "Governanca bloqueou"},
+            scenario_score_result={"scenario_score": 8.2, "scenario_grade": "A"},
+        )
+
+        self.assertEqual(decision["action"], "wait")
+        self.assertEqual(decision["block_reason"], "Governanca bloqueou")
+
+    def test_make_trade_decision_waits_when_scenario_score_is_low(self):
+        bot = TradingBot.__new__(TradingBot)
+
+        decision = TradingBot.make_trade_decision(
+            bot,
+            context_result={"market_bias": "bullish", "is_tradeable": True},
+            structure_result={"structure_state": "continuation", "price_location": "trend_zone"},
+            confirmation_result={"confirmation_state": "confirmed", "hypothesis_side": "bullish"},
+            entry_result={"entry_quality": "good"},
+            hard_block_result={"hard_block": False, "block_reason": None},
+            scenario_score_result={"scenario_score": 4.3, "scenario_grade": "D"},
+        )
+
+        self.assertEqual(decision["action"], "wait")
+        self.assertIn("Score do cenario", decision["block_reason"])
+
+    def test_make_trade_decision_waits_when_market_bias_is_neutral(self):
+        bot = TradingBot.__new__(TradingBot)
+
+        decision = TradingBot.make_trade_decision(
+            bot,
+            context_result={"market_bias": "neutral", "is_tradeable": True},
+            structure_result={"structure_state": "continuation", "price_location": "trend_zone"},
+            confirmation_result={"confirmation_state": "confirmed", "hypothesis_side": "neutral"},
+            entry_result={"entry_quality": "good"},
+            hard_block_result={"hard_block": False, "block_reason": None},
+            scenario_score_result={"scenario_score": 7.4, "scenario_grade": "B"},
+        )
+
+        self.assertEqual(decision["action"], "wait")
+        self.assertIn("neutro", decision["block_reason"])
+
     def test_hard_block_evaluation_blocks_countertrend_signal(self):
         bot = TradingBot.__new__(TradingBot)
 
@@ -1717,6 +2006,8 @@ class TradingBotLogicTests(unittest.TestCase):
         bot._last_context_evaluation = {"market_bias": "bullish"}
         bot._last_confirmation_evaluation = {"confirmation_state": "confirmed"}
         bot._last_entry_quality_evaluation = {"entry_quality": "good"}
+        bot._last_scenario_evaluation = {"scenario_grade": "A"}
+        bot._last_trade_decision = {"action": "buy"}
         bot._last_hard_block_evaluation = {"hard_block": True, "block_reason": "antigo", "block_source": "old"}
 
         candle = pd.DataFrame(
@@ -1749,6 +2040,8 @@ class TradingBotLogicTests(unittest.TestCase):
         self.assertIsNone(bot._last_context_evaluation)
         self.assertIsNone(bot._last_confirmation_evaluation)
         self.assertIsNone(bot._last_entry_quality_evaluation)
+        self.assertIsNone(bot._last_scenario_evaluation)
+        self.assertEqual(bot._last_trade_decision["action"], "wait")
         self.assertTrue(bot._last_hard_block_evaluation["hard_block"])
 if __name__ == "__main__":
     unittest.main()

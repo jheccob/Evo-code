@@ -29,6 +29,8 @@ class TradingBot:
         self._last_price_structure_evaluation = None
         self._last_confirmation_evaluation = None
         self._last_entry_quality_evaluation = None
+        self._last_scenario_evaluation = None
+        self._last_trade_decision = None
         self._last_hard_block_evaluation = None
 
         logger.info("🚀 TradingBot inicializado com BINANCE WEBSOCKET PÚBLICO")
@@ -64,11 +66,21 @@ class TradingBot:
         }
 
     def _set_hard_block(self, block_reason: str, block_source: str = "signal_engine") -> str:
+        cleaned_reason = str(block_reason or "").strip()
         self._last_hard_block_evaluation = {
             "hard_block": True,
-            "block_reason": str(block_reason or "").strip(),
+            "block_reason": cleaned_reason,
             "block_source": block_source,
-            "notes": [str(block_reason or "").strip()] if block_reason else [],
+            "notes": [cleaned_reason] if cleaned_reason else [],
+        }
+        self._last_trade_decision = {
+            "action": "wait",
+            "confidence": 0.0,
+            "market_bias": "neutral",
+            "setup_type": None,
+            "entry_reason": None,
+            "block_reason": cleaned_reason or None,
+            "invalid_if": None,
         }
         return "NEUTRO"
 
@@ -1593,6 +1605,244 @@ class TradingBot:
         self._last_entry_quality_evaluation = evaluation
         return evaluation
 
+    def build_scenario_score(
+        self,
+        context_result: Optional[Dict[str, object]],
+        structure_result: Optional[Dict[str, object]],
+        confirmation_result: Optional[Dict[str, object]],
+        entry_result: Optional[Dict[str, object]],
+    ) -> Dict[str, object]:
+        def _clip_score(value: Optional[float]) -> float:
+            return round(float(max(0.0, min(10.0, float(value or 0.0)))), 2)
+
+        def _resolve_context_score(result: Optional[Dict[str, object]]) -> float:
+            if not result:
+                return 0.0
+            score = result.get("context_strength")
+            if score is None:
+                score = float(result.get("strength", 0.0) or 0.0) * 10.0
+            return _clip_score(score)
+
+        def _resolve_entry_score(result: Optional[Dict[str, object]]) -> float:
+            if not result:
+                return 0.0
+
+            base_score = float(result.get("quality_score", 0.0) or 0.0)
+            quality_label = str(result.get("entry_quality", "bad") or "bad")
+            if base_score <= 0:
+                base_score = {
+                    "good": 8.0,
+                    "acceptable": 5.5,
+                    "bad": 2.0,
+                }.get(quality_label, 0.0)
+
+            rr_estimate = float(result.get("rr_estimate", 0.0) or 0.0)
+            if rr_estimate >= 1.8:
+                base_score += 0.8
+            elif rr_estimate >= 1.3:
+                base_score += 0.3
+            elif rr_estimate < 1.1:
+                base_score -= 1.0
+
+            if result.get("late_entry"):
+                base_score -= 0.8
+            if result.get("stretched_price"):
+                base_score -= 0.8
+
+            return _clip_score(base_score)
+
+        result_map = {
+            "context": context_result,
+            "structure": structure_result,
+            "confirmation": confirmation_result,
+            "entry": entry_result,
+        }
+        score_breakdown = {
+            "context": _resolve_context_score(context_result),
+            "structure": _clip_score((structure_result or {}).get("structure_quality")),
+            "confirmation": _clip_score((confirmation_result or {}).get("confirmation_score")),
+            "entry": _resolve_entry_score(entry_result),
+        }
+        weights = {
+            "context": 0.30,
+            "structure": 0.30,
+            "confirmation": 0.25,
+            "entry": 0.15,
+        }
+
+        available_components = {
+            name: score
+            for name, score in score_breakdown.items()
+            if result_map.get(name) and result_map[name].get("has_minimum_history", True)
+        }
+
+        notes = []
+        for name, score in available_components.items():
+            if score >= 7.5:
+                notes.append(f"{name} forte")
+            elif score < 4.5:
+                notes.append(f"{name} fraco")
+
+        weak_components = [name for name, score in available_components.items() if score < 4.0]
+        available_weight = sum(weights[name] for name in available_components)
+        scenario_score = (
+            sum(available_components[name] * weights[name] for name in available_components) / available_weight
+            if available_components and available_weight > 0
+            else 0.0
+        )
+        if weak_components:
+            scenario_score -= 0.4 * len(weak_components)
+            notes.append(
+                "penalizado por componente fraco: " + ", ".join(weak_components)
+            )
+
+        if (
+            context_result
+            and not context_result.get("is_tradeable", True)
+            and score_breakdown["context"] < 5.0
+        ):
+            scenario_score -= 0.5
+            notes.append("contexto nao operavel reduz a nota final")
+
+        scenario_score = _clip_score(scenario_score)
+        if scenario_score >= 8.0:
+            scenario_grade = "A"
+        elif scenario_score >= 6.5:
+            scenario_grade = "B"
+        elif scenario_score >= 5.0:
+            scenario_grade = "C"
+        else:
+            scenario_grade = "D"
+
+        evaluation = {
+            "scenario_score": scenario_score,
+            "scenario_grade": scenario_grade,
+            "score_breakdown": score_breakdown,
+            "notes": list(dict.fromkeys(str(note) for note in notes if note)),
+            "has_minimum_history": bool(available_components),
+        }
+        self._last_scenario_evaluation = evaluation
+        return evaluation
+
+    def make_trade_decision(
+        self,
+        context_result: Optional[Dict[str, object]],
+        structure_result: Optional[Dict[str, object]],
+        confirmation_result: Optional[Dict[str, object]],
+        entry_result: Optional[Dict[str, object]],
+        hard_block_result: Optional[Dict[str, object]],
+        scenario_score_result: Optional[Dict[str, object]],
+        risk_result: Optional[Dict[str, object]] = None,
+    ) -> Dict[str, object]:
+        market_bias = "neutral"
+        if context_result:
+            market_bias = str(
+                context_result.get("market_bias")
+                or context_result.get("bias")
+                or market_bias
+            )
+        if market_bias not in {"bullish", "bearish"} and confirmation_result:
+            market_bias = str(confirmation_result.get("hypothesis_side") or market_bias)
+        if market_bias not in {"bullish", "bearish"}:
+            market_bias = "neutral"
+
+        structure_state = str((structure_result or {}).get("structure_state") or "weak_structure")
+        price_location = str((structure_result or {}).get("price_location") or "mid_range")
+        confirmation_state = str((confirmation_result or {}).get("confirmation_state") or "weak")
+        entry_quality = str((entry_result or {}).get("entry_quality") or "bad")
+        structure_available = bool(structure_result) and bool((structure_result or {}).get("has_minimum_history", True))
+        confirmation_available = bool(confirmation_result) and bool((confirmation_result or {}).get("has_minimum_history", True))
+        entry_available = bool(entry_result) and bool((entry_result or {}).get("has_minimum_history", True))
+        scenario_available = bool(scenario_score_result) and bool((scenario_score_result or {}).get("has_minimum_history", True))
+        scenario_score = float((scenario_score_result or {}).get("scenario_score", 0.0) or 0.0)
+        scenario_grade = str((scenario_score_result or {}).get("scenario_grade", "D") or "D").upper()
+        against_market_bias = bool((structure_result or {}).get("against_market_bias", False))
+
+        setup_type = (
+            structure_state
+            if structure_available and structure_state in {"continuation", "pullback", "breakout"}
+            else None
+        )
+        block_reason = None
+
+        if hard_block_result and hard_block_result.get("hard_block"):
+            block_reason = hard_block_result.get("block_reason") or "Hard block ativo."
+        elif risk_result and not risk_result.get("allowed", True):
+            block_reason = risk_result.get("reason") or "Risco operacional bloqueado."
+        elif context_result and not context_result.get("is_tradeable", True):
+            block_reason = context_result.get("reason") or "Contexto nao operavel."
+        elif market_bias == "neutral":
+            block_reason = "Vies de mercado neutro."
+        elif structure_available and structure_state == "weak_structure":
+            block_reason = (structure_result or {}).get("reason") or "Estrutura fraca."
+        elif structure_available and structure_state == "reversal_risk" and against_market_bias:
+            block_reason = (structure_result or {}).get("reason") or "Risco de reversao contra o vies."
+        elif structure_available and structure_state not in {"continuation", "pullback", "breakout"}:
+            block_reason = "Estrutura nao valida para entrada."
+        elif structure_available and market_bias == "bullish" and price_location == "resistance" and structure_state != "breakout":
+            block_reason = "Compra perto da resistencia sem rompimento."
+        elif structure_available and market_bias == "bearish" and price_location == "support" and structure_state != "breakout":
+            block_reason = "Venda perto do suporte sem rompimento."
+        elif confirmation_available and confirmation_state == "weak":
+            block_reason = (confirmation_result or {}).get("reason") or "Confirmacao tecnica fraca."
+        elif entry_available and entry_quality == "bad":
+            block_reason = (entry_result or {}).get("reason") or "Qualidade de entrada ruim."
+        elif scenario_available and (scenario_grade == "D" or scenario_score < 5.0):
+            block_reason = "Score do cenario abaixo do minimo."
+
+        confidence = scenario_score
+        if confirmation_state == "confirmed":
+            confidence += 0.4
+        elif confirmation_state == "mixed":
+            confidence -= 0.3
+
+        if entry_quality == "good":
+            confidence += 0.3
+        elif entry_quality == "acceptable":
+            confidence -= 0.2
+
+        if structure_state == "pullback":
+            confidence += 0.2
+        elif structure_state == "breakout":
+            confidence -= 0.1
+
+        confidence = round(float(max(0.0, min(10.0, confidence))), 2)
+
+        if block_reason:
+            decision = {
+                "action": "wait",
+                "confidence": confidence if confidence > 0 else round(float(max(0.0, min(10.0, scenario_score))), 2),
+                "market_bias": market_bias,
+                "setup_type": setup_type,
+                "entry_reason": None,
+                "block_reason": str(block_reason),
+                "invalid_if": None,
+            }
+            self._last_trade_decision = decision
+            return decision
+
+        action = "buy" if market_bias == "bullish" else "sell"
+        entry_reason = (
+            f"{market_bias} {structure_state} | "
+            f"confirmacao {confirmation_state} | "
+            f"entrada {entry_quality} | "
+            f"score {scenario_score:.2f}"
+        )
+        invalid_if = (
+            f"perder vies {market_bias} ou invalidar a estrutura {structure_state}"
+        )
+        decision = {
+            "action": action,
+            "confidence": confidence,
+            "market_bias": market_bias,
+            "setup_type": setup_type,
+            "entry_reason": entry_reason,
+            "block_reason": None,
+            "invalid_if": invalid_if,
+        }
+        self._last_trade_decision = decision
+        return decision
+
     def check_hard_blocks(
         self,
         signal: str,
@@ -1889,6 +2139,83 @@ class TradingBot:
                     return "VENDA_FRACA"
         return signal
 
+    def _apply_scenario_score_alignment(
+        self,
+        signal: str,
+        scenario_evaluation: Optional[Dict[str, object]],
+    ) -> str:
+        actionable_signals = {"COMPRA", "COMPRA_FRACA", "VENDA", "VENDA_FRACA"}
+        if signal not in actionable_signals:
+            return signal
+        if not scenario_evaluation or not scenario_evaluation.get("has_minimum_history", True):
+            return signal
+
+        scenario_score = float(scenario_evaluation.get("scenario_score", 0.0) or 0.0)
+        scenario_grade = str(scenario_evaluation.get("scenario_grade", "D") or "D").upper()
+        if scenario_grade == "D" or scenario_score < 4.5:
+            return "NEUTRO"
+        if scenario_grade == "C":
+            if signal == "COMPRA":
+                return "COMPRA_FRACA"
+            if signal == "VENDA":
+                return "VENDA_FRACA"
+        return signal
+
+    @staticmethod
+    def _map_trade_decision_to_signal(
+        trade_decision: Optional[Dict[str, object]],
+        current_signal: str = "NEUTRO",
+    ) -> str:
+        if not trade_decision:
+            return current_signal
+
+        action = str(trade_decision.get("action") or "wait").lower()
+        confidence = float(trade_decision.get("confidence", 0.0) or 0.0)
+        if action == "wait":
+            return "NEUTRO"
+        if action == "buy":
+            if current_signal == "COMPRA_FRACA" or confidence < 7.0:
+                return "COMPRA_FRACA"
+            return "COMPRA"
+        if action == "sell":
+            if current_signal == "VENDA_FRACA" or confidence < 7.0:
+                return "VENDA_FRACA"
+            return "VENDA"
+        return "NEUTRO"
+
+    @staticmethod
+    def _build_decision_context(
+        signal: str,
+        context_evaluation: Optional[Dict[str, object]],
+        confirmation_evaluation: Optional[Dict[str, object]],
+    ) -> Optional[Dict[str, object]]:
+        current_context = dict(context_evaluation or {})
+        current_bias = str(
+            current_context.get("market_bias")
+            or current_context.get("bias")
+            or ""
+        )
+        if current_bias in {"bullish", "bearish"}:
+            return current_context
+
+        derived_bias = None
+        if str(signal).startswith("COMPRA"):
+            derived_bias = "bullish"
+        elif str(signal).startswith("VENDA"):
+            derived_bias = "bearish"
+        else:
+            confirmation_bias = str((confirmation_evaluation or {}).get("hypothesis_side") or "")
+            if confirmation_bias in {"bullish", "bearish"}:
+                derived_bias = confirmation_bias
+
+        if not derived_bias:
+            return current_context or None
+
+        current_context["market_bias"] = derived_bias
+        current_context["bias"] = derived_bias
+        current_context.setdefault("is_tradeable", True)
+        return current_context
+
     def _apply_signal_guardrails(
         self,
         signal: str,
@@ -1896,6 +2223,7 @@ class TradingBot:
         structure_evaluation: Optional[Dict[str, object]] = None,
         confirmation_evaluation: Optional[Dict[str, object]] = None,
         entry_quality_evaluation: Optional[Dict[str, object]] = None,
+        scenario_evaluation: Optional[Dict[str, object]] = None,
         market_regime: Optional[str] = None,
         require_volume: bool = False,
         volume_ratio: Optional[float] = None,
@@ -1923,18 +2251,85 @@ class TradingBot:
             min_atr_pct=min_atr_pct,
         )
         if hard_block_evaluation.get("hard_block"):
+            self.make_trade_decision(
+                self._build_decision_context(signal, context_evaluation, confirmation_evaluation),
+                structure_evaluation,
+                confirmation_evaluation,
+                entry_quality_evaluation,
+                hard_block_evaluation,
+                scenario_evaluation,
+            )
             return "NEUTRO"
+        if signal not in {"COMPRA", "COMPRA_FRACA", "VENDA", "VENDA_FRACA"}:
+            self._last_trade_decision = {
+                "action": "wait",
+                "confidence": float((scenario_evaluation or {}).get("scenario_score", 0.0) or 0.0),
+                "market_bias": str(
+                    (context_evaluation or {}).get("market_bias")
+                    or (context_evaluation or {}).get("bias")
+                    or (confirmation_evaluation or {}).get("hypothesis_side")
+                    or "neutral"
+                ),
+                "setup_type": (structure_evaluation or {}).get("structure_state"),
+                "entry_reason": None,
+                "block_reason": "Hipotese base neutra.",
+                "invalid_if": None,
+            }
+            return signal
 
         guarded_signal = self._apply_structure_alignment(signal, structure_evaluation)
         if guarded_signal == "NEUTRO":
-            return guarded_signal
+            decision = self.make_trade_decision(
+                self._build_decision_context(signal, context_evaluation, confirmation_evaluation),
+                structure_evaluation,
+                confirmation_evaluation,
+                entry_quality_evaluation,
+                hard_block_evaluation,
+                scenario_evaluation,
+            )
+            return self._map_trade_decision_to_signal(decision, guarded_signal)
         guarded_signal = self._apply_confirmation_alignment(guarded_signal, confirmation_evaluation)
         if guarded_signal == "NEUTRO":
-            return guarded_signal
+            decision = self.make_trade_decision(
+                self._build_decision_context(signal, context_evaluation, confirmation_evaluation),
+                structure_evaluation,
+                confirmation_evaluation,
+                entry_quality_evaluation,
+                hard_block_evaluation,
+                scenario_evaluation,
+            )
+            return self._map_trade_decision_to_signal(decision, guarded_signal)
         guarded_signal = self._apply_entry_quality_alignment(guarded_signal, entry_quality_evaluation)
         if guarded_signal == "NEUTRO":
-            return guarded_signal
-        return self._apply_context_alignment(guarded_signal, context_evaluation)
+            decision = self.make_trade_decision(
+                self._build_decision_context(signal, context_evaluation, confirmation_evaluation),
+                structure_evaluation,
+                confirmation_evaluation,
+                entry_quality_evaluation,
+                hard_block_evaluation,
+                scenario_evaluation,
+            )
+            return self._map_trade_decision_to_signal(decision, guarded_signal)
+        guarded_signal = self._apply_context_alignment(guarded_signal, context_evaluation)
+        if guarded_signal == "NEUTRO":
+            decision = self.make_trade_decision(
+                self._build_decision_context(signal, context_evaluation, confirmation_evaluation),
+                structure_evaluation,
+                confirmation_evaluation,
+                entry_quality_evaluation,
+                hard_block_evaluation,
+                scenario_evaluation,
+            )
+            return self._map_trade_decision_to_signal(decision, guarded_signal)
+        decision = self.make_trade_decision(
+            self._build_decision_context(guarded_signal, context_evaluation, confirmation_evaluation),
+            structure_evaluation,
+            confirmation_evaluation,
+            entry_quality_evaluation,
+            hard_block_evaluation,
+            scenario_evaluation,
+        )
+        return self._map_trade_decision_to_signal(decision, guarded_signal)
 
     def calculate_indicators(self, df):
         """Calculate comprehensive technical indicators for the dataframe"""
@@ -2414,6 +2809,8 @@ class TradingBot:
         self._last_price_structure_evaluation = None
         self._last_confirmation_evaluation = None
         self._last_entry_quality_evaluation = None
+        self._last_scenario_evaluation = None
+        self._last_trade_decision = None
         self._clear_hard_block()
 
         if "is_closed" in df.columns:
@@ -2446,6 +2843,7 @@ class TradingBot:
         structure_evaluation = None
         confirmation_evaluation = None
         entry_quality_evaluation = None
+        scenario_evaluation = None
 
         if resolved_context_timeframe and resolved_context_timeframe != current_timeframe:
             if context_df is None:
@@ -2627,12 +3025,19 @@ class TradingBot:
                 stop_loss_pct=stop_loss_pct,
                 take_profit_pct=take_profit_pct,
             )
+            scenario_evaluation = self.build_scenario_score(
+                context_evaluation,
+                structure_evaluation,
+                confirmation_evaluation,
+                entry_quality_evaluation,
+            )
             return self._apply_signal_guardrails(
                 signal,
                 context_evaluation,
                 structure_evaluation,
                 confirmation_evaluation,
                 entry_quality_evaluation,
+                scenario_evaluation,
                 market_regime=market_regime,
                 require_volume=require_volume,
                 volume_ratio=last_row.get('volume_ratio', 1),
@@ -2738,6 +3143,12 @@ class TradingBot:
             stop_loss_pct=stop_loss_pct,
             take_profit_pct=take_profit_pct,
         )
+        scenario_evaluation = self.build_scenario_score(
+            context_evaluation,
+            structure_evaluation,
+            confirmation_evaluation,
+            entry_quality_evaluation,
+        )
 
         # Combine rule-based signal with advanced score for robust decision
         advanced_score = self.calculate_advanced_score(last_row, signal=signal)
@@ -2746,6 +3157,20 @@ class TradingBot:
 
         if advanced_score < 0.55 and signal in ['COMPRA', 'VENDA', 'COMPRA_FRACA', 'VENDA_FRACA']:
             logger.debug("📉 score baixo, converte para NEUTRO")
+            self._last_trade_decision = {
+                "action": "wait",
+                "confidence": round(float(max(0.0, min(10.0, advanced_score * 10))), 2),
+                "market_bias": str(
+                    (context_evaluation or {}).get("market_bias")
+                    or (context_evaluation or {}).get("bias")
+                    or (confirmation_evaluation or {}).get("hypothesis_side")
+                    or "neutral"
+                ),
+                "setup_type": (structure_evaluation or {}).get("structure_state"),
+                "entry_reason": None,
+                "block_reason": "Score avancado insuficiente para validar a entrada.",
+                "invalid_if": None,
+            }
             return "NEUTRO"
 
         if advanced_score >= 0.82:
@@ -2756,6 +3181,7 @@ class TradingBot:
                     structure_evaluation,
                     confirmation_evaluation,
                     entry_quality_evaluation,
+                    scenario_evaluation,
                     market_regime=market_regime,
                     require_volume=require_volume,
                     volume_ratio=last_row.get('volume_ratio', 1),
@@ -2773,6 +3199,7 @@ class TradingBot:
                     structure_evaluation,
                     confirmation_evaluation,
                     entry_quality_evaluation,
+                    scenario_evaluation,
                     market_regime=market_regime,
                     require_volume=require_volume,
                     volume_ratio=last_row.get('volume_ratio', 1),
@@ -2791,6 +3218,7 @@ class TradingBot:
                 structure_evaluation,
                 confirmation_evaluation,
                 entry_quality_evaluation,
+                scenario_evaluation,
                 market_regime=market_regime,
                 require_volume=require_volume,
                 volume_ratio=last_row.get('volume_ratio', 1),
@@ -2810,6 +3238,7 @@ class TradingBot:
                 structure_evaluation,
                 confirmation_evaluation,
                 entry_quality_evaluation,
+                scenario_evaluation,
                 market_regime=market_regime,
                 require_volume=require_volume,
                 volume_ratio=last_row.get('volume_ratio', 1),
@@ -2827,6 +3256,7 @@ class TradingBot:
                 structure_evaluation,
                 confirmation_evaluation,
                 entry_quality_evaluation,
+                scenario_evaluation,
                 market_regime=market_regime,
                 require_volume=require_volume,
                 volume_ratio=last_row.get('volume_ratio', 1),
@@ -2840,6 +3270,20 @@ class TradingBot:
 
         if signal in ['COMPRA_FRACA', 'VENDA_FRACA'] and advanced_score < 0.72:
             logger.debug("🔁 sinal fraco + score médio, NEUTRO")
+            self._last_trade_decision = {
+                "action": "wait",
+                "confidence": round(float(max(0.0, min(10.0, advanced_score * 10))), 2),
+                "market_bias": str(
+                    (context_evaluation or {}).get("market_bias")
+                    or (context_evaluation or {}).get("bias")
+                    or (confirmation_evaluation or {}).get("hypothesis_side")
+                    or "neutral"
+                ),
+                "setup_type": (structure_evaluation or {}).get("structure_state"),
+                "entry_reason": None,
+                "block_reason": "Sinal fraco sem score suficiente para operar.",
+                "invalid_if": None,
+            }
             return "NEUTRO"
 
         return self._apply_signal_guardrails(
@@ -2848,6 +3292,7 @@ class TradingBot:
             structure_evaluation,
             confirmation_evaluation,
             entry_quality_evaluation,
+            scenario_evaluation,
             market_regime=market_regime,
             require_volume=require_volume,
             volume_ratio=last_row.get('volume_ratio', 1),

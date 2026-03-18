@@ -172,6 +172,43 @@ class TelegramTradingBotLogicTests(unittest.TestCase):
         self.assertIn("stretched True", note)
         self.assertIn("risco retorno aceitavel", note)
 
+    def test_build_scenario_note_uses_standardized_score_fields(self):
+        note = TelegramTradingBot._build_scenario_note(
+            {
+                "scenario_score": 7.45,
+                "scenario_grade": "B",
+                "score_breakdown": {
+                    "context": 8.0,
+                    "structure": 7.2,
+                    "confirmation": 6.8,
+                    "entry": 6.0,
+                },
+                "notes": ["context forte", "confirmation consistente"],
+            }
+        )
+
+        self.assertIn("Cenario:", note)
+        self.assertIn("7.45/10", note)
+        self.assertIn("grade B", note)
+        self.assertIn("ctx 8.0", note)
+        self.assertIn("context forte", note)
+
+    def test_build_trade_decision_note_uses_standardized_decision_fields(self):
+        note = TelegramTradingBot._build_trade_decision_note(
+            {
+                "action": "buy",
+                "confidence": 7.6,
+                "entry_reason": "bullish pullback | confirmacao confirmed | entrada good | score 7.40",
+                "block_reason": None,
+            }
+        )
+
+        self.assertIn("Decisao:", note)
+        self.assertIn("buy", note)
+        self.assertIn("7.60/10", note)
+        self.assertIn("bullish pullback", note)
+        self.assertIn("nenhum", note)
+
 
 if __name__ == "__main__":
     unittest.main()

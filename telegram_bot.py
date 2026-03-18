@@ -303,6 +303,45 @@ class TelegramTradingBot:
         )
 
     @staticmethod
+    def _build_scenario_note(scenario_evaluation: Optional[dict], locale: str = "pt") -> str:
+        if not scenario_evaluation:
+            return "Scenario: unavailable" if locale == "en" else "Cenario: indisponivel"
+
+        breakdown = scenario_evaluation.get("score_breakdown", {}) or {}
+        notes_preview = ", ".join((scenario_evaluation.get("notes") or [])[:2]) or (
+            "no relevant notes" if locale == "en" else "sem notas relevantes"
+        )
+        return (
+            f"{'Scenario' if locale == 'en' else 'Cenario'}: "
+            f"score {scenario_evaluation.get('scenario_score', 0):.2f}/10 | "
+            f"grade {scenario_evaluation.get('scenario_grade', 'D')} | "
+            f"ctx {float(breakdown.get('context', 0) or 0):.1f} | "
+            f"struct {float(breakdown.get('structure', 0) or 0):.1f} | "
+            f"confirm {float(breakdown.get('confirmation', 0) or 0):.1f} | "
+            f"entry {float(breakdown.get('entry', 0) or 0):.1f} | "
+            f"{'notes' if locale == 'en' else 'notas'}: {notes_preview}"
+        )
+
+    @staticmethod
+    def _build_trade_decision_note(trade_decision: Optional[dict], locale: str = "pt") -> str:
+        if not trade_decision:
+            return "Decision: unavailable" if locale == "en" else "Decisao: indisponivel"
+
+        action = str(trade_decision.get("action") or "wait")
+        entry_reason = trade_decision.get("entry_reason") or (
+            "no valid entry" if locale == "en" else "sem entrada valida"
+        )
+        block_reason = trade_decision.get("block_reason") or (
+            "none" if locale == "en" else "nenhum"
+        )
+        return (
+            f"{'Decision' if locale == 'en' else 'Decisao'}: {action} | "
+            f"{'confidence' if locale == 'en' else 'confianca'} {float(trade_decision.get('confidence', 0) or 0):.2f}/10 | "
+            f"{'reason' if locale == 'en' else 'motivo'}: {entry_reason} | "
+            f"{'block' if locale == 'en' else 'bloqueio'}: {block_reason}"
+        )
+
+    @staticmethod
     def _build_strategy_runtime_note(strategy_settings: Optional[dict], locale: str = "pt") -> str:
         strategy_settings = strategy_settings or {}
         active_profile = strategy_settings.get("active_profile")
@@ -654,6 +693,8 @@ class TelegramTradingBot:
             structure_evaluation = None
             confirmation_evaluation = None
             entry_quality_evaluation = None
+            scenario_evaluation = None
+            trade_decision = None
             hard_block_evaluation = None
             if not strategy_settings.get("runtime_allowed", True):
                 signal = "NEUTRO"
@@ -674,6 +715,16 @@ class TelegramTradingBot:
                         "block_source": "runtime_governance",
                         "notes": [runtime_block_reason] if runtime_block_reason else [],
                     }
+                if self.trading_bot and hasattr(self.trading_bot, "make_trade_decision"):
+                    trade_decision = self.trading_bot.make_trade_decision(
+                        context_evaluation,
+                        structure_evaluation,
+                        confirmation_evaluation,
+                        entry_quality_evaluation,
+                        hard_block_evaluation,
+                        scenario_evaluation,
+                        risk_plan,
+                    )
                 emoji = TelegramBotConfig.get_signal_emoji(final_signal)
             else:
                 signal = self.trading_bot.check_signal(
@@ -690,6 +741,8 @@ class TelegramTradingBot:
                 structure_evaluation = getattr(self.trading_bot, "_last_price_structure_evaluation", None)
                 confirmation_evaluation = getattr(self.trading_bot, "_last_confirmation_evaluation", None)
                 entry_quality_evaluation = getattr(self.trading_bot, "_last_entry_quality_evaluation", None)
+                scenario_evaluation = getattr(self.trading_bot, "_last_scenario_evaluation", None)
+                trade_decision = getattr(self.trading_bot, "_last_trade_decision", None)
                 hard_block_evaluation = getattr(self.trading_bot, "_last_hard_block_evaluation", None)
                 emoji = TelegramBotConfig.get_signal_emoji(signal)
 
@@ -737,6 +790,16 @@ class TelegramTradingBot:
                             "block_source": "risk_guardrail",
                             "notes": [risk_plan.get("reason") or "risco operacional bloqueou a entrada"],
                         }
+                if self.trading_bot and hasattr(self.trading_bot, "make_trade_decision"):
+                    trade_decision = self.trading_bot.make_trade_decision(
+                        context_evaluation,
+                        structure_evaluation,
+                        confirmation_evaluation,
+                        entry_quality_evaluation,
+                        hard_block_evaluation,
+                        scenario_evaluation,
+                        risk_plan,
+                    )
                 emoji = TelegramBotConfig.get_signal_emoji(final_signal)
             edge_guardrail_note = ""
             if edge_summary and edge_summary.get("status") == "degraded" and final_signal == "NEUTRO":
@@ -788,6 +851,12 @@ class TelegramTradingBot:
             entry_quality_note = "Entry: unavailable" if locale == "en" else "Entrada: indisponivel"
             if entry_quality_evaluation:
                 entry_quality_note = self._build_entry_quality_note(entry_quality_evaluation, locale=locale)
+            scenario_note = "Scenario: unavailable" if locale == "en" else "Cenario: indisponivel"
+            if scenario_evaluation:
+                scenario_note = self._build_scenario_note(scenario_evaluation, locale=locale)
+            decision_note = "Decision: unavailable" if locale == "en" else "Decisao: indisponivel"
+            if trade_decision:
+                decision_note = self._build_trade_decision_note(trade_decision, locale=locale)
             hard_block_note = ""
             if hard_block_evaluation and hard_block_evaluation.get("hard_block"):
                 hard_block_note = (
@@ -826,6 +895,8 @@ class TelegramTradingBot:
                 f"{structure_note}\n"
                 f"{confirmation_note}\n"
                 f"{entry_quality_note}\n"
+                f"{scenario_note}\n"
+                f"{decision_note}\n"
                 f"{hard_block_note}"
                 f"{'Current Price' if locale == 'en' else 'Preco Atual'}: ${last_candle['close']:.6f}\n"
                 f"{'Change' if locale == 'en' else 'Variacao'}: {((last_candle['close'] - last_candle['open']) / last_candle['open'] * 100):+.2f}%\n\n"

@@ -114,6 +114,38 @@ class ContextAwareTradingBot(DeterministicTradingBot):
         return "NEUTRO"
 
 
+class DecisionAwareTradingBot(DeterministicTradingBot):
+    def check_signal(self, df, timeframe="5m", require_volume=False, require_trend=False, avoid_ranging=False):
+        result = super().check_signal(
+            df,
+            timeframe=timeframe,
+            require_volume=require_volume,
+            require_trend=require_trend,
+            avoid_ranging=avoid_ranging,
+        )
+        if result == "COMPRA":
+            self._last_trade_decision = {
+                "action": "buy",
+                "confidence": 7.4,
+                "market_bias": "bullish",
+                "setup_type": "pullback",
+                "entry_reason": "bullish pullback | confirmacao confirmed | entrada good | score 7.40",
+                "block_reason": None,
+                "invalid_if": "perder vies bullish ou invalidar a estrutura pullback",
+            }
+        else:
+            self._last_trade_decision = {
+                "action": "wait",
+                "confidence": 0.0,
+                "market_bias": "neutral",
+                "setup_type": None,
+                "entry_reason": None,
+                "block_reason": "Sem setup valido",
+                "invalid_if": None,
+            }
+        return result
+
+
 class FixedDataBacktestEngine(BacktestEngine):
     def __init__(self, data_frame, trading_bot):
         super().__init__(trading_bot=trading_bot)
@@ -297,6 +329,41 @@ class BacktestEngineTests(unittest.TestCase):
             self.assertEqual(trades[0]["exit_reason"], trades[0]["reason"])
             self.assertEqual(trades[0]["sample_type"], "backtest")
             self.assertGreaterEqual(float(trades[0]["signal_score"]), 0.0)
+        finally:
+            if os.path.exists(temp_db.name):
+                os.remove(temp_db.name)
+
+    def test_run_backtest_uses_trade_decision_entry_reason_when_available(self):
+        bot = DecisionAwareTradingBot()
+        temp_db = tempfile.NamedTemporaryFile(delete=False, suffix=".db")
+        temp_db.close()
+
+        try:
+            if os.path.exists(temp_db.name):
+                os.remove(temp_db.name)
+
+            database = TradingDatabase(db_path=temp_db.name)
+            engine = FixedDataBacktestEngine(self._build_market_data(), bot)
+            engine.database = database
+
+            results = engine.run_backtest(
+                symbol="BTC/USDT",
+                timeframe="5m",
+                start_date=datetime(2026, 1, 1, 0, 0),
+                end_date=datetime(2026, 1, 1, 21, 35),
+                initial_balance=1_000,
+                take_profit_pct=0.5,
+                fee_rate=0.0,
+                slippage=0.0,
+            )
+
+            trades = database.get_backtest_trades(results["saved_run_id"])
+
+            self.assertEqual(
+                trades[0]["entry_reason"],
+                "bullish pullback | confirmacao confirmed | entrada good | score 7.40",
+            )
+            self.assertAlmostEqual(float(trades[0]["signal_score"]), 7.4, places=2)
         finally:
             if os.path.exists(temp_db.name):
                 os.remove(temp_db.name)

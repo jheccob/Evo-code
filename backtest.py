@@ -988,12 +988,20 @@ class BacktestEngine:
             take_profit_price = entry_price * (1 + take_profit_pct if side == "long" else 1 - take_profit_pct)
 
         setup_name = setup_name or strategy_version or signal
-        signal_score = current_row.get("signal_confidence", 0.0)
+        trade_decision = getattr(self.trading_bot, "_last_trade_decision", None)
+        signal_score = (
+            trade_decision.get("confidence")
+            if isinstance(trade_decision, dict) and trade_decision.get("confidence") is not None
+            else current_row.get("signal_confidence", 0.0)
+        )
         if pd.isna(signal_score):
             signal_score = 0.0
         atr_value = current_row.get("atr", 0.0)
         if pd.isna(atr_value):
             atr_value = 0.0
+        entry_reason = signal
+        if isinstance(trade_decision, dict):
+            entry_reason = trade_decision.get("entry_reason") or entry_reason
 
         return Position(
             side=side,
@@ -1004,7 +1012,7 @@ class BacktestEngine:
             regime=current_row.get("market_regime"),
             signal_score=float(signal_score or 0.0),
             atr=float(atr_value or 0.0),
-            entry_reason=signal,
+            entry_reason=entry_reason,
             sample_type=sample_type,
             entry_timestamp=pd.Timestamp(next_row.name),
             entry_price=entry_price,
