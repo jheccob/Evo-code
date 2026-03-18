@@ -466,18 +466,27 @@ class TelegramTradingBot:
             active_profile = strategy_settings.get("active_profile")
 
             data = None
+            market_data_error = None
             for attempt in range(3):
                 try:
-                    data = self.trading_bot.get_market_data()
+                    data = self.trading_bot.get_market_data(
+                        symbol=symbol,
+                        timeframe=strategy_settings["timeframe"],
+                    )
                     if data is not None and not data.empty:
                         break
                 except Exception as e:
+                    market_data_error = e
                     self.logger.warning(f"Tentativa {attempt + 1} falhou: {e}")
                     if attempt < 2:
                         await asyncio.sleep(1)
 
             if data is None or data.empty:
-                await loading_msg.edit_text("Erro: Nao foi possivel obter dados do mercado")
+                error_suffix = f"\nDetalhe: {market_data_error}" if market_data_error else ""
+                await loading_msg.edit_text(
+                    "Erro: Nao foi possivel obter dados reais do mercado no momento."
+                    f"{error_suffix}"
+                )
                 return
 
             last_candle = data.iloc[-1]
@@ -485,11 +494,19 @@ class TelegramTradingBot:
             runtime_block_reason = strategy_settings.get("runtime_block_reason", "")
             context_evaluation = None
             structure_evaluation = None
+            confirmation_evaluation = None
+            entry_quality_evaluation = None
+            hard_block_evaluation = None
             if not strategy_settings.get("runtime_allowed", True):
                 signal = "NEUTRO"
                 final_signal = "NEUTRO"
                 edge_summary = None
                 risk_plan = {"allowed": False, "reason": runtime_block_reason}
+                hard_block_evaluation = {
+                    "hard_block": True,
+                    "block_reason": runtime_block_reason,
+                    "block_source": "runtime_governance",
+                }
                 emoji = TelegramBotConfig.get_signal_emoji(final_signal)
             else:
                 signal = self.trading_bot.check_signal(
@@ -499,9 +516,14 @@ class TelegramTradingBot:
                     require_trend=strategy_settings.get("require_trend", False),
                     avoid_ranging=strategy_settings.get("avoid_ranging", True),
                     context_timeframe=strategy_settings.get("context_timeframe"),
+                    stop_loss_pct=strategy_settings.get("stop_loss_pct"),
+                    take_profit_pct=strategy_settings.get("take_profit_pct"),
                 )
                 context_evaluation = getattr(self.trading_bot, "_last_context_evaluation", None)
                 structure_evaluation = getattr(self.trading_bot, "_last_price_structure_evaluation", None)
+                confirmation_evaluation = getattr(self.trading_bot, "_last_confirmation_evaluation", None)
+                entry_quality_evaluation = getattr(self.trading_bot, "_last_entry_quality_evaluation", None)
+                hard_block_evaluation = getattr(self.trading_bot, "_last_hard_block_evaluation", None)
                 emoji = TelegramBotConfig.get_signal_emoji(signal)
 
             ai_signal = "NEUTRO"
@@ -528,6 +550,18 @@ class TelegramTradingBot:
                     float(last_candle["close"]),
                     strategy_settings,
                 )
+                if edge_summary and final_signal == "NEUTRO":
+                    hard_block_evaluation = {
+                        "hard_block": True,
+                        "block_reason": edge_summary.get("status_message") or "Edge monitor bloqueou o setup.",
+                        "block_source": "edge_guardrail",
+                    }
+                elif risk_plan and not risk_plan.get("allowed"):
+                    hard_block_evaluation = {
+                        "hard_block": True,
+                        "block_reason": risk_plan.get("reason") or "Risco operacional bloqueou a entrada.",
+                        "block_source": "risk_guardrail",
+                    }
                 emoji = TelegramBotConfig.get_signal_emoji(final_signal)
             edge_guardrail_note = ""
             if edge_summary and edge_summary.get("status") == "degraded" and final_signal == "NEUTRO":
@@ -561,6 +595,28 @@ class TelegramTradingBot:
                     f"{structure_evaluation.get('price_location', 'mid_range')} | "
                     f"qualidade {structure_evaluation.get('structure_quality', 0):.2f}/10"
                 )
+            confirmation_note = "Confirmacao: indisponivel"
+            if confirmation_evaluation:
+                conflicts_preview = ", ".join(confirmation_evaluation.get("conflicts", [])[:2]) or "sem conflitos relevantes"
+                confirmation_note = (
+                    f"Confirmacao: {confirmation_evaluation.get('confirmation_state', 'weak')} | "
+                    f"score {confirmation_evaluation.get('confirmation_score', 0):.2f}/10 | "
+                    f"conflitos: {conflicts_preview}"
+                )
+            entry_quality_note = "Entrada: indisponivel"
+            if entry_quality_evaluation:
+                entry_quality_note = (
+                    f"Entrada: {entry_quality_evaluation.get('entry_quality', 'bad')} | "
+                    f"RR {entry_quality_evaluation.get('rr_estimate', 0):.2f} | "
+                    f"late {entry_quality_evaluation.get('late_entry', False)} | "
+                    f"stretched {entry_quality_evaluation.get('stretched_price', False)}"
+                )
+            hard_block_note = ""
+            if hard_block_evaluation and hard_block_evaluation.get("hard_block"):
+                hard_block_note = (
+                    f"Hard block: {hard_block_evaluation.get('block_reason')} "
+                    f"({hard_block_evaluation.get('block_source', 'signal_engine')})\n"
+                )
             entry_reason = final_signal
             if final_signal != "NEUTRO":
                 reason_parts = [final_signal]
@@ -571,6 +627,14 @@ class TelegramTradingBot:
                 if structure_evaluation:
                     reason_parts.append(
                         f"struct:{structure_evaluation.get('structure_state', '-')}/{structure_evaluation.get('price_location', '-')}"
+                    )
+                if confirmation_evaluation:
+                    reason_parts.append(
+                        f"confirm:{confirmation_evaluation.get('confirmation_state', '-')}/{confirmation_evaluation.get('confirmation_score', 0):.1f}"
+                    )
+                if entry_quality_evaluation:
+                    reason_parts.append(
+                        f"entry:{entry_quality_evaluation.get('entry_quality', '-')}/rr{entry_quality_evaluation.get('rr_estimate', 0):.2f}"
                     )
                 entry_reason = " | ".join(reason_parts)
 
@@ -583,6 +647,9 @@ class TelegramTradingBot:
                 f"Contexto: {strategy_settings.get('context_timeframe') or 'sem filtro superior'}\n"
                 f"{context_note}\n"
                 f"{structure_note}\n"
+                f"{confirmation_note}\n"
+                f"{entry_quality_note}\n"
+                f"{hard_block_note}"
                 f"Preco Atual: ${last_candle['close']:.6f}\n"
                 f"Variacao: {((last_candle['close'] - last_candle['open']) / last_candle['open'] * 100):+.2f}%\n\n"
                 f"Indicadores:\n"

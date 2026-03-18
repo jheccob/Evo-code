@@ -840,6 +840,8 @@ class BacktestEngine:
                 avoid_ranging=avoid_ranging,
                 context_df=context_df,
                 context_timeframe=effective_context_timeframe,
+                stop_loss_pct=stop_loss_pct,
+                take_profit_pct=take_profit_pct,
             )
 
             if open_position is not None and self._is_opposite_signal(open_position.side, signal):
@@ -916,12 +918,16 @@ class BacktestEngine:
         avoid_ranging: bool,
         context_df: Optional[pd.DataFrame],
         context_timeframe: Optional[str],
+        stop_loss_pct: float,
+        take_profit_pct: float,
     ) -> str:
         kwargs = {
             "timeframe": timeframe,
             "require_volume": require_volume,
             "require_trend": require_trend,
             "avoid_ranging": avoid_ranging,
+            "stop_loss_pct": stop_loss_pct,
+            "take_profit_pct": take_profit_pct,
         }
         if context_timeframe and context_df is not None:
             kwargs["context_df"] = context_df
@@ -932,9 +938,20 @@ class BacktestEngine:
         except TypeError as exc:
             if "unexpected keyword argument" not in str(exc):
                 raise
-            kwargs.pop("context_df", None)
-            kwargs.pop("context_timeframe", None)
-            return self.trading_bot.check_signal(current_slice, **kwargs)
+
+        kwargs_without_risk = kwargs.copy()
+        kwargs_without_risk.pop("stop_loss_pct", None)
+        kwargs_without_risk.pop("take_profit_pct", None)
+        try:
+            return self.trading_bot.check_signal(current_slice, **kwargs_without_risk)
+        except TypeError as exc:
+            if "unexpected keyword argument" not in str(exc):
+                raise
+
+        kwargs_without_context = kwargs_without_risk.copy()
+        kwargs_without_context.pop("context_df", None)
+        kwargs_without_context.pop("context_timeframe", None)
+        return self.trading_bot.check_signal(current_slice, **kwargs_without_context)
 
     def _open_position(
         self,

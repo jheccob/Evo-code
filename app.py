@@ -1083,6 +1083,8 @@ with tab2:
                                     avoid_ranging=symbol_strategy_settings.get("avoid_ranging", avoid_ranging),
                                     day_trading_mode=day_trading_mode,
                                     context_timeframe=symbol_strategy_settings.get("context_timeframe"),
+                                    stop_loss_pct=symbol_strategy_settings.get("stop_loss_pct"),
+                                    take_profit_pct=symbol_strategy_settings.get("take_profit_pct"),
                                 )
 
                                 # Cache the data com timestamp
@@ -1376,11 +1378,19 @@ if st.session_state.current_data is not None:
     guardrail_edge_summary = None
     context_evaluation = None
     structure_evaluation = None
+    confirmation_evaluation = None
+    entry_quality_evaluation = None
+    hard_block_evaluation = None
     if not live_strategy_settings.get("runtime_allowed", True):
         signal = "NEUTRO"
         risk_plan = {
             "allowed": False,
             "reason": live_strategy_settings.get("runtime_block_reason", "Runtime bloqueado"),
+        }
+        hard_block_evaluation = {
+            "hard_block": True,
+            "block_reason": live_strategy_settings.get("runtime_block_reason", "Runtime bloqueado"),
+            "block_source": "runtime_governance",
         }
     else:
         # Calculate signal
@@ -1393,6 +1403,8 @@ if st.session_state.current_data is not None:
             avoid_ranging=live_strategy_settings.get("avoid_ranging", avoid_ranging),
             day_trading_mode=day_trading_mode,
             context_timeframe=live_strategy_settings.get("context_timeframe"),
+            stop_loss_pct=live_strategy_settings.get("stop_loss_pct"),
+            take_profit_pct=live_strategy_settings.get("take_profit_pct"),
         )
         signal, guardrail_edge_summary = apply_edge_guardrail(
             signal,
@@ -1403,6 +1415,21 @@ if st.session_state.current_data is not None:
         signal, risk_plan = apply_risk_guardrail(signal, float(last_candle['close']), live_strategy_settings)
         context_evaluation = getattr(st.session_state.trading_bot, "_last_context_evaluation", None)
         structure_evaluation = getattr(st.session_state.trading_bot, "_last_price_structure_evaluation", None)
+        confirmation_evaluation = getattr(st.session_state.trading_bot, "_last_confirmation_evaluation", None)
+        entry_quality_evaluation = getattr(st.session_state.trading_bot, "_last_entry_quality_evaluation", None)
+        hard_block_evaluation = getattr(st.session_state.trading_bot, "_last_hard_block_evaluation", None)
+        if guardrail_edge_summary and signal == "NEUTRO":
+            hard_block_evaluation = {
+                "hard_block": True,
+                "block_reason": guardrail_edge_summary.get("status_message") or "Edge monitor bloqueou o setup.",
+                "block_source": "edge_guardrail",
+            }
+        elif risk_plan and not risk_plan.get("allowed"):
+            hard_block_evaluation = {
+                "hard_block": True,
+                "block_reason": risk_plan.get("reason") or "Risco operacional bloqueou a entrada.",
+                "block_source": "risk_guardrail",
+            }
     risk_guardrail_blocked = bool(risk_plan and not risk_plan.get("allowed"))
     entry_reason = signal
     if signal != "NEUTRO":
@@ -1414,6 +1441,14 @@ if st.session_state.current_data is not None:
         if structure_evaluation:
             reason_parts.append(
                 f"struct:{structure_evaluation.get('structure_state', '-')}/{structure_evaluation.get('price_location', '-')}"
+            )
+        if confirmation_evaluation:
+            reason_parts.append(
+                f"confirm:{confirmation_evaluation.get('confirmation_state', '-')}/{confirmation_evaluation.get('confirmation_score', 0):.1f}"
+            )
+        if entry_quality_evaluation:
+            reason_parts.append(
+                f"entry:{entry_quality_evaluation.get('entry_quality', '-')}/rr{entry_quality_evaluation.get('rr_estimate', 0):.2f}"
             )
         entry_reason = " | ".join(reason_parts)
 
@@ -1432,6 +1467,9 @@ if st.session_state.current_data is not None:
         'risk_plan': risk_plan,
         'context_evaluation': context_evaluation,
         'structure_evaluation': structure_evaluation,
+        'confirmation_evaluation': confirmation_evaluation,
+        'entry_quality_evaluation': entry_quality_evaluation,
+        'hard_block_evaluation': hard_block_evaluation,
     }
 
     # Add signal to history if it's a new signal
@@ -1829,6 +1867,25 @@ if st.session_state.current_data is not None:
                 f"Estrutura: {structure_evaluation.get('structure_state', 'weak_structure')} | "
                 f"{structure_evaluation.get('price_location', 'mid_range')} | "
                 f"Qualidade {structure_evaluation.get('structure_quality', 0):.2f}/10"
+            )
+        if confirmation_evaluation:
+            conflicts_preview = ", ".join(confirmation_evaluation.get("conflicts", [])[:2]) or "sem conflitos relevantes"
+            st.caption(
+                f"Confirmacao: {confirmation_evaluation.get('confirmation_state', 'weak')} | "
+                f"Score {confirmation_evaluation.get('confirmation_score', 0):.2f}/10 | "
+                f"Conflitos: {conflicts_preview}"
+            )
+        if entry_quality_evaluation:
+            st.caption(
+                f"Entrada: {entry_quality_evaluation.get('entry_quality', 'bad')} | "
+                f"RR {entry_quality_evaluation.get('rr_estimate', 0):.2f} | "
+                f"Late {entry_quality_evaluation.get('late_entry', False)} | "
+                f"Stretched {entry_quality_evaluation.get('stretched_price', False)}"
+            )
+        if hard_block_evaluation and hard_block_evaluation.get("hard_block"):
+            st.error(
+                f"Hard block: {hard_block_evaluation.get('block_reason')} "
+                f"({hard_block_evaluation.get('block_source', 'signal_engine')})"
             )
 
     with analysis_col2:
