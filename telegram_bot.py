@@ -325,7 +325,7 @@ class TelegramTradingBot:
     @staticmethod
     def _build_trade_decision_note(trade_decision: Optional[dict], locale: str = "pt") -> str:
         if not trade_decision:
-            return "Decision: unavailable" if locale == "en" else "Decisao: indisponivel"
+            return "Analytical decision: unavailable" if locale == "en" else "Decisao analitica: indisponivel"
 
         action = str(trade_decision.get("action") or "wait")
         entry_reason = trade_decision.get("entry_reason") or (
@@ -335,10 +335,27 @@ class TelegramTradingBot:
             "none" if locale == "en" else "nenhum"
         )
         return (
-            f"{'Decision' if locale == 'en' else 'Decisao'}: {action} | "
+            f"{'Analytical decision' if locale == 'en' else 'Decisao analitica'}: {action} | "
             f"{'confidence' if locale == 'en' else 'confianca'} {float(trade_decision.get('confidence', 0) or 0):.2f}/10 | "
             f"{'reason' if locale == 'en' else 'motivo'}: {entry_reason} | "
             f"{'block' if locale == 'en' else 'bloqueio'}: {block_reason}"
+        )
+
+    @staticmethod
+    def _build_operational_status_note(
+        final_signal: str,
+        runtime_allowed: bool,
+        block_reason: Optional[str] = None,
+        block_source: Optional[str] = None,
+        locale: str = "pt",
+    ) -> str:
+        status_label = "allowed" if runtime_allowed and not block_reason else "blocked"
+        reason_text = block_reason or ("none" if locale == "en" else "nenhum")
+        source_text = f" ({block_source})" if block_source else ""
+        return (
+            f"{'Operational status' if locale == 'en' else 'Status operacional'}: {status_label} | "
+            f"{'final action' if locale == 'en' else 'acao final'} {TelegramTradingBot._display_signal(final_signal, locale)} | "
+            f"{'reason' if locale == 'en' else 'motivo'}: {reason_text}{source_text}"
         )
 
     @staticmethod
@@ -696,55 +713,24 @@ class TelegramTradingBot:
             scenario_evaluation = None
             trade_decision = None
             hard_block_evaluation = None
-            if not strategy_settings.get("runtime_allowed", True):
-                signal = "NEUTRO"
-                final_signal = "NEUTRO"
-                edge_summary = None
-                risk_plan = {"allowed": False, "reason": runtime_block_reason}
-                if self.trading_bot and hasattr(self.trading_bot, "check_hard_blocks"):
-                    hard_block_evaluation = self.trading_bot.check_hard_blocks(
-                        signal=signal,
-                        runtime_allowed=False,
-                        runtime_block_reason=runtime_block_reason,
-                        active_profile=active_profile,
-                    )
-                else:
-                    hard_block_evaluation = {
-                        "hard_block": True,
-                        "block_reason": runtime_block_reason,
-                        "block_source": "runtime_governance",
-                        "notes": [runtime_block_reason] if runtime_block_reason else [],
-                    }
-                if self.trading_bot and hasattr(self.trading_bot, "make_trade_decision"):
-                    trade_decision = self.trading_bot.make_trade_decision(
-                        context_evaluation,
-                        structure_evaluation,
-                        confirmation_evaluation,
-                        entry_quality_evaluation,
-                        hard_block_evaluation,
-                        scenario_evaluation,
-                        risk_plan,
-                    )
-                emoji = TelegramBotConfig.get_signal_emoji(final_signal)
-            else:
-                signal = self.trading_bot.check_signal(
-                    data,
-                    timeframe=timeframe,
-                    require_volume=strategy_settings.get("require_volume", True),
-                    require_trend=strategy_settings.get("require_trend", False),
-                    avoid_ranging=strategy_settings.get("avoid_ranging", True),
-                    context_timeframe=strategy_settings.get("context_timeframe"),
-                    stop_loss_pct=strategy_settings.get("stop_loss_pct"),
-                    take_profit_pct=strategy_settings.get("take_profit_pct"),
-                )
-                context_evaluation = getattr(self.trading_bot, "_last_context_evaluation", None)
-                structure_evaluation = getattr(self.trading_bot, "_last_price_structure_evaluation", None)
-                confirmation_evaluation = getattr(self.trading_bot, "_last_confirmation_evaluation", None)
-                entry_quality_evaluation = getattr(self.trading_bot, "_last_entry_quality_evaluation", None)
-                scenario_evaluation = getattr(self.trading_bot, "_last_scenario_evaluation", None)
-                trade_decision = getattr(self.trading_bot, "_last_trade_decision", None)
-                hard_block_evaluation = getattr(self.trading_bot, "_last_hard_block_evaluation", None)
-                emoji = TelegramBotConfig.get_signal_emoji(signal)
+            signal = self.trading_bot.check_signal(
+                data,
+                timeframe=timeframe,
+                require_volume=strategy_settings.get("require_volume", True),
+                require_trend=strategy_settings.get("require_trend", False),
+                avoid_ranging=strategy_settings.get("avoid_ranging", True),
+                context_timeframe=strategy_settings.get("context_timeframe"),
+                stop_loss_pct=strategy_settings.get("stop_loss_pct"),
+                take_profit_pct=strategy_settings.get("take_profit_pct"),
+            )
+            context_evaluation = getattr(self.trading_bot, "_last_context_evaluation", None)
+            structure_evaluation = getattr(self.trading_bot, "_last_price_structure_evaluation", None)
+            confirmation_evaluation = getattr(self.trading_bot, "_last_confirmation_evaluation", None)
+            entry_quality_evaluation = getattr(self.trading_bot, "_last_entry_quality_evaluation", None)
+            scenario_evaluation = getattr(self.trading_bot, "_last_scenario_evaluation", None)
+            trade_decision = getattr(self.trading_bot, "_last_trade_decision", None)
+            hard_block_evaluation = getattr(self.trading_bot, "_last_hard_block_evaluation", None)
+            emoji = TelegramBotConfig.get_signal_emoji(signal)
 
             ai_signal = "NEUTRO"
             ai_confidence = 0.0
@@ -757,7 +743,13 @@ class TelegramTradingBot:
                 self.logger.warning(f"Falha na IA: {e}")
 
             runtime_strategy_version = strategy_settings["strategy_version"]
-            if strategy_settings.get("runtime_allowed", True):
+            final_signal = signal
+            edge_summary = None
+            risk_plan = None
+            operational_runtime_allowed = bool(strategy_settings.get("runtime_allowed", True))
+            operational_block_reason = None
+            operational_block_source = None
+            if operational_runtime_allowed:
                 final_signal = self._merge_rule_and_ai_signal(signal, ai_signal)
                 final_signal, edge_summary = self._apply_edge_guardrail(
                     final_signal,
@@ -771,35 +763,19 @@ class TelegramTradingBot:
                     strategy_settings,
                 )
                 if edge_summary and final_signal == "NEUTRO":
-                    hard_block_evaluation = {
-                        "hard_block": True,
-                        "block_reason": edge_summary.get("status_message") or "Edge monitor bloqueou o setup.",
-                        "block_source": "edge_guardrail",
-                        "notes": [edge_summary.get("status_message") or "edge monitor bloqueou o setup"],
-                    }
+                    operational_block_reason = edge_summary.get("status_message") or "Edge monitor bloqueou o setup."
+                    operational_block_source = "edge_guardrail"
+                    operational_runtime_allowed = False
                 elif risk_plan and not risk_plan.get("allowed"):
-                    if self.trading_bot and hasattr(self.trading_bot, "check_hard_blocks"):
-                        hard_block_evaluation = self.trading_bot.check_hard_blocks(
-                            signal=final_signal,
-                            risk_plan=risk_plan,
-                        )
-                    else:
-                        hard_block_evaluation = {
-                            "hard_block": True,
-                            "block_reason": risk_plan.get("reason") or "Risco operacional bloqueou a entrada.",
-                            "block_source": "risk_guardrail",
-                            "notes": [risk_plan.get("reason") or "risco operacional bloqueou a entrada"],
-                        }
-                if self.trading_bot and hasattr(self.trading_bot, "make_trade_decision"):
-                    trade_decision = self.trading_bot.make_trade_decision(
-                        context_evaluation,
-                        structure_evaluation,
-                        confirmation_evaluation,
-                        entry_quality_evaluation,
-                        hard_block_evaluation,
-                        scenario_evaluation,
-                        risk_plan,
-                    )
+                    operational_block_reason = risk_plan.get("reason") or "Risco operacional bloqueou a entrada."
+                    operational_block_source = "risk_guardrail"
+                    operational_runtime_allowed = False
+                emoji = TelegramBotConfig.get_signal_emoji(final_signal)
+            else:
+                final_signal = "NEUTRO"
+                risk_plan = {"allowed": False, "reason": runtime_block_reason}
+                operational_block_reason = runtime_block_reason
+                operational_block_source = "runtime_governance"
                 emoji = TelegramBotConfig.get_signal_emoji(final_signal)
             edge_guardrail_note = ""
             if edge_summary and edge_summary.get("status") == "degraded" and final_signal == "NEUTRO":
@@ -825,12 +801,10 @@ class TelegramTradingBot:
                         f"(${risk_plan.get('risk_amount', 0):.2f}) | "
                         f"Posicao ${risk_plan.get('position_notional', 0):.2f}"
                     )
-                else:
+                elif operational_block_source == "risk_guardrail":
                     risk_guardrail_note = f"\nRisk guardrail: {risk_plan.get('reason')}"
             ai_mode_note = "comparative" if locale == "en" and not ProductionConfig.ENABLE_AI_SIGNAL_INFLUENCE else "comparativo" if not ProductionConfig.ENABLE_AI_SIGNAL_INFLUENCE else "influence" if locale == "en" else "influencia"
             context_note = "Higher timeframe: no filter" if locale == "en" else "Contexto superior: sem filtro"
-            if not strategy_settings.get("runtime_allowed", True):
-                context_note = "Higher timeframe: unavailable (runtime blocked)" if locale == "en" else "Contexto superior: indisponivel (runtime bloqueado)"
             if context_evaluation:
                 context_note = (
                     f"Higher timeframe: {context_evaluation.get('market_bias', 'neutral')} | "
@@ -854,13 +828,20 @@ class TelegramTradingBot:
             scenario_note = "Scenario: unavailable" if locale == "en" else "Cenario: indisponivel"
             if scenario_evaluation:
                 scenario_note = self._build_scenario_note(scenario_evaluation, locale=locale)
-            decision_note = "Decision: unavailable" if locale == "en" else "Decisao: indisponivel"
+            decision_note = "Analytical decision: unavailable" if locale == "en" else "Decisao analitica: indisponivel"
             if trade_decision:
                 decision_note = self._build_trade_decision_note(trade_decision, locale=locale)
+            operational_note = self._build_operational_status_note(
+                final_signal=final_signal,
+                runtime_allowed=operational_runtime_allowed,
+                block_reason=operational_block_reason,
+                block_source=operational_block_source,
+                locale=locale,
+            )
             hard_block_note = ""
             if hard_block_evaluation and hard_block_evaluation.get("hard_block"):
                 hard_block_note = (
-                    f"{'Hard block' if locale == 'en' else 'Hard block'}: {hard_block_evaluation.get('block_reason')} "
+                    f"{'Analytical hard block' if locale == 'en' else 'Hard block analitico'}: {hard_block_evaluation.get('block_reason')} "
                     f"({hard_block_evaluation.get('block_source', 'signal_engine')})\n"
                 )
             entry_reason = final_signal
@@ -888,7 +869,7 @@ class TelegramTradingBot:
                 f"{'Technical Analysis' if locale == 'en' else 'Analise Tecnica'} - {symbol}\n\n"
                 f"{emoji} {'Signal (rules)' if locale == 'en' else 'Sinal (regras)'}: {self._display_signal(signal, locale)}\n"
                 f"{'Signal (AI - ' if locale == 'en' else 'Sinal (IA - '}{ai_mode_note}): {self._display_signal(ai_signal, locale)} (conf: {ai_confidence:.2f})\n"
-                f"{'Signal (final)' if locale == 'en' else 'Sinal (final)'}: {self._display_signal(final_signal, locale)}\n\n"
+                f"{'Signal (operational)' if locale == 'en' else 'Sinal (operacional)'}: {self._display_signal(final_signal, locale)}\n\n"
                 f"{self._build_strategy_runtime_note(strategy_settings, locale=locale)}\n"
                 f"{'Context' if locale == 'en' else 'Contexto'}: {strategy_settings.get('context_timeframe') or ('no higher filter' if locale == 'en' else 'sem filtro superior')}\n"
                 f"{context_note}\n"
@@ -897,6 +878,7 @@ class TelegramTradingBot:
                 f"{entry_quality_note}\n"
                 f"{scenario_note}\n"
                 f"{decision_note}\n"
+                f"{operational_note}\n"
                 f"{hard_block_note}"
                 f"{'Current Price' if locale == 'en' else 'Preco Atual'}: ${last_candle['close']:.6f}\n"
                 f"{'Change' if locale == 'en' else 'Variacao'}: {((last_candle['close'] - last_candle['open']) / last_candle['open'] * 100):+.2f}%\n\n"

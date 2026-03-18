@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 import unittest
 from unittest import mock
+
+import pandas as pd
 
 from config import ProductionConfig
 from telegram_bot import TelegramTradingBot
@@ -203,11 +206,167 @@ class TelegramTradingBotLogicTests(unittest.TestCase):
             }
         )
 
-        self.assertIn("Decisao:", note)
+        self.assertIn("Decisao analitica:", note)
         self.assertIn("buy", note)
         self.assertIn("7.60/10", note)
         self.assertIn("bullish pullback", note)
         self.assertIn("nenhum", note)
+
+    def test_build_operational_status_note_marks_blocked_runtime(self):
+        note = TelegramTradingBot._build_operational_status_note(
+            final_signal="NEUTRO",
+            runtime_allowed=False,
+            block_reason="Nenhum setup ativo promovido para este mercado/timeframe.",
+            block_source="runtime_governance",
+            locale="en",
+        )
+
+        self.assertIn("Operational status:", note)
+        self.assertIn("blocked", note.lower())
+        self.assertIn("WAIT", note)
+        self.assertIn("runtime_governance", note)
+
+    def test_analyze_command_keeps_analytical_blocks_visible_when_runtime_is_blocked(self):
+        bot = TelegramTradingBot.__new__(TelegramTradingBot)
+        bot.logger = mock.Mock()
+        bot.ai_model = mock.Mock()
+        bot.ai_model.predict.return_value = {"signal": "NEUTRO", "confidence": 0.0}
+        bot.user_manager = mock.Mock()
+        bot.paper_trade_service = mock.Mock()
+        bot.paper_trade_service.evaluate_open_trades = mock.Mock()
+        bot.paper_trade_service.register_signal = mock.Mock()
+        bot.risk_management_service = mock.Mock()
+
+        loading_msg = mock.Mock()
+        loading_msg.edit_text = mock.AsyncMock()
+        bot._safe_reply = mock.AsyncMock(return_value=loading_msg)
+
+        market_data = pd.DataFrame(
+            [
+                {
+                    "open": 70000.0,
+                    "high": 71500.0,
+                    "low": 69850.0,
+                    "close": 71365.06,
+                    "volume": 1250.0,
+                    "rsi": 56.2,
+                    "macd": 120.55,
+                    "macd_signal": 101.12,
+                    "market_regime": "trending",
+                    "signal_confidence": 7.4,
+                    "atr": 850.0,
+                }
+            ]
+        )
+
+        trading_bot = mock.Mock()
+        trading_bot.timeframe = "1h"
+        trading_bot.get_market_data.return_value = market_data
+
+        def _populate_analysis(_data, **_kwargs):
+            trading_bot._last_context_evaluation = {
+                "market_bias": "bullish",
+                "regime": "trend_low_vol",
+                "context_strength": 7.8,
+                "is_tradeable": True,
+            }
+            trading_bot._last_price_structure_evaluation = {
+                "structure_state": "pullback",
+                "price_location": "trend_zone",
+                "structure_quality": 7.1,
+                "breakout": False,
+                "reversal_risk": False,
+                "distance_from_ema_pct": 0.82,
+                "notes": ["pullback controlado", "preco respeitando a EMA 21"],
+                "is_tradeable": True,
+            }
+            trading_bot._last_confirmation_evaluation = {
+                "confirmation_state": "confirmed",
+                "confirmation_score": 7.3,
+                "conflicts": [],
+                "notes": ["RSI favoravel", "MACD acima do sinal"],
+            }
+            trading_bot._last_entry_quality_evaluation = {
+                "entry_quality": "good",
+                "rr_estimate": 2.15,
+                "late_entry": False,
+                "stretched_price": False,
+                "notes": ["entrada proxima da EMA 21", "RR minimo atendido"],
+            }
+            trading_bot._last_scenario_evaluation = {
+                "scenario_score": 7.45,
+                "scenario_grade": "B",
+                "score_breakdown": {
+                    "context": 7.8,
+                    "structure": 7.1,
+                    "confirmation": 7.3,
+                    "entry": 7.0,
+                },
+                "notes": ["cenario favoravel"],
+            }
+            trading_bot._last_trade_decision = {
+                "action": "buy",
+                "confidence": 7.45,
+                "market_bias": "bullish",
+                "setup_type": "pullback",
+                "entry_reason": "bullish pullback | confirmacao confirmed | entrada good | score 7.45",
+                "block_reason": None,
+                "invalid_if": "perder a EMA 21",
+            }
+            trading_bot._last_hard_block_evaluation = {
+                "hard_block": False,
+                "block_reason": None,
+                "block_source": "signal_engine",
+                "notes": [],
+            }
+            return "COMPRA"
+
+        trading_bot.check_signal.side_effect = _populate_analysis
+        bot.trading_bot = trading_bot
+        bot._resolve_runtime_strategy_settings = mock.Mock(
+            return_value={
+                "symbol": "BTC/USDT",
+                "timeframe": "1h",
+                "context_timeframe": "4h",
+                "strategy_version": "BTCUSDT-1h-rsi14-30-70-sl2.00-tp4.00-v1-t0-r1-ctx4h",
+                "runtime_allowed": False,
+                "runtime_block_reason": "Nenhum setup ativo promovido para este mercado/timeframe. Runtime bloqueado ate existir perfil ativo.",
+                "active_profile": None,
+                "require_volume": True,
+                "require_trend": False,
+                "avoid_ranging": True,
+                "stop_loss_pct": 2.0,
+                "take_profit_pct": 4.0,
+            }
+        )
+
+        update = mock.Mock()
+        update.effective_user = mock.Mock(id=123, username="tester", language_code="pt-BR")
+        update.message = mock.Mock()
+        context = mock.Mock(args=["btc/usdt"])
+
+        with mock.patch("telegram_bot.runtime_db.save_trading_signal"), \
+             mock.patch.object(TelegramTradingBot, "_apply_edge_guardrail", return_value=("COMPRA", None)), \
+             mock.patch.object(TelegramTradingBot, "_apply_risk_guardrail", return_value=("COMPRA", {"allowed": True})):
+            asyncio.run(bot.analyze_command(update, context))
+
+        loading_msg.edit_text.assert_awaited_once()
+        message = loading_msg.edit_text.await_args.args[0]
+        self.assertIn("Sinal (regras): COMPRA", message)
+        self.assertIn("Sinal (operacional): NEUTRO", message)
+        self.assertIn("Contexto superior: bullish | trend_low_vol | forca 7.80/10", message)
+        self.assertIn("Estrutura: pullback", message)
+        self.assertIn("Confirmacao: confirmed", message)
+        self.assertIn("Entrada: good", message)
+        self.assertIn("Cenario: score 7.45/10", message)
+        self.assertIn("Decisao analitica: buy", message)
+        self.assertIn("Status operacional: blocked", message)
+        self.assertIn("runtime_governance", message)
+        self.assertNotIn("Estrutura: indisponivel", message)
+        self.assertNotIn("Confirmacao: indisponivel", message)
+        self.assertNotIn("Entrada: indisponivel", message)
+        self.assertNotIn("Cenario: indisponivel", message)
+        self.assertNotIn("Risk guardrail:", message)
 
 
 if __name__ == "__main__":
