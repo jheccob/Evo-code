@@ -364,6 +364,279 @@ class TradingBotLogicTests(unittest.TestCase):
 
         self.assertEqual(signal, "COMPRA")
 
+    def test_context_evaluation_returns_bullish_trend_low_vol_block(self):
+        bot = TradingBot.__new__(TradingBot)
+
+        context_df = pd.DataFrame(
+            [
+                {
+                    "open": 100.0 + i * 0.6,
+                    "high": 100.9 + i * 0.6,
+                    "low": 99.7 + i * 0.6,
+                    "close": 100.5 + i * 0.6,
+                    "rsi": 54.0 + i * 0.4,
+                    "macd": 0.35 + i * 0.05,
+                    "macd_signal": 0.15 + i * 0.03,
+                    "macd_histogram": 0.20 + i * 0.02,
+                    "adx": 29.0 + i * 0.7,
+                    "di_plus": 27.0 + i * 0.5,
+                    "di_minus": 14.0 - i * 0.2,
+                    "atr": 1.2 + i * 0.01,
+                    "sma_21": 99.8 + i * 0.45,
+                    "sma_50": 98.8 + i * 0.35,
+                    "sma_200": 96.5 + i * 0.12,
+                    "market_regime": "trending",
+                    "is_closed": True,
+                }
+                for i in range(8)
+            ],
+            index=pd.date_range("2026-01-01 00:00:00", periods=8, freq="4h"),
+        )
+
+        evaluation = TradingBot.get_context_evaluation(bot, context_df, context_timeframe="4h")
+
+        self.assertEqual(evaluation["market_bias"], "bullish")
+        self.assertEqual(evaluation["bias"], "bullish")
+        self.assertEqual(evaluation["regime"], "trend_low_vol")
+        self.assertGreaterEqual(evaluation["context_strength"], 6.0)
+        self.assertTrue(evaluation["is_tradeable"])
+
+    def test_context_evaluation_returns_neutral_range_high_vol_block(self):
+        bot = TradingBot.__new__(TradingBot)
+
+        context_df = pd.DataFrame(
+            [
+                {
+                    "open": 100.0,
+                    "high": 106.0 if i % 2 == 0 else 104.5,
+                    "low": 94.0 if i % 2 == 0 else 95.5,
+                    "close": 100.4 if i % 2 == 0 else 99.6,
+                    "rsi": 50.0 + (0.3 if i % 2 == 0 else -0.3),
+                    "macd": 0.05 if i % 2 == 0 else -0.05,
+                    "macd_signal": 0.04 if i % 2 == 0 else -0.04,
+                    "macd_histogram": 0.01 if i % 2 == 0 else -0.01,
+                    "adx": 17.5,
+                    "di_plus": 19.0,
+                    "di_minus": 18.0,
+                    "atr": 3.0,
+                    "sma_21": 100.0,
+                    "sma_50": 100.0,
+                    "sma_200": 100.0,
+                    "market_regime": "volatile",
+                    "is_closed": True,
+                }
+                for i in range(8)
+            ],
+            index=pd.date_range("2026-01-01 00:00:00", periods=8, freq="4h"),
+        )
+
+        evaluation = TradingBot.get_context_evaluation(bot, context_df, context_timeframe="4h")
+
+        self.assertEqual(evaluation["market_bias"], "neutral")
+        self.assertEqual(evaluation["regime"], "range_high_vol")
+        self.assertLess(evaluation["context_strength"], 5.0)
+        self.assertFalse(evaluation["is_tradeable"])
+
+    def test_price_structure_evaluation_returns_breakout_in_trend_zone(self):
+        bot = TradingBot.__new__(TradingBot)
+        bot.timeframe = "1h"
+
+        structure_df = pd.DataFrame(
+            [
+                {
+                    "open": 100.0 + i * 0.35,
+                    "high": 100.8 + i * 0.35,
+                    "low": 99.7 + i * 0.35,
+                    "close": 100.4 + i * 0.35,
+                    "atr": 1.0,
+                    "sma_21": 99.5 + i * 0.3,
+                    "sma_50": 98.8 + i * 0.24,
+                    "volume_ratio": 1.2,
+                    "market_regime": "trending",
+                    "is_closed": True,
+                }
+                for i in range(7)
+            ]
+            + [
+                {
+                    "open": 102.6,
+                    "high": 105.2,
+                    "low": 102.4,
+                    "close": 105.0,
+                    "atr": 1.1,
+                    "sma_21": 101.9,
+                    "sma_50": 100.8,
+                    "volume_ratio": 2.1,
+                    "market_regime": "trending",
+                    "is_closed": True,
+                }
+            ],
+            index=pd.date_range("2026-01-01 00:00:00", periods=8, freq="1h"),
+        )
+
+        evaluation = TradingBot.get_price_structure_evaluation(bot, structure_df, timeframe="1h")
+
+        self.assertEqual(evaluation["structure_state"], "breakout")
+        self.assertEqual(evaluation["price_location"], "resistance")
+        self.assertGreaterEqual(evaluation["structure_quality"], 6.5)
+        self.assertTrue(evaluation["is_tradeable"])
+
+    def test_price_structure_evaluation_returns_pullback_in_trend_zone(self):
+        bot = TradingBot.__new__(TradingBot)
+        bot.timeframe = "1h"
+
+        structure_df = pd.DataFrame(
+            [
+                {
+                    "open": 100.0 + i * 0.5,
+                    "high": 100.8 + i * 0.5,
+                    "low": 99.6 + i * 0.5,
+                    "close": 100.6 + i * 0.5,
+                    "atr": 1.1,
+                    "sma_21": 99.7 + i * 0.42,
+                    "sma_50": 98.9 + i * 0.32,
+                    "volume_ratio": 1.1,
+                    "market_regime": "trending",
+                    "is_closed": True,
+                }
+                for i in range(7)
+            ]
+            + [
+                {
+                    "open": 103.8,
+                    "high": 104.1,
+                    "low": 103.0,
+                    "close": 103.9,
+                    "atr": 1.0,
+                    "sma_21": 103.2,
+                    "sma_50": 101.9,
+                    "volume_ratio": 1.3,
+                    "market_regime": "trending",
+                    "is_closed": True,
+                }
+            ],
+            index=pd.date_range("2026-01-01 00:00:00", periods=8, freq="1h"),
+        )
+
+        evaluation = TradingBot.get_price_structure_evaluation(bot, structure_df, timeframe="1h")
+
+        self.assertEqual(evaluation["structure_state"], "pullback")
+        self.assertEqual(evaluation["price_location"], "trend_zone")
+        self.assertGreaterEqual(evaluation["structure_quality"], 5.5)
+        self.assertTrue(evaluation["is_tradeable"])
+
+    def test_check_signal_blocks_actionable_signal_when_structure_is_weak(self):
+        bot = TradingBot.__new__(TradingBot)
+        bot.rsi_min = 30
+        bot.rsi_max = 70
+        bot.rsi_period = 14
+        bot.timeframe = "1h"
+        bot._generate_advanced_signal = lambda row: "COMPRA"
+        bot._calculate_signal_confidence = lambda row: 95.0
+        bot.calculate_advanced_score = lambda row, signal=None: 0.9
+        bot._passes_signal_structure_guardrail = lambda row, signal, timeframe: True
+
+        data = pd.DataFrame(
+            [
+                {
+                    "open": 100.0,
+                    "high": 101.0,
+                    "low": 99.0,
+                    "close": 100.1 if i % 2 == 0 else 99.9,
+                    "rsi": 38.0,
+                    "macd": 0.3,
+                    "macd_signal": 0.1,
+                    "macd_histogram": 0.2,
+                    "adx": 19.0,
+                    "di_plus": 20.0,
+                    "di_minus": 19.0,
+                    "volume_ratio": 0.85,
+                    "atr": 1.4,
+                    "sma_21": 100.0,
+                    "sma_50": 100.0,
+                    "stoch_rsi_k": 45.0,
+                    "williams_r": -48.0,
+                    "bb_width": 0.04,
+                    "market_regime": "ranging",
+                    "is_closed": True,
+                }
+                for i in range(8)
+            ],
+            index=pd.date_range("2026-01-01 00:00:00", periods=8, freq="1h"),
+        )
+
+        signal = TradingBot.check_signal(bot, data, timeframe="1h")
+
+        self.assertEqual(signal, "NEUTRO")
+
+    def test_check_signal_allows_actionable_signal_on_breakout_structure(self):
+        bot = TradingBot.__new__(TradingBot)
+        bot.rsi_min = 30
+        bot.rsi_max = 70
+        bot.rsi_period = 14
+        bot.timeframe = "1h"
+        bot._generate_advanced_signal = lambda row: "COMPRA"
+        bot._calculate_signal_confidence = lambda row: 95.0
+        bot.calculate_advanced_score = lambda row, signal=None: 0.9
+        bot._passes_signal_structure_guardrail = lambda row, signal, timeframe: True
+
+        data = pd.DataFrame(
+            [
+                {
+                    "open": 100.0 + i * 0.35,
+                    "high": 100.8 + i * 0.35,
+                    "low": 99.7 + i * 0.35,
+                    "close": 100.4 + i * 0.35,
+                    "rsi": 36.0,
+                    "macd": 0.4,
+                    "macd_signal": 0.15,
+                    "macd_histogram": 0.25,
+                    "adx": 30.0,
+                    "di_plus": 27.0,
+                    "di_minus": 14.0,
+                    "volume_ratio": 1.4,
+                    "atr": 1.0,
+                    "sma_21": 99.5 + i * 0.3,
+                    "sma_50": 98.8 + i * 0.24,
+                    "stoch_rsi_k": 42.0,
+                    "williams_r": -52.0,
+                    "bb_width": 0.06,
+                    "market_regime": "trending",
+                    "is_closed": True,
+                }
+                for i in range(7)
+            ]
+            + [
+                {
+                    "open": 102.6,
+                    "high": 105.2,
+                    "low": 102.4,
+                    "close": 105.0,
+                    "rsi": 39.0,
+                    "macd": 0.9,
+                    "macd_signal": 0.35,
+                    "macd_histogram": 0.55,
+                    "adx": 34.0,
+                    "di_plus": 30.0,
+                    "di_minus": 12.0,
+                    "volume_ratio": 2.1,
+                    "atr": 1.1,
+                    "sma_21": 101.9,
+                    "sma_50": 100.8,
+                    "stoch_rsi_k": 48.0,
+                    "williams_r": -49.0,
+                    "bb_width": 0.08,
+                    "market_regime": "trending",
+                    "is_closed": True,
+                }
+            ],
+            index=pd.date_range("2026-01-01 00:00:00", periods=8, freq="1h"),
+        )
+
+        signal = TradingBot.check_signal(bot, data, timeframe="1h")
+
+        self.assertEqual(signal, "COMPRA")
+
     def test_signal_guardrail_blocks_bullish_signal_on_bearish_candle_structure(self):
         bot = TradingBot.__new__(TradingBot)
         bot.rsi_min = 20

@@ -483,6 +483,8 @@ class TelegramTradingBot:
             last_candle = data.iloc[-1]
             timeframe = strategy_settings["timeframe"]
             runtime_block_reason = strategy_settings.get("runtime_block_reason", "")
+            context_evaluation = None
+            structure_evaluation = None
             if not strategy_settings.get("runtime_allowed", True):
                 signal = "NEUTRO"
                 final_signal = "NEUTRO"
@@ -498,6 +500,8 @@ class TelegramTradingBot:
                     avoid_ranging=strategy_settings.get("avoid_ranging", True),
                     context_timeframe=strategy_settings.get("context_timeframe"),
                 )
+                context_evaluation = getattr(self.trading_bot, "_last_context_evaluation", None)
+                structure_evaluation = getattr(self.trading_bot, "_last_price_structure_evaluation", None)
                 emoji = TelegramBotConfig.get_signal_emoji(signal)
 
             ai_signal = "NEUTRO"
@@ -543,6 +547,32 @@ class TelegramTradingBot:
                 else:
                     risk_guardrail_note = f"\nRisk guardrail: {risk_plan.get('reason')}"
             ai_mode_note = "comparativo" if not ProductionConfig.ENABLE_AI_SIGNAL_INFLUENCE else "influencia"
+            context_note = "Contexto superior: sem filtro"
+            if context_evaluation:
+                context_note = (
+                    f"Contexto superior: {context_evaluation.get('market_bias', 'neutral')} | "
+                    f"{context_evaluation.get('regime', '-')} | "
+                    f"forca {context_evaluation.get('context_strength', 0):.2f}/10"
+                )
+            structure_note = "Estrutura: indisponivel"
+            if structure_evaluation:
+                structure_note = (
+                    f"Estrutura: {structure_evaluation.get('structure_state', 'weak_structure')} | "
+                    f"{structure_evaluation.get('price_location', 'mid_range')} | "
+                    f"qualidade {structure_evaluation.get('structure_quality', 0):.2f}/10"
+                )
+            entry_reason = final_signal
+            if final_signal != "NEUTRO":
+                reason_parts = [final_signal]
+                if context_evaluation:
+                    reason_parts.append(
+                        f"ctx:{context_evaluation.get('market_bias', 'neutral')}/{context_evaluation.get('regime', '-')}"
+                    )
+                if structure_evaluation:
+                    reason_parts.append(
+                        f"struct:{structure_evaluation.get('structure_state', '-')}/{structure_evaluation.get('price_location', '-')}"
+                    )
+                entry_reason = " | ".join(reason_parts)
 
             analysis_message = (
                 f"Analise Tecnica - {symbol}\n\n"
@@ -551,6 +581,8 @@ class TelegramTradingBot:
                 f"Sinal (final): {final_signal}\n\n"
                 f"Estrategia ativa: {active_profile.get('strategy_version') if active_profile else runtime_strategy_version}\n"
                 f"Contexto: {strategy_settings.get('context_timeframe') or 'sem filtro superior'}\n"
+                f"{context_note}\n"
+                f"{structure_note}\n"
                 f"Preco Atual: ${last_candle['close']:.6f}\n"
                 f"Variacao: {((last_candle['close'] - last_candle['open']) / last_candle['open'] * 100):+.2f}%\n\n"
                 f"Indicadores:\n"
@@ -600,7 +632,7 @@ class TelegramTradingBot:
                         regime=last_candle.get("market_regime"),
                         signal_score=last_candle.get("signal_confidence", 0.0),
                         atr=last_candle.get("atr", 0.0),
-                        entry_reason=final_signal,
+                        entry_reason=entry_reason,
                         sample_type="paper",
                     )
             except Exception as e:

@@ -1373,6 +1373,9 @@ if st.session_state.current_data is not None:
         avoid_ranging=avoid_ranging,
     )
     runtime_strategy_version = live_strategy_settings["strategy_version"]
+    guardrail_edge_summary = None
+    context_evaluation = None
+    structure_evaluation = None
     if not live_strategy_settings.get("runtime_allowed", True):
         signal = "NEUTRO"
         risk_plan = {
@@ -1398,7 +1401,21 @@ if st.session_state.current_data is not None:
             strategy_version=runtime_strategy_version,
         )
         signal, risk_plan = apply_risk_guardrail(signal, float(last_candle['close']), live_strategy_settings)
+        context_evaluation = getattr(st.session_state.trading_bot, "_last_context_evaluation", None)
+        structure_evaluation = getattr(st.session_state.trading_bot, "_last_price_structure_evaluation", None)
     risk_guardrail_blocked = bool(risk_plan and not risk_plan.get("allowed"))
+    entry_reason = signal
+    if signal != "NEUTRO":
+        reason_parts = [signal]
+        if context_evaluation:
+            reason_parts.append(
+                f"ctx:{context_evaluation.get('market_bias', 'neutral')}/{context_evaluation.get('regime', '-')}"
+            )
+        if structure_evaluation:
+            reason_parts.append(
+                f"struct:{structure_evaluation.get('structure_state', '-')}/{structure_evaluation.get('price_location', '-')}"
+            )
+        entry_reason = " | ".join(reason_parts)
 
     try:
         paper_trade_service.evaluate_open_trades(symbol=symbol, timeframe=timeframe, market_data=data)
@@ -1413,6 +1430,8 @@ if st.session_state.current_data is not None:
         'last_update': st.session_state.last_update,
         'edge_summary': guardrail_edge_summary,
         'risk_plan': risk_plan,
+        'context_evaluation': context_evaluation,
+        'structure_evaluation': structure_evaluation,
     }
 
     # Add signal to history if it's a new signal
@@ -1480,7 +1499,7 @@ if st.session_state.current_data is not None:
                     regime=last_candle.get("market_regime"),
                     signal_score=last_candle.get("signal_confidence", 0.0),
                     atr=last_candle.get("atr", 0.0),
-                    entry_reason=signal,
+                    entry_reason=entry_reason,
                     sample_type="paper",
                 )
         except Exception as e:
@@ -1799,6 +1818,18 @@ if st.session_state.current_data is not None:
         **Volume:** {last_candle['volume']:,.0f}  
         **Volume MA:** {last_candle['volume_ma']:,.0f}
         """)
+        if context_evaluation:
+            st.caption(
+                f"Contexto: {context_evaluation.get('market_bias', 'neutral')} | "
+                f"{context_evaluation.get('regime', '-')} | "
+                f"Forca {context_evaluation.get('context_strength', 0):.2f}/10"
+            )
+        if structure_evaluation:
+            st.caption(
+                f"Estrutura: {structure_evaluation.get('structure_state', 'weak_structure')} | "
+                f"{structure_evaluation.get('price_location', 'mid_range')} | "
+                f"Qualidade {structure_evaluation.get('structure_quality', 0):.2f}/10"
+            )
 
     with analysis_col2:
         if signal == "COMPRA":

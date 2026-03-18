@@ -25,9 +25,26 @@ class TradingBot:
         self.indicators = TechnicalIndicators()
         self._stream_clients = {}
         self._last_context_evaluation = None
+        self._last_price_structure_evaluation = None
 
         logger.info("🚀 TradingBot inicializado com BINANCE WEBSOCKET PÚBLICO")
         logger.info("📡 Usando dados em tempo real sem necessidade de credenciais")
+
+    @staticmethod
+    def _calculate_context_slope(series: pd.Series, lookback: int = 5) -> float:
+        if series is None:
+            return float("nan")
+
+        clean_series = series.dropna()
+        if len(clean_series) < 2:
+            return float("nan")
+
+        effective_lookback = min(lookback, len(clean_series) - 1)
+        start_value = float(clean_series.iloc[-(effective_lookback + 1)])
+        end_value = float(clean_series.iloc[-1])
+        if start_value == 0:
+            return float("nan")
+        return (end_value - start_value) / abs(start_value)
 
     def update_config(self, symbol=None, timeframe=None, rsi_period=None, rsi_min=None, rsi_max=None):
         """Update bot configuration parameters"""
@@ -241,7 +258,12 @@ class TradingBot:
         evaluation = {
             "timeframe": context_timeframe,
             "bias": "neutral",
+            "market_bias": "neutral",
             "strength": 0.0,
+            "context_strength": 0.0,
+            "regime": "range_low_vol",
+            "volatility_state": "low_vol",
+            "is_tradeable": False,
             "timestamp": None,
             "reason": "Sem contexto configurado.",
         }
@@ -271,18 +293,7 @@ class TradingBot:
             return evaluation
 
         context_row = working_df.iloc[-1]
-        bullish_checks = 0
-        bearish_checks = 0
-        total_checks = 0
-
-        def register_check(bullish_condition: bool, bearish_condition: bool):
-            nonlocal bullish_checks, bearish_checks, total_checks
-            total_checks += 1
-            if bullish_condition:
-                bullish_checks += 1
-            if bearish_condition:
-                bearish_checks += 1
-
+        recent_window = working_df.tail(min(30, len(working_df)))
         price = context_row.get("close", np.nan)
         sma_21 = context_row.get("sma_21", np.nan)
         sma_50 = context_row.get("sma_50", np.nan)
@@ -292,46 +303,507 @@ class TradingBot:
         di_plus = context_row.get("di_plus", np.nan)
         di_minus = context_row.get("di_minus", np.nan)
         rsi = context_row.get("rsi", np.nan)
-        regime = context_row.get("market_regime", "trending")
+        base_regime = context_row.get("market_regime", "trending")
+
+        sma_21_slope = self._calculate_context_slope(recent_window.get("sma_21"))
+        sma_50_slope = self._calculate_context_slope(recent_window.get("sma_50"))
+        sma_200_slope = self._calculate_context_slope(recent_window.get("sma_200"))
+
+        atr_pct = float("nan")
+        atr_pct_baseline = float("nan")
+        atr_series = recent_window.get("atr")
+        close_series = recent_window.get("close")
+        if atr_series is not None and close_series is not None:
+            atr_pct_series = atr_series / close_series.replace(0, np.nan)
+            clean_atr_pct = atr_pct_series.dropna()
+            if not clean_atr_pct.empty:
+                atr_pct = float(clean_atr_pct.iloc[-1])
+                atr_pct_baseline = float(clean_atr_pct.median())
+
+        recent_range_pct = float("nan")
+        recent_range_baseline = float("nan")
+        high_series = recent_window.get("high")
+        low_series = recent_window.get("low")
+        range_window = min(8, len(recent_window))
+        if (
+            high_series is not None
+            and low_series is not None
+            and close_series is not None
+            and range_window >= 2
+        ):
+            rolling_range_pct = (
+                high_series.rolling(range_window).max() - low_series.rolling(range_window).min()
+            ) / close_series.replace(0, np.nan)
+            clean_range = rolling_range_pct.dropna()
+            if not clean_range.empty:
+                recent_range_pct = float(clean_range.iloc[-1])
+                recent_range_baseline = float(clean_range.median())
+
+        bullish_score = 0.0
+        bearish_score = 0.0
+        directional_reasons = []
 
         if not pd.isna(price) and not pd.isna(sma_21):
-            register_check(price >= sma_21, price <= sma_21)
+            if float(price) >= float(sma_21):
+                bullish_score += 1.0
+                directional_reasons.append("preco acima da SMA21")
+            else:
+                bearish_score += 1.0
+                directional_reasons.append("preco abaixo da SMA21")
         if not pd.isna(sma_21) and not pd.isna(sma_50):
-            register_check(sma_21 >= sma_50, sma_21 <= sma_50)
+            if float(sma_21) >= float(sma_50):
+                bullish_score += 1.0
+                directional_reasons.append("SMA21 acima da SMA50")
+            else:
+                bearish_score += 1.0
+                directional_reasons.append("SMA21 abaixo da SMA50")
         if not pd.isna(sma_50) and not pd.isna(sma_200):
-            register_check(sma_50 >= sma_200, sma_50 <= sma_200)
+            if float(sma_50) >= float(sma_200):
+                bullish_score += 1.0
+                directional_reasons.append("SMA50 acima da SMA200")
+            else:
+                bearish_score += 1.0
+                directional_reasons.append("SMA50 abaixo da SMA200")
+        if not pd.isna(sma_21_slope):
+            if sma_21_slope > 0:
+                bullish_score += 1.0
+                directional_reasons.append("SMA21 inclinada para cima")
+            elif sma_21_slope < 0:
+                bearish_score += 1.0
+                directional_reasons.append("SMA21 inclinada para baixo")
+        if not pd.isna(sma_50_slope):
+            if sma_50_slope > 0:
+                bullish_score += 1.0
+                directional_reasons.append("SMA50 inclinada para cima")
+            elif sma_50_slope < 0:
+                bearish_score += 1.0
+                directional_reasons.append("SMA50 inclinada para baixo")
         if not pd.isna(macd_hist):
-            register_check(float(macd_hist) > 0, float(macd_hist) < 0)
-        if not pd.isna(di_plus) and not pd.isna(di_minus):
-            register_check(di_plus > di_minus, di_minus > di_plus)
-        if not pd.isna(rsi):
-            register_check(float(rsi) >= 52, float(rsi) <= 48)
-        if not pd.isna(adx) and float(adx) >= 22:
-            register_check(True, True)
+            if float(macd_hist) > 0:
+                bullish_score += 1.0
+                directional_reasons.append("MACD histograma positivo")
+            elif float(macd_hist) < 0:
+                bearish_score += 1.0
+                directional_reasons.append("MACD histograma negativo")
 
-        bias = "neutral"
-        strength = 0.0
-        reason = "Contexto sem vies direcional claro."
-        directional_checks = max(total_checks - 1, 1)
-        if regime == "trending" and bullish_checks >= 5 and bullish_checks > bearish_checks + 1:
-            bias = "bullish"
-            strength = round(min(1.0, bullish_checks / directional_checks), 2)
-            reason = "Contexto confirmou vies de alta."
-        elif regime == "trending" and bearish_checks >= 5 and bearish_checks > bullish_checks + 1:
-            bias = "bearish"
-            strength = round(min(1.0, bearish_checks / directional_checks), 2)
-            reason = "Contexto confirmou vies de baixa."
-        elif regime != "trending":
-            reason = f"Contexto bloqueado por regime {regime}."
+        di_spread = 0.0
+        if not pd.isna(di_plus) and not pd.isna(di_minus):
+            di_spread = abs(float(di_plus) - float(di_minus))
+            if float(di_plus) > float(di_minus):
+                bullish_score += 1.0 if di_spread >= 8 else 0.5
+                directional_reasons.append("DI+ acima do DI-")
+            elif float(di_minus) > float(di_plus):
+                bearish_score += 1.0 if di_spread >= 8 else 0.5
+                directional_reasons.append("DI- acima do DI+")
+        if not pd.isna(rsi):
+            if float(rsi) >= 55:
+                bullish_score += 0.5
+                directional_reasons.append("RSI acima da linha de equilibrio")
+            elif float(rsi) <= 45:
+                bearish_score += 0.5
+                directional_reasons.append("RSI abaixo da linha de equilibrio")
+
+        trend_votes = 0
+        range_votes = 0
+        if base_regime == "trending":
+            trend_votes += 1
+        elif base_regime == "ranging":
+            range_votes += 1
+        elif base_regime == "volatile":
+            if not pd.isna(adx) and float(adx) >= 25 and di_spread >= 8:
+                trend_votes += 1
+            else:
+                range_votes += 1
+
+        if not pd.isna(adx):
+            if float(adx) >= 25:
+                trend_votes += 1
+            elif float(adx) < 22:
+                range_votes += 1
+        if di_spread >= 8:
+            trend_votes += 1
+        elif di_spread < 5:
+            range_votes += 1
+
+        slope_alignment = 0
+        if not pd.isna(sma_21_slope) and not pd.isna(sma_50_slope):
+            if sma_21_slope > 0 and sma_50_slope > 0:
+                slope_alignment = 1
+            elif sma_21_slope < 0 and sma_50_slope < 0:
+                slope_alignment = 1
+            else:
+                range_votes += 1
+        if slope_alignment:
+            trend_votes += 1
+
+        if not pd.isna(price) and not pd.isna(sma_21) and not pd.isna(sma_50):
+            if (float(price) > float(sma_21) > float(sma_50)) or (float(price) < float(sma_21) < float(sma_50)):
+                trend_votes += 1
+            else:
+                range_votes += 1
+
+        is_high_vol = False
+        if not pd.isna(atr_pct):
+            atr_threshold = max((atr_pct_baseline * 1.2) if not pd.isna(atr_pct_baseline) else 0.0, 0.018)
+            is_high_vol = atr_pct >= atr_threshold
+        if not pd.isna(recent_range_pct):
+            range_threshold = max((recent_range_baseline * 1.15) if not pd.isna(recent_range_baseline) else 0.0, 0.06)
+            is_high_vol = is_high_vol or recent_range_pct >= range_threshold
+        if base_regime == "volatile":
+            is_high_vol = True
+
+        volatility_state = "high_vol" if is_high_vol else "low_vol"
+        trend_state = "trend" if trend_votes >= max(3, range_votes + 1) else "range"
+        regime = f"{trend_state}_{volatility_state}"
+
+        if trend_state == "trend" and bullish_score >= 5 and bullish_score >= bearish_score + 1.5:
+            market_bias = "bullish"
+        elif trend_state == "trend" and bearish_score >= 5 and bearish_score >= bullish_score + 1.5:
+            market_bias = "bearish"
+        else:
+            market_bias = "neutral"
+
+        dominant_score = max(bullish_score, bearish_score)
+        directional_gap = abs(bullish_score - bearish_score)
+        context_strength = 0.0
+
+        ma_alignment_points = 0.0
+        if not pd.isna(price) and not pd.isna(sma_21):
+            ma_alignment_points += 0.5
+        if not pd.isna(sma_21) and not pd.isna(sma_50):
+            ma_alignment_points += 0.75
+        if not pd.isna(sma_50) and not pd.isna(sma_200):
+            ma_alignment_points += 0.75
+        if market_bias == "neutral":
+            ma_alignment_points *= 0.3
+        context_strength += ma_alignment_points
+
+        slope_points = 0.0
+        if not pd.isna(sma_21_slope):
+            slope_points += 0.75
+        if not pd.isna(sma_50_slope):
+            slope_points += 0.75
+        if not pd.isna(sma_200_slope):
+            slope_points += 0.25
+        if slope_alignment == 0:
+            slope_points *= 0.35
+        context_strength += min(1.75, slope_points)
+
+        context_strength += min(2.0, dominant_score * 0.35)
+        context_strength += min(1.5, directional_gap * 0.35)
+
+        if not pd.isna(adx):
+            if float(adx) >= 35:
+                context_strength += 1.5
+            elif float(adx) >= 25:
+                context_strength += 1.0
+            elif float(adx) >= 20:
+                context_strength += 0.5
+
+        if di_spread >= 15:
+            context_strength += 1.25
+        elif di_spread >= 8:
+            context_strength += 0.85
+        elif di_spread >= 4:
+            context_strength += 0.35
+
+        if trend_state == "trend":
+            context_strength += 0.75
+        if volatility_state == "low_vol":
+            context_strength += 0.75
+        elif trend_state == "trend":
+            context_strength += 0.4
+
+        if not pd.isna(recent_range_pct):
+            if 0.02 <= recent_range_pct <= 0.12:
+                context_strength += 0.5
+            elif recent_range_pct > 0.18:
+                context_strength -= 0.4
+
+        context_strength = round(float(max(0.0, min(10.0, context_strength))), 2)
+        strength = round(context_strength / 10.0, 2)
+        is_tradeable = market_bias != "neutral" and trend_state == "trend" and context_strength >= 5.0
+
+        reasons = []
+        if market_bias == "bullish":
+            reasons.append("vies direcional de alta no contexto")
+        elif market_bias == "bearish":
+            reasons.append("vies direcional de baixa no contexto")
+        else:
+            reasons.append("contexto sem vies direcional claro")
+        reasons.append(f"regime {regime}")
+        if not pd.isna(adx):
+            reasons.append(f"ADX {float(adx):.1f}")
+        if not pd.isna(atr_pct):
+            reasons.append(f"ATR% {atr_pct * 100:.2f}")
+        if not pd.isna(recent_range_pct):
+            reasons.append(f"range recente {recent_range_pct * 100:.2f}%")
+        if directional_reasons:
+            reasons.append(directional_reasons[0])
+        reason = " | ".join(reasons)
 
         evaluation = {
             "timeframe": context_timeframe,
-            "bias": bias,
+            "bias": market_bias,
+            "market_bias": market_bias,
             "strength": strength,
+            "context_strength": context_strength,
+            "regime": regime,
+            "volatility_state": volatility_state,
+            "is_tradeable": is_tradeable,
+            "atr_pct": None if pd.isna(atr_pct) else round(atr_pct * 100, 2),
+            "recent_range_pct": None if pd.isna(recent_range_pct) else round(recent_range_pct * 100, 2),
+            "ma_slopes": {
+                "sma_21": None if pd.isna(sma_21_slope) else round(sma_21_slope, 4),
+                "sma_50": None if pd.isna(sma_50_slope) else round(sma_50_slope, 4),
+                "sma_200": None if pd.isna(sma_200_slope) else round(sma_200_slope, 4),
+            },
             "timestamp": pd.Timestamp(working_df.index[-1]).isoformat(),
             "reason": reason,
         }
         self._last_context_evaluation = evaluation
+        return evaluation
+
+    def get_price_structure_evaluation(
+        self,
+        df: Optional[pd.DataFrame],
+        timeframe: Optional[str] = None,
+    ) -> Dict[str, object]:
+        evaluation = {
+            "timeframe": timeframe or self.timeframe,
+            "structure_state": "weak_structure",
+            "price_location": "mid_range",
+            "structure_quality": 0.0,
+            "is_tradeable": False,
+            "has_minimum_history": False,
+            "timestamp": None,
+            "reason": "Sem dados suficientes para avaliar a estrutura.",
+        }
+        if df is None or df.empty:
+            self._last_price_structure_evaluation = evaluation
+            return evaluation
+
+        working_df = df
+        if "is_closed" in working_df.columns:
+            closed_df = working_df[working_df["is_closed"].fillna(False)]
+            if not closed_df.empty:
+                working_df = closed_df
+            elif len(working_df) > 1:
+                working_df = working_df.iloc[:-1]
+
+        if len(working_df) < 6:
+            self._last_price_structure_evaluation = evaluation
+            return evaluation
+
+        current_timeframe = timeframe or self.timeframe or "5m"
+        last_row = working_df.iloc[-1]
+        prior_df = working_df.iloc[:-1]
+        lookback = min(20, len(prior_df))
+        recent_df = prior_df.tail(lookback)
+        structure_window = working_df.tail(min(30, len(working_df)))
+
+        close_price = last_row.get("close", np.nan)
+        open_price = last_row.get("open", np.nan)
+        high_price = last_row.get("high", np.nan)
+        low_price = last_row.get("low", np.nan)
+        sma_21 = last_row.get("sma_21", np.nan)
+        sma_50 = last_row.get("sma_50", np.nan)
+        atr_value = last_row.get("atr", np.nan)
+        volume_ratio = last_row.get("volume_ratio", 1.0)
+        market_regime = last_row.get("market_regime", "trending")
+
+        if any(pd.isna(value) for value in (close_price, open_price, high_price, low_price)):
+            return evaluation
+
+        recent_high = float(recent_df["high"].max()) if not recent_df.empty else float(high_price)
+        recent_low = float(recent_df["low"].min()) if not recent_df.empty else float(low_price)
+        range_span = max(recent_high - recent_low, 1e-9)
+        candle_range = max(float(high_price) - float(low_price), 1e-9)
+        body_size = abs(float(close_price) - float(open_price))
+        body_share = body_size / candle_range
+        close_location = (float(close_price) - float(low_price)) / candle_range
+        upper_wick = float(high_price) - max(float(open_price), float(close_price))
+        lower_wick = min(float(open_price), float(close_price)) - float(low_price)
+        avg_body = prior_df["close"].sub(prior_df["open"]).abs().tail(min(10, len(prior_df))).mean()
+        avg_body = float(avg_body) if not pd.isna(avg_body) else body_size
+
+        bullish_stack = (
+            not pd.isna(sma_21)
+            and not pd.isna(sma_50)
+            and float(close_price) >= float(sma_21)
+            and float(sma_21) >= float(sma_50)
+        )
+        bearish_stack = (
+            not pd.isna(sma_21)
+            and not pd.isna(sma_50)
+            and float(close_price) <= float(sma_21)
+            and float(sma_21) <= float(sma_50)
+        )
+
+        distance_from_sma_atr = 0.0
+        if not pd.isna(atr_value) and float(atr_value) > 0 and not pd.isna(sma_21):
+            distance_from_sma_atr = abs(float(close_price) - float(sma_21)) / float(atr_value)
+
+        support_zone_distance = abs(float(close_price) - recent_low) / range_span
+        resistance_zone_distance = abs(recent_high - float(close_price)) / range_span
+
+        bullish_rejection = lower_wick >= max(body_size * 1.4, candle_range * 0.22)
+        bearish_rejection = upper_wick >= max(body_size * 1.4, candle_range * 0.22)
+        bullish_impulse = (
+            float(close_price) > float(open_price)
+            and body_share >= 0.58
+            and close_location >= 0.7
+            and body_size >= max(avg_body * 1.2, 0.0)
+        )
+        bearish_impulse = (
+            float(close_price) < float(open_price)
+            and body_share >= 0.58
+            and close_location <= 0.3
+            and body_size >= max(avg_body * 1.2, 0.0)
+        )
+
+        breakout_threshold = 0.15 * float(atr_value) if not pd.isna(atr_value) and float(atr_value) > 0 else range_span * 0.01
+        broke_recent_high = float(close_price) > recent_high + breakout_threshold
+        broke_recent_low = float(close_price) < recent_low - breakout_threshold
+
+        if broke_recent_high:
+            price_location = "resistance"
+        elif broke_recent_low:
+            price_location = "support"
+        elif distance_from_sma_atr <= 1.25 and (bullish_stack or bearish_stack):
+            price_location = "trend_zone"
+        elif support_zone_distance <= 0.15:
+            price_location = "support"
+        elif resistance_zone_distance <= 0.15:
+            price_location = "resistance"
+        else:
+            price_location = "mid_range"
+
+        recent_close = prior_df["close"].iloc[-1]
+        higher_lows = float(low_price) > float(recent_df["low"].tail(min(5, len(recent_df))).min()) if not recent_df.empty else False
+        lower_highs = float(high_price) < float(recent_df["high"].tail(min(5, len(recent_df))).max()) if not recent_df.empty else False
+
+        is_pullback = False
+        if bullish_stack and not pd.isna(sma_21):
+            pullback_floor = float(sma_21) - (float(atr_value) * 0.8 if not pd.isna(atr_value) and float(atr_value) > 0 else 0.0)
+            is_pullback = (
+                float(low_price) <= float(sma_21)
+                and float(close_price) >= pullback_floor
+                and float(close_price) >= float(open_price)
+                and higher_lows
+            )
+        elif bearish_stack and not pd.isna(sma_21):
+            pullback_ceiling = float(sma_21) + (float(atr_value) * 0.8 if not pd.isna(atr_value) and float(atr_value) > 0 else 0.0)
+            is_pullback = (
+                float(high_price) >= float(sma_21)
+                and float(close_price) <= pullback_ceiling
+                and float(close_price) <= float(open_price)
+                and lower_highs
+            )
+
+        losing_structure = False
+        if bullish_stack and not pd.isna(sma_21):
+            losing_structure = float(close_price) < float(sma_21) and float(close_price) < float(recent_close)
+        elif bearish_stack and not pd.isna(sma_21):
+            losing_structure = float(close_price) > float(sma_21) and float(close_price) > float(recent_close)
+
+        is_stretched = distance_from_sma_atr >= (2.6 if current_timeframe in {"5m", "15m"} else 2.9)
+
+        structure_state = "weak_structure"
+        reasons = []
+        if (broke_recent_high and bullish_impulse) or (broke_recent_low and bearish_impulse):
+            structure_state = "breakout"
+            reasons.append("rompimento de maxima/minima com candle de impulso")
+        elif is_pullback:
+            structure_state = "pullback"
+            reasons.append("preco corrigindo para a zona de tendencia")
+        elif losing_structure or is_stretched or (
+            price_location == "resistance" and bearish_rejection and bullish_stack
+        ) or (
+            price_location == "support" and bullish_rejection and bearish_stack
+        ):
+            structure_state = "reversal_risk"
+            reasons.append("estrutura mostra risco de reversao")
+        elif (bullish_stack and bullish_impulse) or (bearish_stack and bearish_impulse):
+            structure_state = "continuation"
+            reasons.append("estrutura de continuidade com impulso")
+        else:
+            reasons.append("estrutura fraca ou indefinida")
+
+        structure_quality = 0.0
+        if structure_state == "breakout":
+            structure_quality += 4.0
+        elif structure_state == "continuation":
+            structure_quality += 3.4
+        elif structure_state == "pullback":
+            structure_quality += 3.2
+        elif structure_state == "reversal_risk":
+            structure_quality += 1.2
+        else:
+            structure_quality += 0.8
+
+        if bullish_impulse or bearish_impulse:
+            structure_quality += 1.5
+        elif bullish_rejection or bearish_rejection:
+            structure_quality += 0.8
+
+        if price_location == "trend_zone":
+            structure_quality += 1.4
+        elif price_location in {"support", "resistance"}:
+            structure_quality += 1.0
+        else:
+            structure_quality += 0.5
+
+        if not pd.isna(volume_ratio):
+            if float(volume_ratio) >= 1.6:
+                structure_quality += 1.0
+            elif float(volume_ratio) >= 1.2:
+                structure_quality += 0.5
+            elif float(volume_ratio) < 0.9:
+                structure_quality -= 0.6
+
+        if market_regime == "trending":
+            structure_quality += 0.9
+        elif market_regime == "ranging":
+            structure_quality -= 0.8
+        elif market_regime == "volatile":
+            structure_quality -= 0.5
+
+        if is_stretched:
+            structure_quality -= 1.5
+            reasons.append("preco esticado em relacao a media")
+        if losing_structure:
+            structure_quality -= 1.2
+            reasons.append("preco perdendo estrutura recente")
+
+        structure_quality = round(float(max(0.0, min(10.0, structure_quality))), 2)
+        is_tradeable = structure_state in {"continuation", "pullback", "breakout"} and structure_quality >= 5.5
+
+        if price_location == "support":
+            reasons.append("preco proximo do suporte recente")
+        elif price_location == "resistance":
+            reasons.append("preco proximo da resistencia recente")
+        elif price_location == "trend_zone":
+            reasons.append("preco em zona de tendencia")
+        else:
+            reasons.append("preco no meio do range")
+
+        evaluation = {
+            "timeframe": current_timeframe,
+            "structure_state": structure_state,
+            "price_location": price_location,
+            "structure_quality": structure_quality,
+            "is_tradeable": is_tradeable,
+            "has_minimum_history": True,
+            "timestamp": pd.Timestamp(working_df.index[-1]).isoformat(),
+            "recent_high": round(recent_high, 4),
+            "recent_low": round(recent_low, 4),
+            "distance_from_sma21_atr": round(distance_from_sma_atr, 2) if distance_from_sma_atr else 0.0,
+            "impulse_candle": bool(bullish_impulse or bearish_impulse),
+            "rejection_candle": bool(bullish_rejection or bearish_rejection),
+            "reason": " | ".join(reasons),
+        }
+        self._last_price_structure_evaluation = evaluation
         return evaluation
 
     def _fetch_context_df(self, context_timeframe: str, limit: int = 260) -> Optional[pd.DataFrame]:
@@ -345,12 +817,47 @@ class TradingBot:
         if not context_evaluation:
             return signal
 
+        if not context_evaluation.get("is_tradeable", True):
+            return "NEUTRO"
+
         bias = context_evaluation.get("bias", "neutral")
         if signal.startswith("COMPRA") and bias != "bullish":
             return "NEUTRO"
         if signal.startswith("VENDA") and bias != "bearish":
             return "NEUTRO"
         return signal
+
+    def _apply_structure_alignment(self, signal: str, structure_evaluation: Optional[Dict[str, object]]) -> str:
+        actionable_signals = {"COMPRA", "COMPRA_FRACA", "VENDA", "VENDA_FRACA"}
+        if signal not in actionable_signals:
+            return signal
+        if not structure_evaluation or not structure_evaluation.get("has_minimum_history"):
+            return signal
+
+        structure_state = structure_evaluation.get("structure_state", "weak_structure")
+        price_location = structure_evaluation.get("price_location", "mid_range")
+        structure_quality = float(structure_evaluation.get("structure_quality", 0.0) or 0.0)
+
+        if structure_state in {"weak_structure", "reversal_risk"}:
+            return "NEUTRO"
+        if structure_quality < 5.5:
+            return "NEUTRO"
+        if signal.startswith("COMPRA") and price_location == "resistance" and structure_state != "breakout":
+            return "NEUTRO"
+        if signal.startswith("VENDA") and price_location == "support" and structure_state != "breakout":
+            return "NEUTRO"
+        return signal
+
+    def _apply_signal_guardrails(
+        self,
+        signal: str,
+        context_evaluation: Optional[Dict[str, object]] = None,
+        structure_evaluation: Optional[Dict[str, object]] = None,
+    ) -> str:
+        guarded_signal = self._apply_structure_alignment(signal, structure_evaluation)
+        if guarded_signal == "NEUTRO":
+            return guarded_signal
+        return self._apply_context_alignment(guarded_signal, context_evaluation)
 
     def calculate_indicators(self, df):
         """Calculate comprehensive technical indicators for the dataframe"""
@@ -845,6 +1352,7 @@ class TradingBot:
         resolved_context_timeframe = context_timeframe or AppConfig.get_context_timeframe(current_timeframe)
         market_regime = last_row.get('market_regime', 'trending')
         context_evaluation = None
+        structure_evaluation = self.get_price_structure_evaluation(df, timeframe=current_timeframe)
 
         if resolved_context_timeframe and resolved_context_timeframe != current_timeframe:
             if context_df is None:
@@ -996,7 +1504,7 @@ class TradingBot:
             if not self._passes_signal_structure_guardrail(last_row, signal, current_timeframe):
                 return "NEUTRO"
 
-            return self._apply_context_alignment(signal, context_evaluation)
+            return self._apply_signal_guardrails(signal, context_evaluation, structure_evaluation)
 
         if require_trend:
             if market_regime != "trending":
@@ -1089,24 +1597,24 @@ class TradingBot:
 
         if advanced_score >= 0.82:
             if signal in ['COMPRA', 'COMPRA_FRACA']:
-                return self._apply_context_alignment("COMPRA", context_evaluation)
+                return self._apply_signal_guardrails("COMPRA", context_evaluation, structure_evaluation)
             if signal in ['VENDA', 'VENDA_FRACA']:
-                return self._apply_context_alignment("VENDA", context_evaluation)
+                return self._apply_signal_guardrails("VENDA", context_evaluation, structure_evaluation)
 
         if advanced_score >= 0.68:
-            return self._apply_context_alignment(signal, context_evaluation)
+            return self._apply_signal_guardrails(signal, context_evaluation, structure_evaluation)
 
         # Se score intermediário e sinal fraco, devolver NEUTRO
         if signal == 'COMPRA' and advanced_score >= 0.62:
-            return self._apply_context_alignment('COMPRA_FRACA', context_evaluation)
+            return self._apply_signal_guardrails('COMPRA_FRACA', context_evaluation, structure_evaluation)
         if signal == 'VENDA' and advanced_score >= 0.62:
-            return self._apply_context_alignment('VENDA_FRACA', context_evaluation)
+            return self._apply_signal_guardrails('VENDA_FRACA', context_evaluation, structure_evaluation)
 
         if signal in ['COMPRA_FRACA', 'VENDA_FRACA'] and advanced_score < 0.72:
             logger.debug("🔁 sinal fraco + score médio, NEUTRO")
             return "NEUTRO"
 
-        return self._apply_context_alignment(signal, context_evaluation)
+        return self._apply_signal_guardrails(signal, context_evaluation, structure_evaluation)
 
     def _generate_trend_signal(self, row, rsi_min: float, rsi_max: float) -> str:
         di_plus = row.get("di_plus", 0)
