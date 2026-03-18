@@ -216,6 +216,45 @@ class TelegramTradingBot:
             avoid_ranging=strategy_settings.get("avoid_ranging", True),
         )
 
+    @staticmethod
+    def _build_structure_note(structure_evaluation: Optional[dict]) -> str:
+        if not structure_evaluation:
+            return "Estrutura: indisponivel"
+
+        distance_from_ema_pct = structure_evaluation.get("distance_from_ema_pct")
+        if isinstance(distance_from_ema_pct, (int, float)):
+            distance_text = f"{float(distance_from_ema_pct):.2f}%"
+        else:
+            distance_text = "-"
+
+        notes = structure_evaluation.get("notes") or []
+        notes_preview = ", ".join(str(note) for note in notes[:2]) or "sem observacoes relevantes"
+
+        return (
+            f"Estrutura: {structure_evaluation.get('structure_state', 'weak_structure')} | "
+            f"{structure_evaluation.get('price_location', 'mid_range')} | "
+            f"qualidade {structure_evaluation.get('structure_quality', 0):.2f}/10 | "
+            f"breakout {bool(structure_evaluation.get('breakout', False))} | "
+            f"reversal_risk {bool(structure_evaluation.get('reversal_risk', False))} | "
+            f"dist EMA {distance_text} | "
+            f"notas: {notes_preview}"
+        )
+
+    @staticmethod
+    def _build_confirmation_note(confirmation_evaluation: Optional[dict]) -> str:
+        if not confirmation_evaluation:
+            return "Confirmacao: indisponivel"
+
+        conflicts_preview = ", ".join(confirmation_evaluation.get("conflicts", [])[:2]) or "sem conflitos relevantes"
+        notes_preview = ", ".join(confirmation_evaluation.get("notes", [])[:2]) or "sem notas relevantes"
+
+        return (
+            f"Confirmacao: {confirmation_evaluation.get('confirmation_state', 'weak')} | "
+            f"score {confirmation_evaluation.get('confirmation_score', 0):.2f}/10 | "
+            f"conflitos: {conflicts_preview} | "
+            f"notas: {notes_preview}"
+        )
+
     def _resolve_runtime_strategy_settings(self, symbol: str, timeframe: str) -> dict:
         default_context_timeframe = AppConfig.get_context_timeframe(timeframe)
         if not self.trading_bot:
@@ -590,19 +629,10 @@ class TelegramTradingBot:
                 )
             structure_note = "Estrutura: indisponivel"
             if structure_evaluation:
-                structure_note = (
-                    f"Estrutura: {structure_evaluation.get('structure_state', 'weak_structure')} | "
-                    f"{structure_evaluation.get('price_location', 'mid_range')} | "
-                    f"qualidade {structure_evaluation.get('structure_quality', 0):.2f}/10"
-                )
+                structure_note = self._build_structure_note(structure_evaluation)
             confirmation_note = "Confirmacao: indisponivel"
             if confirmation_evaluation:
-                conflicts_preview = ", ".join(confirmation_evaluation.get("conflicts", [])[:2]) or "sem conflitos relevantes"
-                confirmation_note = (
-                    f"Confirmacao: {confirmation_evaluation.get('confirmation_state', 'weak')} | "
-                    f"score {confirmation_evaluation.get('confirmation_score', 0):.2f}/10 | "
-                    f"conflitos: {conflicts_preview}"
-                )
+                confirmation_note = self._build_confirmation_note(confirmation_evaluation)
             entry_quality_note = "Entrada: indisponivel"
             if entry_quality_evaluation:
                 entry_quality_note = (

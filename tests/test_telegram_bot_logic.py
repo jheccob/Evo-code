@@ -60,6 +60,39 @@ class TelegramTradingBotLogicTests(unittest.TestCase):
 
         self.assertIn("-ctx4h", strategy_version)
 
+    def test_build_structure_note_uses_standardized_structure_fields(self):
+        note = TelegramTradingBot._build_structure_note(
+            {
+                "structure_state": "breakout",
+                "price_location": "resistance",
+                "structure_quality": 6.8,
+                "breakout": True,
+                "reversal_risk": False,
+                "distance_from_ema_pct": 1.37,
+                "notes": ["rompimento confirmado", "preco acima da EMA 21"],
+            }
+        )
+
+        self.assertIn("breakout True", note)
+        self.assertIn("reversal_risk False", note)
+        self.assertIn("dist EMA 1.37%", note)
+        self.assertIn("rompimento confirmado", note)
+
+    def test_build_confirmation_note_uses_standardized_confirmation_fields(self):
+        note = TelegramTradingBot._build_confirmation_note(
+            {
+                "confirmation_state": "mixed",
+                "confirmation_score": 5.4,
+                "conflicts": ["MACD conflita com o vies bullish"],
+                "notes": ["RSI em faixa favoravel para compra", "Volume em linha com a media"],
+            }
+        )
+
+        self.assertIn("mixed", note)
+        self.assertIn("5.40/10", note)
+        self.assertIn("MACD conflita com o vies bullish", note)
+        self.assertIn("RSI em faixa favoravel para compra", note)
+
 
 if __name__ == "__main__":
     unittest.main()

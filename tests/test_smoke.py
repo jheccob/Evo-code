@@ -105,6 +105,14 @@ class ImportSmokeTests(unittest.TestCase):
         self.assertNotIn("admin123", source)
         self.assertNotIn("use_container_width", source)
         self.assertIn("TradingBot(allow_simulated_data=False)", source)
+        self.assertGreaterEqual(source.count("st.session_state.futures_trading = None"), 2)
+
+    def test_main_production_source_checks_telegram_library_before_logging_success(self):
+        with open("main_production.py", "r", encoding="utf-8") as main_file:
+            source = main_file.read()
+
+        self.assertIn("from telegram import Bot", source)
+        self.assertIn("from telegram.ext import Application", source)
 
 
 class ProductionConfigSmokeTests(unittest.TestCase):

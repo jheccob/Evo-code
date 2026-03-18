@@ -1,4 +1,5 @@
 import ccxt
+import inspect
 import pandas as pd
 import numpy as np
 import logging
@@ -112,7 +113,7 @@ class TradingBot:
 
         symbol = symbol or self.symbol
         timeframe = timeframe or self.timeframe
-        symbol_formatted = symbol.replace('/', '')  # BTC/USDT -> BTCUSDT
+        symbol_formatted = symbol.replace('/', '').replace(':USDT', '')  # BTC/USDT -> BTCUSDT
 
         timeframe_map = {
             '1m': '1m', '3m': '3m', '5m': '5m', '15m': '15m',
@@ -123,8 +124,8 @@ class TradingBot:
         binance_timeframe = timeframe_map.get(timeframe, '5m')
 
         endpoints = [
-            f"https://api.binance.com/api/v3/klines?symbol={symbol_formatted}&interval={binance_timeframe}&limit={limit}",
             f"https://fapi.binance.com/fapi/v1/klines?symbol={symbol_formatted}&interval={binance_timeframe}&limit={limit}",
+            f"https://api.binance.com/api/v3/klines?symbol={symbol_formatted}&interval={binance_timeframe}&limit={limit}",
             f"https://api.binance.us/api/v3/klines?symbol={symbol_formatted}&interval={binance_timeframe}&limit={limit}"
         ]
 
@@ -592,9 +593,10 @@ class TradingBot:
         self._last_context_evaluation = evaluation
         return evaluation
 
-    def get_price_structure_evaluation(
+    def analyze_price_structure(
         self,
         df: Optional[pd.DataFrame],
+        market_bias: Optional[str] = None,
         timeframe: Optional[str] = None,
     ) -> Dict[str, object]:
         evaluation = {
@@ -602,6 +604,11 @@ class TradingBot:
             "structure_state": "weak_structure",
             "price_location": "mid_range",
             "structure_quality": 0.0,
+            "breakout": False,
+            "reversal_risk": False,
+            "against_market_bias": False,
+            "distance_from_ema_pct": None,
+            "notes": [],
             "is_tradeable": False,
             "has_minimum_history": False,
             "timestamp": None,
@@ -628,7 +635,6 @@ class TradingBot:
         prior_df = working_df.iloc[:-1]
         lookback = min(20, len(prior_df))
         recent_df = prior_df.tail(lookback)
-        structure_window = working_df.tail(min(30, len(working_df)))
 
         close_price = last_row.get("close", np.nan)
         open_price = last_row.get("open", np.nan)
@@ -641,7 +647,13 @@ class TradingBot:
         market_regime = last_row.get("market_regime", "trending")
 
         if any(pd.isna(value) for value in (close_price, open_price, high_price, low_price)):
+            self._last_price_structure_evaluation = evaluation
             return evaluation
+
+        ema_reference = working_df["close"].ewm(span=21, adjust=False).mean().iloc[-1]
+        distance_from_ema_pct = None
+        if not pd.isna(ema_reference) and float(ema_reference) != 0:
+            distance_from_ema_pct = abs(float(close_price) - float(ema_reference)) / abs(float(ema_reference)) * 100.0
 
         recent_high = float(recent_df["high"].max()) if not recent_df.empty else float(high_price)
         recent_low = float(recent_df["low"].min()) if not recent_df.empty else float(low_price)
@@ -667,6 +679,12 @@ class TradingBot:
             and float(close_price) <= float(sma_21)
             and float(sma_21) <= float(sma_50)
         )
+        resolved_market_bias = market_bias if market_bias in {"bullish", "bearish"} else "neutral"
+        if resolved_market_bias == "neutral":
+            if bullish_stack:
+                resolved_market_bias = "bullish"
+            elif bearish_stack:
+                resolved_market_bias = "bearish"
 
         distance_from_sma_atr = 0.0
         if not pd.isna(atr_value) and float(atr_value) > 0 and not pd.isna(sma_21):
@@ -804,6 +822,31 @@ class TradingBot:
             structure_quality -= 1.2
             reasons.append("preco perdendo estrutura recente")
 
+        breakout = structure_state == "breakout"
+        reversal_risk = structure_state == "reversal_risk"
+        against_market_bias = False
+        if reversal_risk:
+            if resolved_market_bias == "bullish":
+                against_market_bias = bool(
+                    bearish_impulse
+                    or bearish_rejection
+                    or broke_recent_low
+                    or losing_structure
+                    or price_location == "resistance"
+                )
+            elif resolved_market_bias == "bearish":
+                against_market_bias = bool(
+                    bullish_impulse
+                    or bullish_rejection
+                    or broke_recent_high
+                    or losing_structure
+                    or price_location == "support"
+                )
+            else:
+                against_market_bias = True
+            if against_market_bias:
+                reasons.append(f"estrutura contra vies {resolved_market_bias}")
+
         structure_quality = round(float(max(0.0, min(10.0, structure_quality))), 2)
         is_tradeable = structure_state in {"continuation", "pullback", "breakout"} and structure_quality >= 5.5
 
@@ -816,11 +859,18 @@ class TradingBot:
         else:
             reasons.append("preco no meio do range")
 
+        notes = list(dict.fromkeys(str(reason) for reason in reasons if reason))
+
         evaluation = {
             "timeframe": current_timeframe,
             "structure_state": structure_state,
             "price_location": price_location,
             "structure_quality": structure_quality,
+            "breakout": breakout,
+            "reversal_risk": reversal_risk,
+            "against_market_bias": against_market_bias,
+            "distance_from_ema_pct": None if distance_from_ema_pct is None else round(float(distance_from_ema_pct), 2),
+            "notes": notes,
             "is_tradeable": is_tradeable,
             "has_minimum_history": True,
             "timestamp": pd.Timestamp(working_df.index[-1]).isoformat(),
@@ -829,10 +879,22 @@ class TradingBot:
             "distance_from_sma21_atr": round(distance_from_sma_atr, 2) if distance_from_sma_atr else 0.0,
             "impulse_candle": bool(bullish_impulse or bearish_impulse),
             "rejection_candle": bool(bullish_rejection or bearish_rejection),
-            "reason": " | ".join(reasons),
+            "reason": " | ".join(notes),
         }
         self._last_price_structure_evaluation = evaluation
         return evaluation
+
+    def get_price_structure_evaluation(
+        self,
+        df: Optional[pd.DataFrame],
+        timeframe: Optional[str] = None,
+        market_bias: Optional[str] = None,
+    ) -> Dict[str, object]:
+        return self.analyze_price_structure(
+            df,
+            market_bias=market_bias,
+            timeframe=timeframe,
+        )
 
     @staticmethod
     def _resolve_confirmation_side(
@@ -861,19 +923,23 @@ class TradingBot:
 
         return "neutral"
 
-    def get_confirmation_evaluation(
+    def analyze_confirmation(
         self,
         df: Optional[pd.DataFrame],
-        signal_hypothesis: Optional[str] = None,
-        timeframe: Optional[str] = None,
-        context_evaluation: Optional[Dict[str, object]] = None,
+        market_bias: Optional[str] = None,
+        structure_state: Optional[str] = None,
     ) -> Dict[str, object]:
         evaluation = {
-            "timeframe": timeframe or self.timeframe,
+            "timeframe": self.timeframe,
             "confirmation_score": 0.0,
             "confirmation_state": "weak",
             "hypothesis_side": "neutral",
+            "rsi_state": "neutral",
+            "macd_state": "neutral",
+            "volume_state": "neutral",
+            "atr_state": "neutral",
             "conflicts": [],
+            "notes": [],
             "supporting_factors": [],
             "has_minimum_history": False,
             "timestamp": None,
@@ -897,18 +963,15 @@ class TradingBot:
 
         last_row = working_df.iloc[-1]
         prior_df = working_df.iloc[:-1]
-        current_timeframe = timeframe or self.timeframe or "5m"
-        hypothesis_side = self._resolve_confirmation_side(
-            signal_hypothesis=signal_hypothesis,
-            context_evaluation=context_evaluation,
+        resolved_bias = market_bias if market_bias in {"bullish", "bearish"} else self._resolve_confirmation_side(
             last_row=last_row,
         )
 
-        evaluation["hypothesis_side"] = hypothesis_side
+        evaluation["hypothesis_side"] = resolved_bias
         evaluation["timestamp"] = pd.Timestamp(working_df.index[-1]).isoformat()
         evaluation["has_minimum_history"] = True
 
-        if hypothesis_side == "neutral":
+        if resolved_bias == "neutral":
             evaluation["reason"] = "Sem hipotese direcional clara para confirmar."
             self._last_confirmation_evaluation = evaluation
             return evaluation
@@ -917,158 +980,174 @@ class TradingBot:
         rsi = last_row.get("rsi", np.nan)
         macd = last_row.get("macd", np.nan)
         macd_signal = last_row.get("macd_signal", np.nan)
-        macd_hist = last_row.get("macd_histogram", np.nan)
-        prev_macd_hist = last_row.get("prev_macd_histogram", np.nan)
-        adx = last_row.get("adx", np.nan)
-        volume_ratio = last_row.get("volume_ratio", np.nan)
         atr_value = last_row.get("atr", np.nan)
-        sma_21 = last_row.get("sma_21", np.nan)
-        sma_50 = last_row.get("sma_50", np.nan)
-        sma_200 = last_row.get("sma_200", np.nan)
-        prev_close = last_row.get("prev_close", np.nan)
-        prev_rsi = last_row.get("prev_rsi", np.nan)
+        ema_21 = last_row.get("ema_21", last_row.get("sma_21", np.nan))
+        ema_50 = last_row.get("ema_50", last_row.get("sma_50", np.nan))
+        prev_close = prior_df["close"].iloc[-1] if not prior_df.empty and "close" in prior_df else np.nan
 
         conflicts = []
-        supporting_factors = []
+        notes = []
         score = 0.0
 
         if not pd.isna(rsi):
-            if hypothesis_side == "bullish":
-                if 48 <= float(rsi) <= 70:
-                    score += 1.4
-                    supporting_factors.append("RSI em faixa favoravel para compra")
-                elif 40 <= float(rsi) < 48 or 70 < float(rsi) <= 76:
-                    score += 0.7
-                    supporting_factors.append("RSI levemente favoravel")
-                elif float(rsi) < 40:
-                    conflicts.append("RSI ainda fraco para compra")
-                elif float(rsi) > 78:
-                    conflicts.append("RSI esticado demais para continuidade de compra")
+            rsi_value = float(rsi)
+            if resolved_bias == "bullish":
+                if 50 <= rsi_value <= 68:
+                    evaluation["rsi_state"] = "favorable"
+                    score += 2.2
+                    notes.append("RSI em faixa favoravel para compra")
+                elif 46 <= rsi_value < 50 or 68 < rsi_value <= 74:
+                    evaluation["rsi_state"] = "acceptable"
+                    score += 1.0
+                    notes.append("RSI ainda confirma o vies bullish")
+                elif rsi_value > 74:
+                    evaluation["rsi_state"] = "stretched"
+                    conflicts.append("RSI esticado para continuidade bullish")
+                else:
+                    evaluation["rsi_state"] = "weak"
+                    conflicts.append("RSI abaixo da faixa de confirmacao bullish")
             else:
-                if 30 <= float(rsi) <= 52:
-                    score += 1.4
-                    supporting_factors.append("RSI em faixa favoravel para venda")
-                elif 24 <= float(rsi) < 30 or 52 < float(rsi) <= 60:
-                    score += 0.7
-                    supporting_factors.append("RSI levemente favoravel")
-                elif float(rsi) > 60:
-                    conflicts.append("RSI ainda forte para venda")
-                elif float(rsi) < 22:
-                    conflicts.append("RSI esticado demais para continuidade de venda")
+                if 32 <= rsi_value <= 50:
+                    evaluation["rsi_state"] = "favorable"
+                    score += 2.2
+                    notes.append("RSI em faixa favoravel para venda")
+                elif 28 <= rsi_value < 32 or 50 < rsi_value <= 56:
+                    evaluation["rsi_state"] = "acceptable"
+                    score += 1.0
+                    notes.append("RSI ainda confirma o vies bearish")
+                elif rsi_value < 28:
+                    evaluation["rsi_state"] = "stretched"
+                    conflicts.append("RSI esticado para continuidade bearish")
+                else:
+                    evaluation["rsi_state"] = "weak"
+                    conflicts.append("RSI acima da faixa de confirmacao bearish")
 
-        if not pd.isna(macd) and not pd.isna(macd_signal) and not pd.isna(macd_hist):
-            macd_is_aligned = (
-                hypothesis_side == "bullish" and float(macd) > float(macd_signal) and float(macd_hist) > 0
-            ) or (
-                hypothesis_side == "bearish" and float(macd) < float(macd_signal) and float(macd_hist) < 0
-            )
-            macd_is_conflicting = (
-                hypothesis_side == "bullish" and float(macd) < float(macd_signal) and float(macd_hist) < 0
-            ) or (
-                hypothesis_side == "bearish" and float(macd) > float(macd_signal) and float(macd_hist) > 0
-            )
-            histogram_is_strengthening = pd.isna(prev_macd_hist) or abs(float(macd_hist)) >= abs(float(prev_macd_hist))
-            if macd_is_aligned:
-                score += 2.0 if histogram_is_strengthening else 1.5
-                supporting_factors.append("MACD alinhado com a hipotese")
-            elif macd_is_conflicting:
-                conflicts.append("MACD conflita com a hipotese")
+        if not pd.isna(macd) and not pd.isna(macd_signal):
+            macd_value = float(macd)
+            macd_signal_value = float(macd_signal)
+            macd_gap = abs(macd_value - macd_signal_value)
+            if resolved_bias == "bullish":
+                if macd_value > macd_signal_value:
+                    evaluation["macd_state"] = "aligned"
+                    score += 2.3 if macd_gap > 0.02 else 1.5
+                    notes.append("MACD acima da linha de sinal")
+                elif macd_gap <= 0.02:
+                    evaluation["macd_state"] = "flat"
+                    score += 0.6
+                    notes.append("MACD neutro, sem conflito forte")
+                else:
+                    evaluation["macd_state"] = "conflict"
+                    conflicts.append("MACD conflita com o vies bullish")
             else:
-                score += 0.5
+                if macd_value < macd_signal_value:
+                    evaluation["macd_state"] = "aligned"
+                    score += 2.3 if macd_gap > 0.02 else 1.5
+                    notes.append("MACD abaixo da linha de sinal")
+                elif macd_gap <= 0.02:
+                    evaluation["macd_state"] = "flat"
+                    score += 0.6
+                    notes.append("MACD neutro, sem conflito forte")
+                else:
+                    evaluation["macd_state"] = "conflict"
+                    conflicts.append("MACD conflita com o vies bearish")
 
-        if not pd.isna(volume_ratio):
-            if float(volume_ratio) >= 1.6:
-                score += 1.2
-                supporting_factors.append("Volume confirma o movimento")
-            elif float(volume_ratio) >= 1.15:
-                score += 0.7
-                supporting_factors.append("Volume acima da media")
-            elif float(volume_ratio) < 0.9:
-                conflicts.append("Volume fraco para confirmar a entrada")
-
-        if not pd.isna(adx):
-            if float(adx) >= 30:
-                score += 1.2
-                supporting_factors.append("ADX confirma forca direcional")
-            elif float(adx) >= 22:
-                score += 0.7
-            elif float(adx) < 18:
-                conflicts.append("ADX fraco, mercado sem confirmacao direcional")
+        last_volume = last_row.get("volume", np.nan)
+        volume_baseline = float("nan")
+        if "volume" in prior_df:
+            recent_volume = prior_df["volume"].tail(min(20, len(prior_df))).dropna()
+            if not recent_volume.empty:
+                volume_baseline = float(recent_volume.mean())
+        if not pd.isna(last_volume) and not pd.isna(volume_baseline) and volume_baseline > 0:
+            volume_ratio = float(last_volume) / float(volume_baseline)
+            if volume_ratio >= 1.05:
+                evaluation["volume_state"] = "above_average"
+                score += 1.6
+                notes.append("Volume acima da media recente")
+            elif volume_ratio >= 0.95:
+                evaluation["volume_state"] = "average"
+                score += 0.6
+                notes.append("Volume em linha com a media")
+            else:
+                evaluation["volume_state"] = "weak"
+                conflicts.append("Volume fraco para confirmar o movimento")
+        else:
+            volume_ratio = last_row.get("volume_ratio", np.nan)
+            if not pd.isna(volume_ratio):
+                if float(volume_ratio) >= 1.15:
+                    evaluation["volume_state"] = "above_average"
+                    score += 1.4
+                    notes.append("Volume acima da media recente")
+                elif float(volume_ratio) >= 0.95:
+                    evaluation["volume_state"] = "average"
+                    score += 0.5
+                else:
+                    evaluation["volume_state"] = "weak"
+                    conflicts.append("Volume fraco para confirmar o movimento")
 
         if not pd.isna(atr_value) and not pd.isna(close_price) and float(close_price) > 0:
             atr_pct = float(atr_value) / float(close_price)
-            recent_atr_series = prior_df.get("atr")
-            recent_close_series = prior_df.get("close")
             atr_baseline = float("nan")
-            if recent_atr_series is not None and recent_close_series is not None:
-                atr_pct_series = recent_atr_series / recent_close_series.replace(0, np.nan)
-                clean_atr_pct = atr_pct_series.dropna()
+            if "atr" in prior_df and "close" in prior_df:
+                atr_pct_series = prior_df["atr"] / prior_df["close"].replace(0, np.nan)
+                clean_atr_pct = atr_pct_series.dropna().tail(min(20, len(atr_pct_series.dropna())))
                 if not clean_atr_pct.empty:
                     atr_baseline = float(clean_atr_pct.median())
 
             if not pd.isna(atr_baseline) and atr_baseline > 0:
-                if atr_pct <= atr_baseline * 0.55:
-                    conflicts.append("ATR comprimido demais, falta expansao")
-                elif atr_pct >= atr_baseline * 1.9:
-                    conflicts.append("ATR excessivo, movimento pode estar desordenado")
+                if atr_pct < atr_baseline * 0.65:
+                    evaluation["atr_state"] = "compressed"
+                    conflicts.append("ATR fraco para confirmar o movimento")
+                elif atr_pct > atr_baseline * 2.0:
+                    evaluation["atr_state"] = "excessive"
+                    conflicts.append("ATR excessivo para confirmar com seguranca")
                 else:
-                    score += 0.9
-                    supporting_factors.append("ATR em faixa saudavel")
-            elif atr_pct <= 0.05:
-                score += 0.7
+                    evaluation["atr_state"] = "healthy"
+                    score += 1.5
+                    notes.append("ATR em faixa saudavel")
+            elif atr_pct >= 0.002:
+                evaluation["atr_state"] = "healthy"
+                score += 0.8
+                notes.append("ATR suficiente para o setup")
+            else:
+                evaluation["atr_state"] = "compressed"
+                conflicts.append("ATR fraco para confirmar o movimento")
 
-        if not pd.isna(close_price) and not pd.isna(sma_21):
+        if not pd.isna(close_price) and not pd.isna(ema_21):
             averages_aligned = False
-            if hypothesis_side == "bullish":
-                averages_aligned = float(close_price) >= float(sma_21) and (
-                    pd.isna(sma_50) or float(sma_21) >= float(sma_50)
+            if resolved_bias == "bullish":
+                averages_aligned = float(close_price) >= float(ema_21) and (
+                    pd.isna(ema_50) or float(ema_21) >= float(ema_50)
                 )
             else:
-                averages_aligned = float(close_price) <= float(sma_21) and (
-                    pd.isna(sma_50) or float(sma_21) <= float(sma_50)
+                averages_aligned = float(close_price) <= float(ema_21) and (
+                    pd.isna(ema_50) or float(ema_21) <= float(ema_50)
                 )
-
-            full_stack_aligned = averages_aligned
-            if not pd.isna(sma_50) and not pd.isna(sma_200):
-                if hypothesis_side == "bullish":
-                    full_stack_aligned = full_stack_aligned and float(sma_50) >= float(sma_200)
-                else:
-                    full_stack_aligned = full_stack_aligned and float(sma_50) <= float(sma_200)
-
-            if full_stack_aligned:
-                score += 1.8
-                supporting_factors.append("Medias alinhadas com a hipotese")
-            elif averages_aligned:
-                score += 1.0
-                supporting_factors.append("Preco e medias parcialmente alinhados")
+            if averages_aligned:
+                score += 1.6
+                notes.append("Medias confirmam o vies")
             else:
-                conflicts.append("Medias nao confirmam a hipotese")
+                conflicts.append("Medias nao confirmam o vies")
 
-        momentum_aligned = False
         if not pd.isna(close_price) and not pd.isna(prev_close):
             price_momentum = float(close_price) - float(prev_close)
-            rsi_momentum = 0.0
-            if not pd.isna(rsi) and not pd.isna(prev_rsi):
-                rsi_momentum = float(rsi) - float(prev_rsi)
-
-            if hypothesis_side == "bullish":
-                if price_momentum > 0 and (pd.isna(macd_hist) or float(macd_hist) > 0) and rsi_momentum >= 0:
-                    momentum_aligned = True
-                elif price_momentum < 0 and rsi_momentum <= 0:
-                    conflicts.append("Momentum de curto prazo contra a compra")
-                elif price_momentum > 0 and rsi_momentum < 0:
-                    conflicts.append("Divergencia de momentum contra a compra")
+            if resolved_bias == "bullish" and price_momentum > 0:
+                score += 0.8
+                notes.append("Preco fechou na direcao do vies")
+            elif resolved_bias == "bearish" and price_momentum < 0:
+                score += 0.8
+                notes.append("Preco fechou na direcao do vies")
             else:
-                if price_momentum < 0 and (pd.isna(macd_hist) or float(macd_hist) < 0) and rsi_momentum <= 0:
-                    momentum_aligned = True
-                elif price_momentum > 0 and rsi_momentum >= 0:
-                    conflicts.append("Momentum de curto prazo contra a venda")
-                elif price_momentum < 0 and rsi_momentum > 0:
-                    conflicts.append("Divergencia de momentum contra a venda")
+                conflicts.append("Momentum de curto prazo contra o vies")
 
-        if momentum_aligned:
-            score += 1.3
-            supporting_factors.append("Momentum confirma a hipotese")
+        if structure_state == "breakout" and evaluation["volume_state"] == "weak":
+            conflicts.append("Breakout sem volume de confirmacao")
+        if structure_state == "pullback" and evaluation["macd_state"] == "conflict":
+            conflicts.append("Pullback sem MACD alinhado para retomada")
+        if structure_state == "continuation" and evaluation["atr_state"] == "compressed":
+            conflicts.append("Continuacao sem expansao suficiente de ATR")
+        if evaluation["volume_state"] == "weak" and evaluation["atr_state"] == "compressed":
+            score = min(score, 3.5)
+            conflicts.append("Sem volume e expansao suficientes para confirmar o setup")
 
         score = round(float(max(0.0, min(10.0, score))), 2)
         if score >= 7.0 and len(conflicts) <= 1:
@@ -1078,21 +1157,64 @@ class TradingBot:
         else:
             confirmation_state = "weak"
 
+        notes = list(dict.fromkeys(str(note) for note in notes if note))
+        conflicts = list(dict.fromkeys(str(conflict) for conflict in conflicts if conflict))
+
         evaluation = {
-            "timeframe": current_timeframe,
+            "timeframe": self.timeframe,
             "confirmation_score": score,
             "confirmation_state": confirmation_state,
-            "hypothesis_side": hypothesis_side,
+            "hypothesis_side": resolved_bias,
+            "rsi_state": evaluation["rsi_state"],
+            "macd_state": evaluation["macd_state"],
+            "volume_state": evaluation["volume_state"],
+            "atr_state": evaluation["atr_state"],
             "conflicts": conflicts,
-            "supporting_factors": supporting_factors,
+            "notes": notes,
+            "supporting_factors": notes,
             "has_minimum_history": True,
             "timestamp": pd.Timestamp(working_df.index[-1]).isoformat(),
             "reason": (
-                " | ".join(supporting_factors[:2] + conflicts[:2])
-                if supporting_factors or conflicts
+                " | ".join(notes[:2] + conflicts[:2])
+                if notes or conflicts
                 else "Confirmacao tecnica sem sinais claros."
             ),
         }
+        self._last_confirmation_evaluation = evaluation
+        return evaluation
+
+    def get_confirmation_evaluation(
+        self,
+        df: Optional[pd.DataFrame],
+        signal_hypothesis: Optional[str] = None,
+        timeframe: Optional[str] = None,
+        context_evaluation: Optional[Dict[str, object]] = None,
+        structure_evaluation: Optional[Dict[str, object]] = None,
+    ) -> Dict[str, object]:
+        working_df = df
+        if working_df is not None and not working_df.empty:
+            if "is_closed" in working_df.columns:
+                closed_df = working_df[working_df["is_closed"].fillna(False)]
+                if not closed_df.empty:
+                    working_df = closed_df
+                elif len(working_df) > 1:
+                    working_df = working_df.iloc[:-1]
+            last_row = working_df.iloc[-1] if not working_df.empty else None
+        else:
+            last_row = None
+
+        market_bias = self._resolve_confirmation_side(
+            signal_hypothesis=signal_hypothesis,
+            context_evaluation=context_evaluation,
+            last_row=last_row,
+        )
+        evaluation = self.analyze_confirmation(
+            df,
+            market_bias=market_bias,
+            structure_state=(structure_evaluation or {}).get("structure_state"),
+        )
+        evaluation["timeframe"] = timeframe or self.timeframe
+        evaluation["hypothesis_side"] = market_bias
         self._last_confirmation_evaluation = evaluation
         return evaluation
 
@@ -1399,10 +1521,18 @@ class TradingBot:
         if structure_evaluation and structure_evaluation.get("has_minimum_history"):
             structure_state = structure_evaluation.get("structure_state", "weak_structure")
             structure_quality = float(structure_evaluation.get("structure_quality", 0.0) or 0.0)
-            if structure_state in {"weak_structure", "reversal_risk"}:
+            reversal_risk = bool(structure_evaluation.get("reversal_risk", structure_state == "reversal_risk"))
+            against_market_bias = bool(structure_evaluation.get("against_market_bias", reversal_risk))
+            if structure_state == "weak_structure":
                 evaluation = {
                     "hard_block": True,
                     "block_reason": structure_evaluation.get("reason") or "Estrutura ruim para entrada.",
+                    "block_source": "price_structure",
+                }
+            elif reversal_risk and against_market_bias:
+                evaluation = {
+                    "hard_block": True,
+                    "block_reason": structure_evaluation.get("reason") or "Estrutura mostra risco de reversao contra o vies.",
                     "block_source": "price_structure",
                 }
             elif structure_quality < 5.5:
@@ -1491,8 +1621,12 @@ class TradingBot:
         structure_state = structure_evaluation.get("structure_state", "weak_structure")
         price_location = structure_evaluation.get("price_location", "mid_range")
         structure_quality = float(structure_evaluation.get("structure_quality", 0.0) or 0.0)
+        reversal_risk = bool(structure_evaluation.get("reversal_risk", structure_state == "reversal_risk"))
+        against_market_bias = bool(structure_evaluation.get("against_market_bias", reversal_risk))
 
-        if structure_state in {"weak_structure", "reversal_risk"}:
+        if structure_state == "weak_structure":
+            return "NEUTRO"
+        if reversal_risk and against_market_bias:
             return "NEUTRO"
         if structure_quality < 5.5:
             return "NEUTRO"
@@ -2068,6 +2202,7 @@ class TradingBot:
             return self._set_hard_block("Sem dados fechados suficientes para operar.", "market_data")
 
         self._last_context_evaluation = None
+        self._last_price_structure_evaluation = None
         self._last_confirmation_evaluation = None
         self._last_entry_quality_evaluation = None
         self._clear_hard_block()
@@ -2093,7 +2228,7 @@ class TradingBot:
         resolved_context_timeframe = context_timeframe or AppConfig.get_context_timeframe(current_timeframe)
         market_regime = last_row.get('market_regime', 'trending')
         context_evaluation = None
-        structure_evaluation = self.get_price_structure_evaluation(df, timeframe=current_timeframe)
+        structure_evaluation = None
         confirmation_evaluation = None
         entry_quality_evaluation = None
 
@@ -2125,6 +2260,16 @@ class TradingBot:
                         "Timeframe maior sem vies direcional claro.",
                         "higher_timeframe_context",
                     )
+
+        structure_kwargs = {"timeframe": current_timeframe}
+        if context_evaluation:
+            try:
+                structure_signature = inspect.signature(self.get_price_structure_evaluation)
+                if "market_bias" in structure_signature.parameters:
+                    structure_kwargs["market_bias"] = context_evaluation.get("market_bias") or context_evaluation.get("bias")
+            except (TypeError, ValueError):
+                pass
+        structure_evaluation = self.get_price_structure_evaluation(df, **structure_kwargs)
 
         if market_regime == 'ranging' and (avoid_ranging or current_timeframe in {"5m", "15m"}):
             return self._set_hard_block("Mercado lateral demais para operar.", "market_regime")
@@ -2258,6 +2403,7 @@ class TradingBot:
                 signal_hypothesis=signal,
                 timeframe=current_timeframe,
                 context_evaluation=context_evaluation,
+                structure_evaluation=structure_evaluation,
             )
             entry_quality_evaluation = self.get_entry_quality_evaluation(
                 df,
@@ -2367,6 +2513,7 @@ class TradingBot:
             signal_hypothesis=signal,
             timeframe=current_timeframe,
             context_evaluation=context_evaluation,
+            structure_evaluation=structure_evaluation,
         )
         entry_quality_evaluation = self.get_entry_quality_evaluation(
             df,

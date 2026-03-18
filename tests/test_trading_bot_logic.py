@@ -21,9 +21,11 @@ def _build_confirmation_frame(
     sma_50_values,
     sma_200_values,
 ):
+    volumes = [float(value) * 1000.0 for value in volume_ratios]
     frame = pd.DataFrame(
         {
             "close": closes,
+            "volume": volumes,
             "rsi": rsis,
             "macd": macds,
             "macd_signal": macd_signals,
@@ -49,6 +51,26 @@ def _build_confirmation_frame(
 
 
 class TradingBotLogicTests(unittest.TestCase):
+    @mock.patch("requests.get")
+    def test_fetch_public_ohlcv_prefers_futures_endpoint_and_normalizes_symbol(self, mock_get):
+        response = mock.Mock()
+        response.raise_for_status.return_value = None
+        response.json.return_value = [
+            [1704067200000, "100.0", "101.0", "99.0", "100.5", "1234.0"]
+        ]
+        mock_get.return_value = response
+
+        bot = TradingBot.__new__(TradingBot)
+        bot.symbol = "BTC/USDT:USDT"
+        bot.timeframe = "1h"
+
+        data = TradingBot._fetch_public_ohlcv(bot, limit=1, symbol="BTC/USDT:USDT", timeframe="1h")
+
+        self.assertEqual(len(data), 1)
+        first_url = mock_get.call_args_list[0].args[0]
+        self.assertIn("https://fapi.binance.com/fapi/v1/klines", first_url)
+        self.assertIn("symbol=BTCUSDT", first_url)
+
     def test_get_market_data_real_only_falls_back_to_public_rest_when_stream_fails(self):
         bot = TradingBot.__new__(TradingBot)
         bot.symbol = "BTC/USDT"
@@ -557,6 +579,51 @@ class TradingBotLogicTests(unittest.TestCase):
         self.assertGreaterEqual(evaluation["structure_quality"], 6.5)
         self.assertTrue(evaluation["is_tradeable"])
 
+    def test_analyze_price_structure_returns_standardized_output(self):
+        bot = TradingBot.__new__(TradingBot)
+        bot.timeframe = "1h"
+
+        structure_df = pd.DataFrame(
+            [
+                {
+                    "open": 100.0 + i * 0.35,
+                    "high": 100.8 + i * 0.35,
+                    "low": 99.7 + i * 0.35,
+                    "close": 100.4 + i * 0.35,
+                    "atr": 1.0,
+                    "sma_21": 99.5 + i * 0.3,
+                    "sma_50": 98.8 + i * 0.24,
+                    "volume_ratio": 1.2,
+                    "market_regime": "trending",
+                    "is_closed": True,
+                }
+                for i in range(7)
+            ]
+            + [
+                {
+                    "open": 102.6,
+                    "high": 105.2,
+                    "low": 102.4,
+                    "close": 105.0,
+                    "atr": 1.1,
+                    "sma_21": 101.9,
+                    "sma_50": 100.8,
+                    "volume_ratio": 2.1,
+                    "market_regime": "trending",
+                    "is_closed": True,
+                }
+            ],
+            index=pd.date_range("2026-01-01 00:00:00", periods=8, freq="1h"),
+        )
+
+        evaluation = TradingBot.analyze_price_structure(bot, structure_df, market_bias="bullish", timeframe="1h")
+
+        self.assertTrue(evaluation["breakout"])
+        self.assertFalse(evaluation["reversal_risk"])
+        self.assertIsInstance(evaluation["notes"], list)
+        self.assertIn("distance_from_ema_pct", evaluation)
+        self.assertIsNotNone(evaluation["distance_from_ema_pct"])
+
     def test_price_structure_evaluation_returns_pullback_in_trend_zone(self):
         bot = TradingBot.__new__(TradingBot)
         bot.timeframe = "1h"
@@ -600,6 +667,60 @@ class TradingBotLogicTests(unittest.TestCase):
         self.assertEqual(evaluation["price_location"], "trend_zone")
         self.assertGreaterEqual(evaluation["structure_quality"], 5.5)
         self.assertTrue(evaluation["is_tradeable"])
+
+    def test_analyze_price_structure_ignores_open_breakout_candle(self):
+        bot = TradingBot.__new__(TradingBot)
+        bot.timeframe = "1h"
+
+        structure_df = pd.DataFrame(
+            [
+                {
+                    "open": 100.0 + i * 0.2,
+                    "high": 100.6 + i * 0.2,
+                    "low": 99.7 + i * 0.2,
+                    "close": 100.3 + i * 0.2,
+                    "atr": 1.0,
+                    "sma_21": 99.7 + i * 0.18,
+                    "sma_50": 99.1 + i * 0.14,
+                    "volume_ratio": 1.1,
+                    "market_regime": "trending",
+                    "is_closed": True,
+                }
+                for i in range(7)
+            ]
+            + [
+                {
+                    "open": 101.7,
+                    "high": 102.0,
+                    "low": 101.4,
+                    "close": 101.8,
+                    "atr": 1.0,
+                    "sma_21": 101.1,
+                    "sma_50": 100.2,
+                    "volume_ratio": 1.2,
+                    "market_regime": "trending",
+                    "is_closed": True,
+                },
+                {
+                    "open": 101.8,
+                    "high": 106.0,
+                    "low": 101.7,
+                    "close": 105.8,
+                    "atr": 1.2,
+                    "sma_21": 101.4,
+                    "sma_50": 100.4,
+                    "volume_ratio": 2.5,
+                    "market_regime": "trending",
+                    "is_closed": False,
+                },
+            ],
+            index=pd.date_range("2026-01-01 00:00:00", periods=9, freq="1h"),
+        )
+
+        evaluation = TradingBot.analyze_price_structure(bot, structure_df, market_bias="bullish", timeframe="1h")
+
+        self.assertNotEqual(evaluation["structure_state"], "breakout")
+        self.assertEqual(evaluation["timestamp"], pd.Timestamp("2026-01-01 07:00:00").isoformat())
 
     def test_check_signal_blocks_actionable_signal_when_structure_is_weak(self):
         bot = TradingBot.__new__(TradingBot)
@@ -713,6 +834,87 @@ class TradingBotLogicTests(unittest.TestCase):
 
         self.assertIn(signal, {"COMPRA", "COMPRA_FRACA"})
 
+    def test_check_signal_blocks_reversal_risk_against_higher_timeframe_bias(self):
+        bot = TradingBot.__new__(TradingBot)
+        bot.rsi_min = 30
+        bot.rsi_max = 70
+        bot.rsi_period = 14
+        bot.timeframe = "1h"
+        bot.symbol = "BTC/USDT"
+        bot._generate_advanced_signal = lambda row: "COMPRA"
+        bot._calculate_signal_confidence = lambda row: 95.0
+        bot.calculate_advanced_score = lambda row, signal=None: 0.9
+        bot._passes_signal_structure_guardrail = lambda row, signal, timeframe: True
+        bot.get_price_structure_evaluation = lambda df, timeframe=None, market_bias=None: {
+            "has_minimum_history": True,
+            "structure_state": "reversal_risk",
+            "price_location": "resistance",
+            "structure_quality": 6.4,
+            "reversal_risk": True,
+            "against_market_bias": True,
+            "distance_from_ema_pct": 2.9,
+            "notes": ["estrutura contra vies bullish"],
+            "reason": "estrutura contra vies bullish",
+        }
+
+        entry_df = pd.DataFrame(
+            [
+                {
+                    "open": 100.0,
+                    "high": 102.0,
+                    "low": 99.8,
+                    "close": 101.8,
+                    "rsi": 34.0,
+                    "macd": 0.8,
+                    "macd_signal": 0.2,
+                    "macd_histogram": 0.6,
+                    "adx": 32.0,
+                    "di_plus": 28.0,
+                    "di_minus": 12.0,
+                    "volume_ratio": 1.8,
+                    "atr": 1.2,
+                    "sma_21": 100.9,
+                    "sma_50": 100.1,
+                    "stoch_rsi_k": 40.0,
+                    "williams_r": -50.0,
+                    "bb_width": 0.05,
+                    "market_regime": "trending",
+                    "is_closed": True,
+                }
+            ],
+            index=[pd.Timestamp("2026-01-01 12:00:00")],
+        )
+        context_df = pd.DataFrame(
+            [
+                {
+                    "close": 104.0,
+                    "rsi": 58.0,
+                    "macd": 0.7,
+                    "macd_signal": 0.3,
+                    "macd_histogram": 0.4,
+                    "adx": 31.0,
+                    "di_plus": 26.0,
+                    "di_minus": 14.0,
+                    "sma_21": 102.2,
+                    "sma_50": 101.1,
+                    "sma_200": 99.8,
+                    "market_regime": "trending",
+                    "is_closed": True,
+                }
+            ],
+            index=[pd.Timestamp("2026-01-01 12:00:00")],
+        )
+
+        signal = TradingBot.check_signal(
+            bot,
+            entry_df,
+            timeframe="1h",
+            context_df=context_df,
+            context_timeframe="4h",
+        )
+
+        self.assertEqual(signal, "NEUTRO")
+
     def test_signal_guardrail_blocks_bullish_signal_on_bearish_candle_structure(self):
         bot = TradingBot.__new__(TradingBot)
         bot.rsi_min = 20
@@ -823,6 +1025,83 @@ class TradingBotLogicTests(unittest.TestCase):
         self.assertEqual(evaluation["hypothesis_side"], "bullish")
         self.assertLessEqual(len(evaluation["conflicts"]), 1)
 
+    def test_analyze_confirmation_returns_confirmed_for_aligned_bearish_setup(self):
+        bot = TradingBot.__new__(TradingBot)
+        bot.timeframe = "1h"
+
+        data = _build_confirmation_frame(
+            closes=[105.0, 104.6, 104.1, 103.5, 103.0, 102.4],
+            rsis=[49.0, 47.0, 45.0, 42.0, 40.0, 38.0],
+            macds=[-0.10, -0.16, -0.24, -0.33, -0.42, -0.54],
+            macd_signals=[-0.02, -0.06, -0.11, -0.18, -0.27, -0.36],
+            macd_histograms=[-0.08, -0.10, -0.13, -0.15, -0.15, -0.18],
+            adx_values=[24.0, 26.0, 28.0, 30.0, 31.0, 33.0],
+            volume_ratios=[1.05, 1.10, 1.18, 1.24, 1.30, 1.42],
+            atr_values=[1.10, 1.09, 1.08, 1.10, 1.12, 1.15],
+            sma_21_values=[104.8, 104.4, 104.0, 103.6, 103.1, 102.7],
+            sma_50_values=[105.4, 105.0, 104.6, 104.2, 103.8, 103.4],
+            sma_200_values=[106.5, 106.4, 106.3, 106.2, 106.1, 106.0],
+        )
+
+        evaluation = TradingBot.analyze_confirmation(bot, data, market_bias="bearish", structure_state="continuation")
+
+        self.assertEqual(evaluation["confirmation_state"], "confirmed")
+        self.assertEqual(evaluation["rsi_state"], "favorable")
+        self.assertEqual(evaluation["macd_state"], "aligned")
+        self.assertIn(evaluation["volume_state"], {"above_average", "average"})
+        self.assertEqual(evaluation["atr_state"], "healthy")
+
+    def test_analyze_confirmation_returns_mixed_when_context_and_indicators_conflict(self):
+        bot = TradingBot.__new__(TradingBot)
+        bot.timeframe = "1h"
+
+        data = _build_confirmation_frame(
+            closes=[100.0, 100.4, 100.8, 101.0, 100.9, 101.2],
+            rsis=[52.0, 55.0, 57.0, 58.0, 56.0, 54.0],
+            macds=[0.08, 0.12, 0.18, 0.20, 0.16, 0.08],
+            macd_signals=[0.05, 0.08, 0.11, 0.15, 0.16, 0.12],
+            macd_histograms=[0.03, 0.04, 0.07, 0.05, 0.00, -0.04],
+            adx_values=[20.0, 21.0, 22.0, 22.0, 21.0, 20.0],
+            volume_ratios=[1.00, 1.04, 1.10, 1.08, 0.98, 0.97],
+            atr_values=[0.95, 0.96, 0.98, 0.99, 0.96, 0.94],
+            sma_21_values=[99.9, 100.2, 100.5, 100.7, 100.8, 100.9],
+            sma_50_values=[99.4, 99.7, 100.0, 100.2, 100.4, 100.6],
+            sma_200_values=[98.6, 98.7, 98.8, 98.9, 99.0, 99.1],
+        )
+
+        evaluation = TradingBot.analyze_confirmation(bot, data, market_bias="bullish", structure_state="pullback")
+
+        self.assertEqual(evaluation["confirmation_state"], "mixed")
+        self.assertGreaterEqual(evaluation["confirmation_score"], 4.0)
+        self.assertLess(evaluation["confirmation_score"], 7.0)
+        self.assertGreaterEqual(len(evaluation["conflicts"]), 1)
+
+    def test_analyze_confirmation_returns_weak_when_atr_and_volume_are_too_weak(self):
+        bot = TradingBot.__new__(TradingBot)
+        bot.timeframe = "1h"
+
+        data = _build_confirmation_frame(
+            closes=[100.0, 100.2, 100.4, 100.5, 100.55, 100.56],
+            rsis=[51.0, 52.0, 53.0, 54.0, 54.0, 53.0],
+            macds=[0.04, 0.05, 0.06, 0.06, 0.05, 0.04],
+            macd_signals=[0.03, 0.04, 0.05, 0.05, 0.05, 0.05],
+            macd_histograms=[0.01, 0.01, 0.01, 0.01, 0.00, -0.01],
+            adx_values=[18.0, 18.0, 18.0, 17.5, 17.0, 16.5],
+            volume_ratios=[1.00, 0.98, 0.96, 0.92, 0.85, 0.70],
+            atr_values=[1.10, 1.08, 1.05, 1.00, 0.70, 0.18],
+            sma_21_values=[99.8, 99.9, 100.0, 100.1, 100.2, 100.3],
+            sma_50_values=[99.2, 99.3, 99.4, 99.5, 99.6, 99.7],
+            sma_200_values=[98.0, 98.1, 98.2, 98.3, 98.4, 98.5],
+        )
+
+        evaluation = TradingBot.analyze_confirmation(bot, data, market_bias="bullish", structure_state="continuation")
+
+        self.assertEqual(evaluation["confirmation_state"], "weak")
+        self.assertEqual(evaluation["volume_state"], "weak")
+        self.assertEqual(evaluation["atr_state"], "compressed")
+        self.assertIn("Volume fraco para confirmar o movimento", evaluation["conflicts"])
+        self.assertIn("ATR fraco para confirmar o movimento", evaluation["conflicts"])
+
     def test_confirmation_evaluation_returns_weak_when_indicators_conflict(self):
         bot = TradingBot.__new__(TradingBot)
         bot.timeframe = "1h"
@@ -851,7 +1130,7 @@ class TradingBotLogicTests(unittest.TestCase):
         self.assertEqual(evaluation["confirmation_state"], "weak")
         self.assertLess(evaluation["confirmation_score"], 4.0)
         self.assertGreaterEqual(len(evaluation["conflicts"]), 3)
-        self.assertIn("MACD conflita com a hipotese", evaluation["conflicts"])
+        self.assertIn("MACD conflita com o vies bullish", evaluation["conflicts"])
 
     def test_check_signal_downgrades_to_weak_when_confirmation_is_mixed(self):
         bot = TradingBot.__new__(TradingBot)

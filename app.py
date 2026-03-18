@@ -780,6 +780,7 @@ if 'futures_trading' not in st.session_state:
             st.session_state.futures_trading = FuturesTrading()
         except Exception as e:
             st.sidebar.warning(f"⚠️ Futures trading não disponível: {str(e)}")
+            st.session_state.futures_trading = None
             FUTURES_AVAILABLE = False
     else:
         st.session_state.futures_trading = None

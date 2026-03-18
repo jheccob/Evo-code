@@ -36,6 +36,8 @@ logger = logging.getLogger(__name__)
 # =========================
 
 try:
+    from telegram import Bot  # noqa: F401
+    from telegram.ext import Application  # noqa: F401
 
     logger.info("python-telegram-bot importado com sucesso")
 
