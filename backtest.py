@@ -18,6 +18,7 @@ logger = logging.getLogger(__name__)
 
 LONG_SIGNALS = {"COMPRA", "COMPRA_FRACA"}
 SHORT_SIGNALS = {"VENDA", "VENDA_FRACA"}
+ACTIONABLE_SIGNALS = LONG_SIGNALS.union(SHORT_SIGNALS)
 
 
 @dataclass
@@ -47,6 +48,93 @@ class BacktestEngine:
         self.database = database or runtime_db
         self._trade_history: List[Dict] = []
         self._portfolio_history: List[Dict] = []
+
+    def _build_empty_signal_pipeline_stats(self) -> Dict[str, object]:
+        return {
+            "candidate_count": 0,
+            "approved_count": 0,
+            "blocked_count": 0,
+            "approval_rate_pct": 0.0,
+            "block_reason_counts": {},
+            "structure_state_counts": {},
+            "confirmation_state_counts": {},
+            "entry_quality_counts": {},
+        }
+
+    def _increment_count(self, counts: Dict[str, int], key: Optional[str]) -> None:
+        normalized_key = str(key or "").strip()
+        if not normalized_key:
+            return
+        counts[normalized_key] = counts.get(normalized_key, 0) + 1
+
+    def _record_signal_pipeline_stats(self, stats: Dict[str, object], pipeline: Dict[str, object]) -> None:
+        candidate_signal = str(pipeline.get("candidate_signal") or "NEUTRO")
+        if candidate_signal not in ACTIONABLE_SIGNALS:
+            return
+
+        stats["candidate_count"] = int(stats.get("candidate_count", 0) or 0) + 1
+
+        approved_signal = str(pipeline.get("approved_signal") or "")
+        if approved_signal in ACTIONABLE_SIGNALS:
+            stats["approved_count"] = int(stats.get("approved_count", 0) or 0) + 1
+
+        blocked_signal = str(pipeline.get("blocked_signal") or "")
+        if blocked_signal in ACTIONABLE_SIGNALS:
+            stats["blocked_count"] = int(stats.get("blocked_count", 0) or 0) + 1
+            self._increment_count(stats["block_reason_counts"], pipeline.get("block_reason"))
+
+        structure_state = (pipeline.get("structure_evaluation") or {}).get("structure_state")
+        confirmation_state = (pipeline.get("confirmation_evaluation") or {}).get("confirmation_state")
+        entry_quality = (pipeline.get("entry_quality_evaluation") or {}).get("entry_quality")
+
+        self._increment_count(stats["structure_state_counts"], structure_state)
+        self._increment_count(stats["confirmation_state_counts"], confirmation_state)
+        self._increment_count(stats["entry_quality_counts"], entry_quality)
+
+    def _finalize_signal_pipeline_stats(self, stats: Dict[str, object]) -> Dict[str, object]:
+        finalized = dict(stats)
+        candidate_count = int(finalized.get("candidate_count", 0) or 0)
+        approved_count = int(finalized.get("approved_count", 0) or 0)
+        finalized["approval_rate_pct"] = round((approved_count / candidate_count) * 100, 2) if candidate_count else 0.0
+        return finalized
+
+    def _normalize_signal_pipeline(self, pipeline: Optional[Dict[str, object]], fallback_signal: str = "NEUTRO") -> Dict[str, object]:
+        raw_pipeline = pipeline if isinstance(pipeline, dict) else {}
+        analytical_signal = str(
+            raw_pipeline.get("analytical_signal")
+            or raw_pipeline.get("signal")
+            or fallback_signal
+            or "NEUTRO"
+        )
+        approved_signal = raw_pipeline.get("approved_signal")
+        blocked_signal = raw_pipeline.get("blocked_signal")
+        candidate_signal = raw_pipeline.get("candidate_signal")
+        synthetic_pipeline = not raw_pipeline and analytical_signal in ACTIONABLE_SIGNALS
+
+        if candidate_signal not in ACTIONABLE_SIGNALS:
+            if approved_signal in ACTIONABLE_SIGNALS:
+                candidate_signal = approved_signal
+            elif blocked_signal in ACTIONABLE_SIGNALS:
+                candidate_signal = blocked_signal
+            elif analytical_signal in ACTIONABLE_SIGNALS:
+                candidate_signal = analytical_signal
+            else:
+                candidate_signal = "NEUTRO"
+
+        if synthetic_pipeline:
+            approved_signal = analytical_signal
+            blocked_signal = None
+
+        return {
+            "candidate_signal": candidate_signal,
+            "approved_signal": approved_signal if approved_signal in ACTIONABLE_SIGNALS else None,
+            "blocked_signal": blocked_signal if blocked_signal in ACTIONABLE_SIGNALS else None,
+            "analytical_signal": analytical_signal,
+            "block_reason": raw_pipeline.get("block_reason"),
+            "structure_evaluation": raw_pipeline.get("structure_evaluation"),
+            "confirmation_evaluation": raw_pipeline.get("confirmation_evaluation"),
+            "entry_quality_evaluation": raw_pipeline.get("entry_quality_evaluation"),
+        }
 
     def run_backtest(
         self,
@@ -416,7 +504,7 @@ class BacktestEngine:
         if len(df) <= warmup_candles + 1:
             raise ValueError("Dados insuficientes para backtest")
 
-        self._trade_history, self._portfolio_history, final_balance = self._run_simulation(
+        self._trade_history, self._portfolio_history, final_balance, signal_pipeline_stats = self._run_simulation(
             df=df,
             context_df=resolved_context_df,
             timeframe=timeframe,
@@ -459,7 +547,9 @@ class BacktestEngine:
             "stats": stats,
             "trades": list(self._trade_history),
             "portfolio_values": list(self._portfolio_history),
+            "signal_pipeline_stats": signal_pipeline_stats,
         }
+        results.update(signal_pipeline_stats)
         validation = self._build_validation_results(
             df=df,
             context_df=resolved_context_df,
@@ -801,7 +891,7 @@ class BacktestEngine:
         strategy_version: Optional[str],
         setup_name: Optional[str],
         sample_type: str,
-    ) -> Tuple[List[Dict], List[Dict], float]:
+    ) -> Tuple[List[Dict], List[Dict], float, Dict[str, object]]:
         warmup_candles = max(210, int(getattr(self.trading_bot, "rsi_period", 14)) + 5)
         start_idx = max(warmup_candles, int(df.index.searchsorted(pd.Timestamp(start_date), side="left")))
         end_idx = min(int(df.index.searchsorted(pd.Timestamp(end_date), side="right")) - 1, len(df) - 1)
@@ -812,6 +902,7 @@ class BacktestEngine:
 
         trade_history: List[Dict] = []
         portfolio_history: List[Dict] = []
+        signal_pipeline_stats = self._build_empty_signal_pipeline_stats()
         balance = float(initial_balance)
         open_position: Optional[Position] = None
 
@@ -832,7 +923,7 @@ class BacktestEngine:
                     trade_history.append(intrabar_trade)
                     open_position = None
 
-            signal = self._check_signal_with_optional_context(
+            signal_pipeline = self._evaluate_signal_pipeline_with_optional_context(
                 current_slice=current_slice,
                 timeframe=timeframe,
                 require_volume=require_volume,
@@ -843,6 +934,8 @@ class BacktestEngine:
                 stop_loss_pct=stop_loss_pct,
                 take_profit_pct=take_profit_pct,
             )
+            self._record_signal_pipeline_stats(signal_pipeline_stats, signal_pipeline)
+            signal = str(signal_pipeline.get("analytical_signal") or "NEUTRO")
 
             if open_position is not None and self._is_opposite_signal(open_position.side, signal):
                 signal_trade = self._close_position(
@@ -907,7 +1000,7 @@ class BacktestEngine:
                 "portfolio_value": round(float(balance), 2),
             }
         )
-        return trade_history, portfolio_history, float(balance)
+        return trade_history, portfolio_history, float(balance), self._finalize_signal_pipeline_stats(signal_pipeline_stats)
 
     def _check_signal_with_optional_context(
         self,
@@ -952,6 +1045,65 @@ class BacktestEngine:
         kwargs_without_context.pop("context_df", None)
         kwargs_without_context.pop("context_timeframe", None)
         return self.trading_bot.check_signal(current_slice, **kwargs_without_context)
+
+    def _evaluate_signal_pipeline_with_optional_context(
+        self,
+        current_slice: pd.DataFrame,
+        timeframe: str,
+        require_volume: bool,
+        require_trend: bool,
+        avoid_ranging: bool,
+        context_df: Optional[pd.DataFrame],
+        context_timeframe: Optional[str],
+        stop_loss_pct: float,
+        take_profit_pct: float,
+    ) -> Dict[str, object]:
+        kwargs = {
+            "timeframe": timeframe,
+            "require_volume": require_volume,
+            "require_trend": require_trend,
+            "avoid_ranging": avoid_ranging,
+            "stop_loss_pct": stop_loss_pct,
+            "take_profit_pct": take_profit_pct,
+        }
+        if context_timeframe and context_df is not None:
+            kwargs["context_df"] = context_df
+            kwargs["context_timeframe"] = context_timeframe
+
+        pipeline_method = getattr(self.trading_bot, "evaluate_signal_pipeline", None)
+        if callable(pipeline_method):
+            try:
+                return self._normalize_signal_pipeline(pipeline_method(current_slice, **kwargs))
+            except TypeError as exc:
+                if "unexpected keyword argument" not in str(exc):
+                    raise
+
+            kwargs_without_risk = kwargs.copy()
+            kwargs_without_risk.pop("stop_loss_pct", None)
+            kwargs_without_risk.pop("take_profit_pct", None)
+            try:
+                return self._normalize_signal_pipeline(pipeline_method(current_slice, **kwargs_without_risk))
+            except TypeError as exc:
+                if "unexpected keyword argument" not in str(exc):
+                    raise
+
+            kwargs_without_context = kwargs_without_risk.copy()
+            kwargs_without_context.pop("context_df", None)
+            kwargs_without_context.pop("context_timeframe", None)
+            return self._normalize_signal_pipeline(pipeline_method(current_slice, **kwargs_without_context))
+
+        fallback_signal = self._check_signal_with_optional_context(
+            current_slice=current_slice,
+            timeframe=timeframe,
+            require_volume=require_volume,
+            require_trend=require_trend,
+            avoid_ranging=avoid_ranging,
+            context_df=context_df,
+            context_timeframe=context_timeframe,
+            stop_loss_pct=stop_loss_pct,
+            take_profit_pct=take_profit_pct,
+        )
+        return self._normalize_signal_pipeline(None, fallback_signal=fallback_signal)
 
     def _open_position(
         self,
@@ -1197,7 +1349,7 @@ class BacktestEngine:
             return None
 
         try:
-            in_sample_trades, in_sample_portfolio, in_sample_balance = self._run_simulation(
+            in_sample_trades, in_sample_portfolio, in_sample_balance, in_sample_signal_pipeline = self._run_simulation(
                 df=df,
                 context_df=context_df,
                 timeframe=timeframe,
@@ -1217,7 +1369,7 @@ class BacktestEngine:
                 setup_name=None,
                 sample_type="in_sample",
             )
-            out_sample_trades, out_sample_portfolio, out_sample_balance = self._run_simulation(
+            out_sample_trades, out_sample_portfolio, out_sample_balance, out_sample_signal_pipeline = self._run_simulation(
                 df=df,
                 context_df=context_df,
                 timeframe=timeframe,
@@ -1270,11 +1422,13 @@ class BacktestEngine:
                 "stats": in_sample_stats,
                 "trades": in_sample_trades,
                 "portfolio_values": in_sample_portfolio,
+                "signal_pipeline_stats": in_sample_signal_pipeline,
             },
             "out_of_sample": {
                 "stats": out_sample_stats,
                 "trades": out_sample_trades,
                 "portfolio_values": out_sample_portfolio,
+                "signal_pipeline_stats": out_sample_signal_pipeline,
             },
             "oos_passed": oos_passed,
         }
@@ -1321,7 +1475,7 @@ class BacktestEngine:
                 continue
 
             try:
-                in_sample_trades, in_sample_portfolio, in_sample_balance = self._run_simulation(
+                in_sample_trades, in_sample_portfolio, in_sample_balance, in_sample_signal_pipeline = self._run_simulation(
                     df=df,
                     context_df=context_df,
                     timeframe=timeframe,
@@ -1341,7 +1495,7 @@ class BacktestEngine:
                     setup_name=None,
                     sample_type="walk_forward_in_sample",
                 )
-                out_sample_trades, out_sample_portfolio, out_sample_balance = self._run_simulation(
+                out_sample_trades, out_sample_portfolio, out_sample_balance, out_sample_signal_pipeline = self._run_simulation(
                     df=df,
                     context_df=context_df,
                     timeframe=timeframe,
@@ -1391,8 +1545,14 @@ class BacktestEngine:
                     "in_sample_end": in_sample_end,
                     "out_of_sample_start": out_of_sample_start,
                     "out_of_sample_end": out_of_sample_end,
-                    "in_sample": {"stats": in_sample_stats},
-                    "out_of_sample": {"stats": out_sample_stats},
+                    "in_sample": {
+                        "stats": in_sample_stats,
+                        "signal_pipeline_stats": in_sample_signal_pipeline,
+                    },
+                    "out_of_sample": {
+                        "stats": out_sample_stats,
+                        "signal_pipeline_stats": out_sample_signal_pipeline,
+                    },
                     "passed": passed,
                 }
             )

@@ -146,6 +146,72 @@ class DecisionAwareTradingBot(DeterministicTradingBot):
         return result
 
 
+class PipelineAwareTradingBot(DeterministicTradingBot):
+    def evaluate_signal_pipeline(
+        self,
+        df,
+        timeframe="5m",
+        require_volume=False,
+        require_trend=False,
+        avoid_ranging=False,
+        **kwargs,
+    ):
+        self.check_calls.append(
+            {
+                "length": len(df),
+                "timeframe": timeframe,
+                "require_volume": require_volume,
+                "require_trend": require_trend,
+                "avoid_ranging": avoid_ranging,
+            }
+        )
+        sequence = {
+            211: {
+                "candidate_signal": "COMPRA",
+                "approved_signal": "COMPRA",
+                "blocked_signal": None,
+                "analytical_signal": "COMPRA",
+                "block_reason": None,
+                "structure_evaluation": {"structure_state": "breakout"},
+                "confirmation_evaluation": {"confirmation_state": "confirmed"},
+                "entry_quality_evaluation": {"entry_quality": "good"},
+            },
+            212: {
+                "candidate_signal": "COMPRA",
+                "approved_signal": None,
+                "blocked_signal": "COMPRA",
+                "analytical_signal": "NEUTRO",
+                "block_reason": "Estrutura fraca",
+                "structure_evaluation": {"structure_state": "weak_structure"},
+                "confirmation_evaluation": {"confirmation_state": "confirmed"},
+                "entry_quality_evaluation": {"entry_quality": "good"},
+            },
+            213: {
+                "candidate_signal": "VENDA",
+                "approved_signal": None,
+                "blocked_signal": "VENDA",
+                "analytical_signal": "NEUTRO",
+                "block_reason": "Volume fraco",
+                "structure_evaluation": {"structure_state": "pullback"},
+                "confirmation_evaluation": {"confirmation_state": "weak"},
+                "entry_quality_evaluation": {"entry_quality": "bad"},
+            },
+        }
+        return sequence.get(
+            len(df),
+            {
+                "candidate_signal": "NEUTRO",
+                "approved_signal": None,
+                "blocked_signal": None,
+                "analytical_signal": "NEUTRO",
+                "block_reason": None,
+                "structure_evaluation": {"structure_state": "mid_range"},
+                "confirmation_evaluation": {"confirmation_state": "mixed"},
+                "entry_quality_evaluation": {"entry_quality": "acceptable"},
+            },
+        )
+
+
 class FixedDataBacktestEngine(BacktestEngine):
     def __init__(self, data_frame, trading_bot):
         super().__init__(trading_bot=trading_bot)
@@ -280,11 +346,46 @@ class BacktestEngineTests(unittest.TestCase):
         self.assertEqual(results["stats"]["winning_trades"], 1)
         self.assertIn("profit_factor", results["stats"])
         self.assertTrue(results["portfolio_values"])
+        self.assertEqual(results["candidate_count"], 1)
+        self.assertEqual(results["approved_count"], 1)
+        self.assertEqual(results["blocked_count"], 0)
+        self.assertEqual(results["approval_rate_pct"], 100.0)
+        self.assertEqual(results["signal_pipeline_stats"]["candidate_count"], 1)
         self.assertEqual(
             list(engine.get_trade_summary_df().columns),
             ["timestamp", "entry_price", "price", "profit_loss_pct", "profit_loss", "signal"],
         )
         self.assertEqual(bot.updated_config["symbol"], "BTC/USDT")
+
+    def test_run_backtest_collects_signal_pipeline_counters(self):
+        bot = PipelineAwareTradingBot()
+        engine = FixedDataBacktestEngine(self._build_market_data(), bot)
+
+        results = engine.run_backtest(
+            symbol="BTC/USDT",
+            timeframe="5m",
+            start_date=datetime(2026, 1, 1, 0, 0),
+            end_date=datetime(2026, 1, 1, 21, 35),
+            initial_balance=1_000,
+            take_profit_pct=0.5,
+            fee_rate=0.0,
+            slippage=0.0,
+        )
+
+        self.assertEqual(results["candidate_count"], 3)
+        self.assertEqual(results["approved_count"], 1)
+        self.assertEqual(results["blocked_count"], 2)
+        self.assertAlmostEqual(results["approval_rate_pct"], 33.33, places=2)
+        self.assertEqual(results["block_reason_counts"]["Estrutura fraca"], 1)
+        self.assertEqual(results["block_reason_counts"]["Volume fraco"], 1)
+        self.assertEqual(results["structure_state_counts"]["breakout"], 1)
+        self.assertEqual(results["structure_state_counts"]["weak_structure"], 1)
+        self.assertEqual(results["structure_state_counts"]["pullback"], 1)
+        self.assertEqual(results["confirmation_state_counts"]["confirmed"], 2)
+        self.assertEqual(results["confirmation_state_counts"]["weak"], 1)
+        self.assertEqual(results["entry_quality_counts"]["good"], 2)
+        self.assertEqual(results["entry_quality_counts"]["bad"], 1)
+        self.assertEqual(results["signal_pipeline_stats"]["candidate_count"], 3)
 
     def test_run_backtest_persists_run_and_trade_metrics_in_sqlite(self):
         bot = DeterministicTradingBot()
