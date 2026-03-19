@@ -112,6 +112,53 @@ def apply_risk_guardrail(signal: str, entry_price: float, strategy_settings: dic
     return signal, risk_plan
 
 
+def build_operational_signal_state(analytical_signal: str, entry_price: float, strategy_settings: dict):
+    final_signal = analytical_signal
+    edge_summary = None
+    risk_plan = None
+    operational_runtime_allowed = bool(strategy_settings.get("runtime_allowed", True))
+    operational_block_reason = None
+    operational_block_source = None
+
+    if operational_runtime_allowed:
+        final_signal, edge_summary = apply_edge_guardrail(
+            final_signal,
+            strategy_settings.get("symbol"),
+            strategy_settings.get("timeframe"),
+            strategy_version=strategy_settings.get("strategy_version"),
+        )
+        final_signal, risk_plan = apply_risk_guardrail(
+            final_signal,
+            float(entry_price),
+            strategy_settings,
+        )
+        if edge_summary and final_signal == "NEUTRO":
+            operational_block_reason = edge_summary.get("status_message") or "Edge monitor bloqueou o setup."
+            operational_block_source = "edge_guardrail"
+            operational_runtime_allowed = False
+        elif risk_plan and not risk_plan.get("allowed"):
+            operational_block_reason = risk_plan.get("reason") or "Risco operacional bloqueou a entrada."
+            operational_block_source = "risk_guardrail"
+            operational_runtime_allowed = False
+    else:
+        final_signal = "NEUTRO"
+        risk_plan = {
+            "allowed": False,
+            "reason": strategy_settings.get("runtime_block_reason", "Runtime bloqueado"),
+        }
+        operational_block_reason = strategy_settings.get("runtime_block_reason", "Runtime bloqueado")
+        operational_block_source = "runtime_governance"
+
+    return {
+        "final_signal": final_signal,
+        "edge_summary": edge_summary,
+        "risk_plan": risk_plan,
+        "runtime_allowed": operational_runtime_allowed,
+        "block_reason": operational_block_reason,
+        "block_source": operational_block_source,
+    }
+
+
 def get_effective_strategy_settings(
     symbol: str,
     timeframe: str,
@@ -1029,9 +1076,11 @@ with tab2:
 
         for sym in selected_symbols:
             # Initialize variables at the start of each iteration
-            signal = "NEUTRO"
+            analytical_signal = "NEUTRO"
             last_candle = None
             sym_data = None
+            signal_pipeline = None
+            operational_state = None
 
             try:
                 symbol_strategy_settings = get_effective_strategy_settings(
@@ -1056,8 +1105,10 @@ with tab2:
                     if cached_data['last_update'] and cache_age < cache_timeout:
                         should_refresh = False
                         sym_data = cached_data['data']
-                        signal = cached_data['signal']
+                        analytical_signal = cached_data.get('analytical_signal', "NEUTRO")
                         last_candle = cached_data['last_candle']
+                        signal_pipeline = cached_data.get('signal_pipeline')
+                        operational_state = cached_data.get('operational_state')
 
                 if should_refresh:
                     # Mostrar progresso para símbolos múltiplos
@@ -1075,7 +1126,7 @@ with tab2:
 
                             if sym_data is not None and not sym_data.empty:
                                 last_candle = sym_data.iloc[-1]
-                                signal = st.session_state.trading_bot.check_signal(
+                                signal_pipeline = st.session_state.trading_bot.evaluate_signal_pipeline(
                                     sym_data,
                                     min_confidence=min_confidence,
                                     timeframe=timeframe,
@@ -1087,13 +1138,21 @@ with tab2:
                                     stop_loss_pct=symbol_strategy_settings.get("stop_loss_pct"),
                                     take_profit_pct=symbol_strategy_settings.get("take_profit_pct"),
                                 )
+                                analytical_signal = signal_pipeline["analytical_signal"]
+                                operational_state = build_operational_signal_state(
+                                    analytical_signal,
+                                    float(last_candle['close']),
+                                    symbol_strategy_settings,
+                                )
 
                                 # Cache the data com timestamp
                                 st.session_state.multi_symbol_data[cache_key] = {
                                     'data': sym_data,
-                                    'signal': signal,
+                                    'analytical_signal': analytical_signal,
                                     'last_candle': last_candle,
-                                    'last_update': current_time
+                                    'last_update': current_time,
+                                    'signal_pipeline': signal_pipeline,
+                                    'operational_state': operational_state,
                                 }
                             else:
                                 continue
@@ -1105,15 +1164,21 @@ with tab2:
                 if last_candle is None:
                     continue
 
+                candidate_signal = (signal_pipeline or {}).get("candidate_signal", "NEUTRO")
+                approved_signal = (signal_pipeline or {}).get("approved_signal")
+                blocked_signal = (signal_pipeline or {}).get("blocked_signal")
+                analytical_block_reason = (signal_pipeline or {}).get("block_reason")
+                operational_signal = (operational_state or {}).get("final_signal", "NEUTRO")
+
                 # Check for new signals to send alerts
-                if (signal not in ["NEUTRO"] and 
+                if (operational_signal not in ["NEUTRO"] and 
                     st.session_state.telegram_notifications and 
                     st.session_state.telegram_bot.is_configured()):
 
                     # Check if this is a new signal for this symbol
                     last_signal_key = f"{sym}_last_signal"
                     if (last_signal_key not in st.session_state.multi_symbol_signals or 
-                        st.session_state.multi_symbol_signals[last_signal_key]['signal'] != signal or
+                        st.session_state.multi_symbol_signals[last_signal_key]['signal'] != operational_signal or
                         (current_time - st.session_state.multi_symbol_signals[last_signal_key]['timestamp']).total_seconds() > 300):
 
                         # Send alert for this symbol
@@ -1123,7 +1188,7 @@ with tab2:
                             loop.run_until_complete(
                                 st.session_state.telegram_bot.send_signal_alert(
                                     symbol=sym,
-                                    signal=signal,
+                                    signal=operational_signal,
                                     price=last_candle['close'],
                                     rsi=last_candle['rsi'],
                                     macd=last_candle['macd'],
@@ -1133,22 +1198,59 @@ with tab2:
 
                             # Update last signal tracking
                             st.session_state.multi_symbol_signals[last_signal_key] = {
-                                'signal': signal,
+                                'signal': operational_signal,
                                 'timestamp': current_time
                             }
                         except Exception as e:
                             pass  # Silent fail for overview performance
 
-                    # Add to signals history
-                    st.session_state.signals_history.append({
-                        'timestamp': current_time,
-                        'symbol': sym,
-                        'price': last_candle['close'],
-                        'rsi': last_candle['rsi'],
-                        'macd': last_candle['macd'],
-                        'macd_signal': last_candle['macd_signal'],
-                        'signal': signal
-                    })
+                history_signature = (
+                    candidate_signal,
+                    approved_signal or "NEUTRO",
+                    blocked_signal or "-",
+                    operational_signal,
+                    analytical_block_reason or "-",
+                    (operational_state or {}).get("block_reason") or "-",
+                )
+                should_record_history = (
+                    candidate_signal in ACTIONABLE_SIGNALS
+                    or approved_signal in ACTIONABLE_SIGNALS
+                    or blocked_signal in ACTIONABLE_SIGNALS
+                )
+                if should_record_history:
+                    previous_entry = st.session_state.signals_history[-1] if st.session_state.signals_history else None
+                    previous_signature = None
+                    if previous_entry and previous_entry.get('symbol') == sym and previous_entry.get('timeframe') == timeframe:
+                        previous_signature = (
+                            previous_entry.get('candidate_signal', 'NEUTRO'),
+                            previous_entry.get('approved_signal') or "NEUTRO",
+                            previous_entry.get('blocked_signal') or "-",
+                            previous_entry.get('operational_signal', previous_entry.get('signal', 'NEUTRO')),
+                            previous_entry.get('block_reason') or "-",
+                            previous_entry.get('operational_block_reason') or "-",
+                        )
+                    if (
+                        previous_signature != history_signature
+                        or not previous_entry
+                        or _compare_timestamps(previous_entry['timestamp'], current_time - timedelta(minutes=5))
+                    ):
+                        st.session_state.signals_history.append({
+                            'timestamp': current_time,
+                            'symbol': sym,
+                            'timeframe': timeframe,
+                            'price': last_candle['close'],
+                            'rsi': last_candle['rsi'],
+                            'macd': last_candle['macd'],
+                            'macd_signal': last_candle['macd_signal'],
+                            'signal': operational_signal,
+                            'candidate_signal': candidate_signal,
+                            'approved_signal': approved_signal,
+                            'blocked_signal': blocked_signal,
+                            'block_reason': analytical_block_reason,
+                            'block_source': (signal_pipeline or {}).get("block_source"),
+                            'operational_signal': operational_signal,
+                            'operational_block_reason': (operational_state or {}).get("block_reason"),
+                        })
 
                 # Only add to overview if we have valid data
                 if last_candle is not None:
@@ -1157,7 +1259,11 @@ with tab2:
                         'Preço': f"${last_candle['close']:.6f}",
                         'RSI': f"{last_candle['rsi']:.2f}",
                         'MACD': f"{last_candle['macd']:.4f}",
-                        'Sinal Spot': signal,
+                        'Candidato': candidate_signal,
+                        'Aprovado': approved_signal or "NEUTRO",
+                        'Bloqueado': blocked_signal or "-",
+                        'Motivo Bloqueio': analytical_block_reason or "-",
+                        'Sinal Operacional': operational_signal,
                         'Long Score': 'N/A',
                         'Short Score': 'N/A',
                         'Variação': f"{((last_candle['close'] - last_candle['open']) / last_candle['open'] * 100):.2f}%"
@@ -1169,7 +1275,11 @@ with tab2:
                     'Preço': 'Erro',
                     'RSI': 'N/A',
                     'MACD': 'N/A', 
-                    'Sinal Spot': 'ERRO',
+                    'Candidato': 'ERRO',
+                    'Aprovado': 'ERRO',
+                    'Bloqueado': '-',
+                    'Motivo Bloqueio': str(e),
+                    'Sinal Operacional': 'ERRO',
                     'Long Score': 'N/A',
                     'Short Score': 'N/A',
                     'Variação': 'N/A'
@@ -1382,59 +1492,45 @@ if st.session_state.current_data is not None:
     confirmation_evaluation = None
     entry_quality_evaluation = None
     hard_block_evaluation = None
-    if not live_strategy_settings.get("runtime_allowed", True):
-        signal = "NEUTRO"
-        risk_plan = {
-            "allowed": False,
-            "reason": live_strategy_settings.get("runtime_block_reason", "Runtime bloqueado"),
-        }
-        hard_block_evaluation = {
-            "hard_block": True,
-            "block_reason": live_strategy_settings.get("runtime_block_reason", "Runtime bloqueado"),
-            "block_source": "runtime_governance",
-        }
-    else:
-        # Calculate signal
-        signal = st.session_state.trading_bot.check_signal(
-            data,
-            min_confidence=min_confidence,
-            timeframe=timeframe,
-            require_volume=live_strategy_settings["require_volume"],
-            require_trend=live_strategy_settings["require_trend"],
-            avoid_ranging=live_strategy_settings.get("avoid_ranging", avoid_ranging),
-            day_trading_mode=day_trading_mode,
-            context_timeframe=live_strategy_settings.get("context_timeframe"),
-            stop_loss_pct=live_strategy_settings.get("stop_loss_pct"),
-            take_profit_pct=live_strategy_settings.get("take_profit_pct"),
-        )
-        signal, guardrail_edge_summary = apply_edge_guardrail(
-            signal,
-            symbol,
-            timeframe,
-            strategy_version=runtime_strategy_version,
-        )
-        signal, risk_plan = apply_risk_guardrail(signal, float(last_candle['close']), live_strategy_settings)
-        context_evaluation = getattr(st.session_state.trading_bot, "_last_context_evaluation", None)
-        structure_evaluation = getattr(st.session_state.trading_bot, "_last_price_structure_evaluation", None)
-        confirmation_evaluation = getattr(st.session_state.trading_bot, "_last_confirmation_evaluation", None)
-        entry_quality_evaluation = getattr(st.session_state.trading_bot, "_last_entry_quality_evaluation", None)
-        hard_block_evaluation = getattr(st.session_state.trading_bot, "_last_hard_block_evaluation", None)
-        if guardrail_edge_summary and signal == "NEUTRO":
-            hard_block_evaluation = {
-                "hard_block": True,
-                "block_reason": guardrail_edge_summary.get("status_message") or "Edge monitor bloqueou o setup.",
-                "block_source": "edge_guardrail",
-            }
-        elif risk_plan and not risk_plan.get("allowed"):
-            hard_block_evaluation = {
-                "hard_block": True,
-                "block_reason": risk_plan.get("reason") or "Risco operacional bloqueou a entrada.",
-                "block_source": "risk_guardrail",
-            }
+    signal_pipeline = st.session_state.trading_bot.evaluate_signal_pipeline(
+        data,
+        min_confidence=min_confidence,
+        timeframe=timeframe,
+        require_volume=live_strategy_settings["require_volume"],
+        require_trend=live_strategy_settings["require_trend"],
+        avoid_ranging=live_strategy_settings.get("avoid_ranging", avoid_ranging),
+        day_trading_mode=day_trading_mode,
+        context_timeframe=live_strategy_settings.get("context_timeframe"),
+        stop_loss_pct=live_strategy_settings.get("stop_loss_pct"),
+        take_profit_pct=live_strategy_settings.get("take_profit_pct"),
+    )
+    candidate_signal = signal_pipeline["candidate_signal"]
+    analytical_signal = signal_pipeline["analytical_signal"]
+    approved_signal = signal_pipeline.get("approved_signal")
+    blocked_signal = signal_pipeline.get("blocked_signal")
+    analytical_block_reason = signal_pipeline.get("block_reason")
+    context_evaluation = signal_pipeline.get("context_evaluation")
+    structure_evaluation = signal_pipeline.get("structure_evaluation")
+    confirmation_evaluation = signal_pipeline.get("confirmation_evaluation")
+    entry_quality_evaluation = signal_pipeline.get("entry_quality_evaluation")
+    scenario_evaluation = signal_pipeline.get("scenario_evaluation")
+    trade_decision = signal_pipeline.get("trade_decision")
+    hard_block_evaluation = signal_pipeline.get("hard_block_evaluation")
+
+    operational_state = build_operational_signal_state(
+        analytical_signal,
+        float(last_candle['close']),
+        live_strategy_settings,
+    )
+    signal = operational_state["final_signal"]
+    guardrail_edge_summary = operational_state["edge_summary"]
+    risk_plan = operational_state["risk_plan"]
+    operational_block_reason = operational_state["block_reason"]
+    operational_block_source = operational_state["block_source"]
     risk_guardrail_blocked = bool(risk_plan and not risk_plan.get("allowed"))
-    entry_reason = signal
-    if signal != "NEUTRO":
-        reason_parts = [signal]
+    entry_reason = analytical_signal
+    if analytical_signal != "NEUTRO":
+        reason_parts = [analytical_signal]
         if context_evaluation:
             reason_parts.append(
                 f"ctx:{context_evaluation.get('market_bias', 'neutral')}/{context_evaluation.get('regime', '-')}"
@@ -1451,6 +1547,10 @@ if st.session_state.current_data is not None:
             reason_parts.append(
                 f"entry:{entry_quality_evaluation.get('entry_quality', '-')}/rr{entry_quality_evaluation.get('rr_estimate', 0):.2f}"
             )
+        if scenario_evaluation:
+            reason_parts.append(
+                f"scenario:{scenario_evaluation.get('scenario_grade', '-')}/{scenario_evaluation.get('scenario_score', 0):.2f}"
+            )
         entry_reason = " | ".join(reason_parts)
 
     try:
@@ -1461,11 +1561,13 @@ if st.session_state.current_data is not None:
     # Store data for multi-symbol monitoring
     st.session_state.multi_symbol_data[symbol] = {
         'data': data,
-        'signal': signal,
+        'analytical_signal': analytical_signal,
         'last_candle': last_candle,
         'last_update': st.session_state.last_update,
         'edge_summary': guardrail_edge_summary,
         'risk_plan': risk_plan,
+        'signal_pipeline': signal_pipeline,
+        'operational_state': operational_state,
         'context_evaluation': context_evaluation,
         'structure_evaluation': structure_evaluation,
         'confirmation_evaluation': confirmation_evaluation,
@@ -1473,10 +1575,34 @@ if st.session_state.current_data is not None:
         'hard_block_evaluation': hard_block_evaluation,
     }
 
-    # Add signal to history if it's a new signal
-    if signal not in ["NEUTRO"] and (
-        not st.session_state.signals_history or 
-        st.session_state.signals_history[-1]['signal'] != signal or
+    history_signature = (
+        candidate_signal,
+        approved_signal or "NEUTRO",
+        blocked_signal or "-",
+        signal,
+        analytical_block_reason or "-",
+        operational_block_reason or "-",
+    )
+    previous_entry = st.session_state.signals_history[-1] if st.session_state.signals_history else None
+    previous_signature = None
+    if previous_entry and previous_entry.get('symbol') == symbol and previous_entry.get('timeframe') == timeframe:
+        previous_signature = (
+            previous_entry.get('candidate_signal', 'NEUTRO'),
+            previous_entry.get('approved_signal') or "NEUTRO",
+            previous_entry.get('blocked_signal') or "-",
+            previous_entry.get('operational_signal', previous_entry.get('signal', 'NEUTRO')),
+            previous_entry.get('block_reason') or "-",
+            previous_entry.get('operational_block_reason') or "-",
+        )
+
+    # Add signal to history if it's a new analytical event
+    if (
+        candidate_signal in ACTIONABLE_SIGNALS
+        or approved_signal in ACTIONABLE_SIGNALS
+        or blocked_signal in ACTIONABLE_SIGNALS
+    ) and (
+        previous_signature != history_signature or
+        not previous_entry or
         _compare_timestamps(st.session_state.signals_history[-1]['timestamp'], get_brazil_datetime_naive() - timedelta(minutes=5))
     ):
         # Send Telegram notification if enabled
@@ -1501,12 +1627,19 @@ if st.session_state.current_data is not None:
         signal_data = {
             'timestamp': get_brazil_datetime_naive(),
             'symbol': symbol,
+            'timeframe': timeframe,
             'price': last_candle['close'],
             'rsi': last_candle['rsi'],
             'macd': last_candle['macd'],
             'macd_signal': last_candle['macd_signal'],
             'signal': signal,
-            'timeframe': timeframe,
+            'candidate_signal': candidate_signal,
+            'approved_signal': approved_signal,
+            'blocked_signal': blocked_signal,
+            'block_reason': analytical_block_reason,
+            'block_source': (hard_block_evaluation or {}).get("block_source"),
+            'operational_signal': signal,
+            'operational_block_reason': operational_block_reason,
             'context_timeframe': live_strategy_settings.get("context_timeframe"),
             'strategy_version': runtime_strategy_version,
             'macd_value': last_candle['macd'],
@@ -1580,7 +1713,7 @@ if st.session_state.current_data is not None:
             "COMPRA_FRACA": "🟡", "VENDA_FRACA": "🟠"
         }
         st.metric(
-            label="🚨 Sinal",
+            label="🚨 Sinal Operacional",
             value=f"{signal_emoji.get(signal, '⚪')} {signal.replace('_', ' ')}",
             delta=None
         )
@@ -1683,71 +1816,74 @@ if st.session_state.current_data is not None:
         line=dict(color="gray", width=1, dash="dot")
     )
 
-    # Add signal markers
-    buy_signals = data[data['signal'].isin(['COMPRA', 'COMPRA_FRACA'])]
-    sell_signals = data[data['signal'].isin(['VENDA', 'VENDA_FRACA'])]
+    # Add analytical signal markers from the unified signal pipeline history
+    chart_signals = pd.DataFrame(st.session_state.signals_history) if st.session_state.signals_history else pd.DataFrame()
+    if not chart_signals.empty:
+        chart_signals = chart_signals.copy()
+        chart_signals['timestamp'] = pd.to_datetime(chart_signals['timestamp'], errors='coerce')
+        chart_signals = chart_signals.dropna(subset=['timestamp'])
+        if 'timeframe' not in chart_signals.columns:
+            chart_signals['timeframe'] = timeframe
+        for signal_column in ['candidate_signal', 'approved_signal', 'blocked_signal', 'block_reason']:
+            if signal_column not in chart_signals.columns:
+                chart_signals[signal_column] = None
+        chart_signals = chart_signals[
+            (chart_signals['symbol'] == symbol)
+            & (chart_signals['timeframe'] == timeframe)
+        ]
 
-    if len(buy_signals) > 0:
-        # Strong buy signals (larger markers)
-        strong_buys = buy_signals[buy_signals['signal'] == 'COMPRA']
-        weak_buys = buy_signals[buy_signals['signal'] == 'COMPRA_FRACA']
-
-        if len(strong_buys) > 0:
+        def _add_signal_trace(signal_df, expected_signal, marker_symbol, marker_color, marker_size, name, blocked=False):
+            filtered = signal_df[signal_df['signal_value'] == expected_signal]
+            if filtered.empty:
+                return
+            hover_text = (
+                filtered.get('block_reason', pd.Series([''] * len(filtered))).fillna('-')
+                if blocked else
+                filtered.get('candidate_signal', pd.Series([''] * len(filtered))).fillna('-')
+            )
             fig.add_trace(
                 go.Scatter(
-                    x=strong_buys.index if hasattr(strong_buys, 'index') else list(range(len(strong_buys))),
-                    y=strong_buys['close'],
+                    x=filtered['timestamp'],
+                    y=filtered['price'],
                     mode='markers',
-                    marker=dict(symbol='triangle-up', size=20, color='green'),
-                    name='Compra Forte',
-                    showlegend=True
+                    marker=dict(symbol=marker_symbol, size=marker_size, color=marker_color),
+                    name=name,
+                    text=hover_text,
+                    hovertemplate="%{x}<br>Preco %{y:.6f}<br>%{text}<extra></extra>",
+                    showlegend=True,
                 ),
                 row=1, col=1
             )
 
-        if len(weak_buys) > 0:
-            fig.add_trace(
-                go.Scatter(
-                    x=weak_buys.index if hasattr(weak_buys, 'index') else list(range(len(weak_buys))),
-                    y=weak_buys['close'],
-                    mode='markers',
-                    marker=dict(symbol='triangle-up', size=12, color='lightgreen', opacity=0.7),
-                    name='Compra Fraca',
-                    showlegend=True
-                ),
-                row=1, col=1
-            )
+        candidate_markers = chart_signals[
+            chart_signals['candidate_signal'].isin(list(ACTIONABLE_SIGNALS))
+        ].copy()
+        if not candidate_markers.empty:
+            candidate_markers['signal_value'] = candidate_markers['candidate_signal']
+            _add_signal_trace(candidate_markers, 'COMPRA', 'triangle-up-open', 'rgba(0, 160, 0, 0.7)', 15, 'Candidato Compra')
+            _add_signal_trace(candidate_markers, 'COMPRA_FRACA', 'triangle-up-open', 'rgba(80, 180, 80, 0.6)', 12, 'Candidato Compra Fraca')
+            _add_signal_trace(candidate_markers, 'VENDA', 'triangle-down-open', 'rgba(190, 0, 0, 0.7)', 15, 'Candidato Venda')
+            _add_signal_trace(candidate_markers, 'VENDA_FRACA', 'triangle-down-open', 'rgba(210, 120, 120, 0.6)', 12, 'Candidato Venda Fraca')
 
-    if len(sell_signals) > 0:
-        # Strong sell signals (larger markers)
-        strong_sells = sell_signals[sell_signals['signal'] == 'VENDA']
-        weak_sells = sell_signals[sell_signals['signal'] == 'VENDA_FRACA']
+        approved_markers = chart_signals[
+            chart_signals['approved_signal'].isin(list(ACTIONABLE_SIGNALS))
+        ].copy()
+        if not approved_markers.empty:
+            approved_markers['signal_value'] = approved_markers['approved_signal']
+            _add_signal_trace(approved_markers, 'COMPRA', 'triangle-up', 'green', 18, 'Aprovado Compra')
+            _add_signal_trace(approved_markers, 'COMPRA_FRACA', 'triangle-up', 'lightgreen', 13, 'Aprovado Compra Fraca')
+            _add_signal_trace(approved_markers, 'VENDA', 'triangle-down', 'red', 18, 'Aprovado Venda')
+            _add_signal_trace(approved_markers, 'VENDA_FRACA', 'triangle-down', 'lightcoral', 13, 'Aprovado Venda Fraca')
 
-        if len(strong_sells) > 0:
-            fig.add_trace(
-                go.Scatter(
-                    x=strong_sells.index if hasattr(strong_sells, 'index') else list(range(len(strong_sells))),
-                    y=strong_sells['close'],
-                    mode='markers',
-                    marker=dict(symbol='triangle-down', size=20, color='red'),
-                    name='Venda Forte',
-                    showlegend=True
-                ),
-                row=1, col=1
-            )
-
-        if len(weak_sells) > 0:
-            fig.add_trace(
-                go.Scatter(
-                    x=weak_sells.index if hasattr(weak_sells, 'index') else list(range(len(weak_sells))),
-                    y=weak_sells['close'],
-                    mode='markers',
-                    marker=dict(symbol='triangle-down', size=12, color='lightcoral', opacity=0.7),
-                    name='Venda Fraca',
-                    showlegend=True
-                ),
-                row=1, col=1
-            )
+        blocked_markers = chart_signals[
+            chart_signals['blocked_signal'].isin(list(ACTIONABLE_SIGNALS))
+        ].copy()
+        if not blocked_markers.empty:
+            blocked_markers['signal_value'] = blocked_markers['blocked_signal']
+            _add_signal_trace(blocked_markers, 'COMPRA', 'x', 'orange', 13, 'Bloqueado Compra', blocked=True)
+            _add_signal_trace(blocked_markers, 'COMPRA_FRACA', 'x', 'goldenrod', 11, 'Bloqueado Compra Fraca', blocked=True)
+            _add_signal_trace(blocked_markers, 'VENDA', 'x', 'orange', 13, 'Bloqueado Venda', blocked=True)
+            _add_signal_trace(blocked_markers, 'VENDA_FRACA', 'x', 'goldenrod', 11, 'Bloqueado Venda Fraca', blocked=True)
 
     # MACD chart
     fig.add_trace(
@@ -1824,7 +1960,7 @@ if st.session_state.current_data is not None:
                 f"Posicao ${risk_plan.get('position_notional', 0):.2f} | "
                 f"Qtd {risk_plan.get('quantity', 0):.6f}"
             )
-        else:
+        elif operational_block_source == "risk_guardrail":
             st.warning(f"Risk guardrail: {risk_plan.get('reason')}")
         portfolio_risk_summary = risk_management_service.get_portfolio_risk_summary()
         st.caption(
@@ -1857,6 +1993,16 @@ if st.session_state.current_data is not None:
         **Volume:** {last_candle['volume']:,.0f}  
         **Volume MA:** {last_candle['volume_ma']:,.0f}
         """)
+        st.caption(
+            f"Candidato: {candidate_signal} | "
+            f"Aprovado: {approved_signal or 'NEUTRO'} | "
+            f"Bloqueado: {blocked_signal or '-'}"
+        )
+        st.caption(
+            f"Status operacional: {'liberado' if operational_state.get('runtime_allowed') and not operational_block_reason else 'bloqueado'} | "
+            f"Sinal operacional: {signal} | "
+            f"Motivo operacional: {operational_block_reason or '-'}"
+        )
         if context_evaluation:
             st.caption(
                 f"Contexto: {context_evaluation.get('market_bias', 'neutral')} | "
@@ -1883,36 +2029,53 @@ if st.session_state.current_data is not None:
                 f"Late {entry_quality_evaluation.get('late_entry', False)} | "
                 f"Stretched {entry_quality_evaluation.get('stretched_price', False)}"
             )
+        if scenario_evaluation:
+            st.caption(
+                f"Cenario: {scenario_evaluation.get('scenario_score', 0):.2f}/10 | "
+                f"Grade {scenario_evaluation.get('scenario_grade', 'D')}"
+            )
+        if trade_decision:
+            st.caption(
+                f"Decisao analitica: {trade_decision.get('action', 'wait')} | "
+                f"Confianca {trade_decision.get('confidence', 0):.2f}/10 | "
+                f"Motivo: {trade_decision.get('entry_reason') or trade_decision.get('block_reason') or '-'}"
+            )
         if hard_block_evaluation and hard_block_evaluation.get("hard_block"):
             st.error(
-                f"Hard block: {hard_block_evaluation.get('block_reason')} "
+                f"Hard block analitico: {hard_block_evaluation.get('block_reason')} "
                 f"({hard_block_evaluation.get('block_source', 'signal_engine')})"
             )
 
     with analysis_col2:
-        if signal == "COMPRA":
+        if approved_signal == "COMPRA":
             st.success(f"""
-            🟢 **SINAL DE COMPRA FORTE**  
+            🟢 **SINAL ANALITICO APROVADO - COMPRA FORTE**  
             RSI abaixo de {rsi_min} e MACD bullish convergem para alta.  
             Considere entrada em posição de compra.
             """)
-        elif signal == "VENDA":
+        elif approved_signal == "VENDA":
             st.error(f"""
-            🔴 **SINAL DE VENDA FORTE**  
+            🔴 **SINAL ANALITICO APROVADO - VENDA FORTE**  
             RSI acima de {rsi_max} e MACD bearish convergem para baixa.  
             Considere saída da posição ou entrada em venda.
             """)
-        elif signal == "COMPRA_FRACA":
+        elif approved_signal == "COMPRA_FRACA":
             st.info(f"""
-            🟡 **SINAL DE COMPRA FRACA**  
+            🟡 **SINAL ANALITICO APROVADO - COMPRA FRACA**  
             Apenas um indicador favorável à compra.  
             Aguarde confirmação ou entrada parcial.
             """)
-        elif signal == "VENDA_FRACA":
+        elif approved_signal == "VENDA_FRACA":
             st.info(f"""
-            🟠 **SINAL DE VENDA FRACA**  
+            🟠 **SINAL ANALITICO APROVADO - VENDA FRACA**  
             Apenas um indicador favorável à venda.  
             Aguarde confirmação ou saída parcial.
+            """)
+        elif blocked_signal in ACTIONABLE_SIGNALS:
+            st.warning(f"""
+            ⚠️ **SINAL BLOQUEADO**  
+            Candidato detectado: {blocked_signal}.  
+            Motivo: {analytical_block_reason or '-'}.
             """)
         else:
             st.warning("""
@@ -2014,12 +2177,19 @@ if signals_df is not None and len(signals_df) > 0:
                 column_map = {
                     'timestamp': 'Data/Hora',
                     'symbol': 'Par', 
+                    'timeframe': 'Timeframe',
                     'price': 'Preço',
                     'rsi': 'RSI',
                     'macd': 'MACD',
                     'macd_signal': 'MACD Signal',
                     'signal': 'Sinal',
-                    'signal_type': 'Sinal'
+                    'signal_type': 'Sinal',
+                    'candidate_signal': 'Candidato',
+                    'approved_signal': 'Aprovado',
+                    'blocked_signal': 'Bloqueado',
+                    'block_reason': 'Motivo Bloqueio',
+                    'operational_signal': 'Sinal Operacional',
+                    'operational_block_reason': 'Motivo Operacional',
                 }
 
                 # Renomear apenas as colunas que existem
@@ -2027,7 +2197,11 @@ if signals_df is not None and len(signals_df) > 0:
 
                 # Selecionar apenas as colunas que queremos mostrar
                 available_columns = []
-                for col in ['Data/Hora', 'Par', 'Preço', 'RSI', 'MACD', 'MACD Signal', 'Sinal']:
+                for col in [
+                    'Data/Hora', 'Par', 'Timeframe', 'Preço', 'RSI', 'MACD', 'MACD Signal',
+                    'Candidato', 'Aprovado', 'Bloqueado', 'Motivo Bloqueio',
+                    'Sinal Operacional', 'Motivo Operacional', 'Sinal'
+                ]:
                     if col in display_df.columns:
                         available_columns.append(col)
 

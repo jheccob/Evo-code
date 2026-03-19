@@ -10,6 +10,7 @@ from indicators import TechnicalIndicators
 from config import AppConfig, ProductionConfig
 
 logger = logging.getLogger(__name__)
+ACTIONABLE_SIGNALS = {"COMPRA", "VENDA", "COMPRA_FRACA", "VENDA_FRACA"}
 
 class TradingBot:
     def __init__(self, allow_simulated_data=False):
@@ -32,6 +33,8 @@ class TradingBot:
         self._last_scenario_evaluation = None
         self._last_trade_decision = None
         self._last_hard_block_evaluation = None
+        self._last_candidate_signal = "NEUTRO"
+        self._last_signal_pipeline = None
 
         logger.info("🚀 TradingBot inicializado com BINANCE WEBSOCKET PÚBLICO")
         logger.info("📡 Usando dados em tempo real sem necessidade de credenciais")
@@ -65,6 +68,37 @@ class TradingBot:
             "notes": [],
         }
 
+    def _finalize_signal_pipeline(self, analytical_signal: str) -> Dict[str, object]:
+        candidate_signal = str(getattr(self, "_last_candidate_signal", "NEUTRO") or "NEUTRO")
+        approved_signal = analytical_signal if analytical_signal in ACTIONABLE_SIGNALS else None
+        blocked_signal = candidate_signal if candidate_signal in ACTIONABLE_SIGNALS and approved_signal is None else None
+
+        hard_block = getattr(self, "_last_hard_block_evaluation", None) or {}
+        trade_decision = getattr(self, "_last_trade_decision", None) or {}
+        block_reason = (
+            trade_decision.get("block_reason")
+            or hard_block.get("block_reason")
+        )
+        block_source = hard_block.get("block_source")
+
+        pipeline = {
+            "candidate_signal": candidate_signal,
+            "approved_signal": approved_signal,
+            "blocked_signal": blocked_signal,
+            "analytical_signal": analytical_signal,
+            "block_reason": block_reason,
+            "block_source": block_source,
+            "context_evaluation": getattr(self, "_last_context_evaluation", None),
+            "structure_evaluation": getattr(self, "_last_price_structure_evaluation", None),
+            "confirmation_evaluation": getattr(self, "_last_confirmation_evaluation", None),
+            "entry_quality_evaluation": getattr(self, "_last_entry_quality_evaluation", None),
+            "scenario_evaluation": getattr(self, "_last_scenario_evaluation", None),
+            "trade_decision": getattr(self, "_last_trade_decision", None),
+            "hard_block_evaluation": getattr(self, "_last_hard_block_evaluation", None),
+        }
+        self._last_signal_pipeline = pipeline
+        return pipeline
+
     def _set_hard_block(self, block_reason: str, block_source: str = "signal_engine") -> str:
         cleaned_reason = str(block_reason or "").strip()
         self._last_hard_block_evaluation = {
@@ -82,7 +116,39 @@ class TradingBot:
             "block_reason": cleaned_reason or None,
             "invalid_if": None,
         }
+        self._finalize_signal_pipeline("NEUTRO")
         return "NEUTRO"
+
+    def evaluate_signal_pipeline(
+        self,
+        df,
+        min_confidence=60,
+        require_volume=True,
+        require_trend=False,
+        avoid_ranging=False,
+        crypto_optimized=True,
+        timeframe="5m",
+        day_trading_mode=False,
+        context_df=None,
+        context_timeframe: Optional[str] = None,
+        stop_loss_pct: Optional[float] = None,
+        take_profit_pct: Optional[float] = None,
+    ) -> Dict[str, object]:
+        analytical_signal = self.check_signal(
+            df,
+            min_confidence=min_confidence,
+            require_volume=require_volume,
+            require_trend=require_trend,
+            avoid_ranging=avoid_ranging,
+            crypto_optimized=crypto_optimized,
+            timeframe=timeframe,
+            day_trading_mode=day_trading_mode,
+            context_df=context_df,
+            context_timeframe=context_timeframe,
+            stop_loss_pct=stop_loss_pct,
+            take_profit_pct=take_profit_pct,
+        )
+        return self._finalize_signal_pipeline(analytical_signal)
 
     def update_config(self, symbol=None, timeframe=None, rsi_period=None, rsi_min=None, rsi_max=None):
         """Update bot configuration parameters"""
@@ -2811,6 +2877,8 @@ class TradingBot:
         self._last_entry_quality_evaluation = None
         self._last_scenario_evaluation = None
         self._last_trade_decision = None
+        self._last_candidate_signal = "NEUTRO"
+        self._last_signal_pipeline = None
         self._clear_hard_block()
 
         if "is_closed" in df.columns:
@@ -2868,11 +2936,6 @@ class TradingBot:
                     as_of_timestamp=df.index[-1],
                     context_timeframe=resolved_context_timeframe,
                 )
-                if context_evaluation.get("bias") == "neutral":
-                    return self._set_hard_block(
-                        "Timeframe maior sem vies direcional claro.",
-                        "higher_timeframe_context",
-                    )
 
         structure_kwargs = {"timeframe": current_timeframe}
         if context_evaluation:
@@ -2988,6 +3051,7 @@ class TradingBot:
                 return self._set_hard_block("Volume muito fraco para validar a entrada.", "volume_floor")
 
             signal = self._generate_trend_signal(last_row, actual_rsi_min, actual_rsi_max)
+            self._last_candidate_signal = signal
             if signal == "NEUTRO":
                 return self._set_hard_block("Indicadores base nao confirmam hipotese de entrada.", "signal_hypothesis")
 
@@ -3057,6 +3121,7 @@ class TradingBot:
         # Gerar sinal usando configurações atuais
         if signal is None:
             signal = self._generate_advanced_signal(last_row)
+        self._last_candidate_signal = signal
         confidence = self._calculate_signal_confidence(last_row)
 
         # Log apenas sinais não-neutros
@@ -3123,6 +3188,8 @@ class TradingBot:
             if signal in ['VENDA', 'VENDA_FRACA'] and williams_r < -75:
                 if signal == 'VENDA':
                     signal = 'VENDA_FRACA'
+
+        self._last_candidate_signal = signal
 
         if not self._passes_signal_structure_guardrail(last_row, signal, current_timeframe):
             logger.debug("Guardrail estrutural bloqueou o sinal %s", signal)

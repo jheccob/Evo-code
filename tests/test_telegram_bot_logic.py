@@ -263,14 +263,20 @@ class TelegramTradingBotLogicTests(unittest.TestCase):
         trading_bot.timeframe = "1h"
         trading_bot.get_market_data.return_value = market_data
 
-        def _populate_analysis(_data, **_kwargs):
-            trading_bot._last_context_evaluation = {
+        trading_bot.evaluate_signal_pipeline.return_value = {
+            "candidate_signal": "COMPRA",
+            "approved_signal": "COMPRA",
+            "blocked_signal": None,
+            "analytical_signal": "COMPRA",
+            "block_reason": None,
+            "block_source": None,
+            "context_evaluation": {
                 "market_bias": "bullish",
                 "regime": "trend_low_vol",
                 "context_strength": 7.8,
                 "is_tradeable": True,
-            }
-            trading_bot._last_price_structure_evaluation = {
+            },
+            "structure_evaluation": {
                 "structure_state": "pullback",
                 "price_location": "trend_zone",
                 "structure_quality": 7.1,
@@ -279,21 +285,21 @@ class TelegramTradingBotLogicTests(unittest.TestCase):
                 "distance_from_ema_pct": 0.82,
                 "notes": ["pullback controlado", "preco respeitando a EMA 21"],
                 "is_tradeable": True,
-            }
-            trading_bot._last_confirmation_evaluation = {
+            },
+            "confirmation_evaluation": {
                 "confirmation_state": "confirmed",
                 "confirmation_score": 7.3,
                 "conflicts": [],
                 "notes": ["RSI favoravel", "MACD acima do sinal"],
-            }
-            trading_bot._last_entry_quality_evaluation = {
+            },
+            "entry_quality_evaluation": {
                 "entry_quality": "good",
                 "rr_estimate": 2.15,
                 "late_entry": False,
                 "stretched_price": False,
                 "notes": ["entrada proxima da EMA 21", "RR minimo atendido"],
-            }
-            trading_bot._last_scenario_evaluation = {
+            },
+            "scenario_evaluation": {
                 "scenario_score": 7.45,
                 "scenario_grade": "B",
                 "score_breakdown": {
@@ -303,8 +309,8 @@ class TelegramTradingBotLogicTests(unittest.TestCase):
                     "entry": 7.0,
                 },
                 "notes": ["cenario favoravel"],
-            }
-            trading_bot._last_trade_decision = {
+            },
+            "trade_decision": {
                 "action": "buy",
                 "confidence": 7.45,
                 "market_bias": "bullish",
@@ -312,16 +318,14 @@ class TelegramTradingBotLogicTests(unittest.TestCase):
                 "entry_reason": "bullish pullback | confirmacao confirmed | entrada good | score 7.45",
                 "block_reason": None,
                 "invalid_if": "perder a EMA 21",
-            }
-            trading_bot._last_hard_block_evaluation = {
+            },
+            "hard_block_evaluation": {
                 "hard_block": False,
                 "block_reason": None,
                 "block_source": "signal_engine",
                 "notes": [],
-            }
-            return "COMPRA"
-
-        trading_bot.check_signal.side_effect = _populate_analysis
+            },
+        }
         bot.trading_bot = trading_bot
         bot._resolve_runtime_strategy_settings = mock.Mock(
             return_value={

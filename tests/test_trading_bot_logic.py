@@ -1801,6 +1801,153 @@ class TradingBotLogicTests(unittest.TestCase):
         self.assertEqual(decision["action"], "wait")
         self.assertIn("neutro", decision["block_reason"])
 
+    def test_evaluate_signal_pipeline_exposes_candidate_and_blocked_signal(self):
+        bot = TradingBot.__new__(TradingBot)
+        bot._last_context_evaluation = {"market_bias": "neutral", "is_tradeable": False}
+        bot._last_price_structure_evaluation = {"structure_state": "pullback"}
+        bot._last_confirmation_evaluation = {"confirmation_state": "confirmed"}
+        bot._last_entry_quality_evaluation = {"entry_quality": "good"}
+        bot._last_scenario_evaluation = {"scenario_score": 6.2, "scenario_grade": "C"}
+        bot._last_trade_decision = {"action": "wait", "block_reason": "Contexto superior neutro."}
+        bot._last_hard_block_evaluation = {
+            "hard_block": True,
+            "block_reason": "Contexto superior neutro.",
+            "block_source": "higher_timeframe_context",
+        }
+        bot._last_candidate_signal = "COMPRA"
+        bot._last_signal_pipeline = None
+        bot.check_signal = lambda *args, **kwargs: "NEUTRO"
+
+        pipeline = TradingBot.evaluate_signal_pipeline(bot, pd.DataFrame([{"close": 100.0}]), timeframe="1h")
+
+        self.assertEqual(pipeline["candidate_signal"], "COMPRA")
+        self.assertIsNone(pipeline["approved_signal"])
+        self.assertEqual(pipeline["blocked_signal"], "COMPRA")
+        self.assertEqual(pipeline["block_reason"], "Contexto superior neutro.")
+
+    def test_check_signal_keeps_structure_confirmation_entry_and_scenario_when_context_is_neutral(self):
+        bot = TradingBot.__new__(TradingBot)
+        bot.rsi_min = 30
+        bot.rsi_max = 70
+        bot.rsi_period = 14
+        bot.timeframe = "1h"
+        bot._last_context_evaluation = None
+        bot._last_price_structure_evaluation = None
+        bot._last_confirmation_evaluation = None
+        bot._last_entry_quality_evaluation = None
+        bot._last_scenario_evaluation = None
+        bot._last_trade_decision = None
+        bot._last_hard_block_evaluation = None
+        bot._last_candidate_signal = "NEUTRO"
+        bot._last_signal_pipeline = None
+        bot._generate_advanced_signal = lambda row: "COMPRA"
+        bot._calculate_signal_confidence = lambda row: 95.0
+        bot.calculate_advanced_score = lambda row, signal=None: 0.9
+        bot._passes_signal_structure_guardrail = lambda row, signal, timeframe: True
+        def _context_eval(*args, **kwargs):
+            bot._last_context_evaluation = {
+                "market_bias": "neutral",
+                "bias": "neutral",
+                "is_tradeable": False,
+                "reason": "Timeframe maior sem vies direcional claro.",
+                "context_strength": 4.6,
+                "regime": "range_low_vol",
+            }
+            return bot._last_context_evaluation
+
+        def _structure_eval(*args, **kwargs):
+            bot._last_price_structure_evaluation = {
+                "has_minimum_history": True,
+                "structure_state": "pullback",
+                "price_location": "trend_zone",
+                "structure_quality": 7.0,
+                "reversal_risk": False,
+                "against_market_bias": False,
+                "notes": ["pullback controlado"],
+                "reason": "estrutura valida",
+            }
+            return bot._last_price_structure_evaluation
+
+        def _confirmation_eval(*args, **kwargs):
+            bot._last_confirmation_evaluation = {
+                "has_minimum_history": True,
+                "confirmation_state": "confirmed",
+                "confirmation_score": 7.2,
+                "conflicts": [],
+                "reason": "confirmacao alinhada",
+            }
+            return bot._last_confirmation_evaluation
+
+        def _entry_eval(*args, **kwargs):
+            bot._last_entry_quality_evaluation = {
+                "has_minimum_history": True,
+                "entry_quality": "good",
+                "rr_estimate": 2.1,
+                "late_entry": False,
+                "stretched_price": False,
+                "reason": "entrada boa",
+            }
+            return bot._last_entry_quality_evaluation
+
+        def _scenario_eval(*args, **kwargs):
+            bot._last_scenario_evaluation = {
+                "has_minimum_history": True,
+                "scenario_score": 7.0,
+                "scenario_grade": "B",
+            }
+            return bot._last_scenario_evaluation
+
+        bot.get_context_evaluation = _context_eval
+        bot.get_price_structure_evaluation = _structure_eval
+        bot.get_confirmation_evaluation = _confirmation_eval
+        bot.get_entry_quality_evaluation = _entry_eval
+        bot.build_scenario_score = _scenario_eval
+
+        candle = pd.DataFrame(
+            [
+                {
+                    "open": 100.0,
+                    "high": 101.0,
+                    "low": 99.5,
+                    "close": 100.8,
+                    "rsi": 38.0,
+                    "macd": 0.3,
+                    "macd_signal": 0.2,
+                    "macd_histogram": 0.1,
+                    "adx": 28.0,
+                    "volume_ratio": 1.5,
+                    "atr": 1.0,
+                    "stoch_rsi_k": 40.0,
+                    "williams_r": -45.0,
+                    "bb_width": 0.04,
+                    "market_regime": "trending",
+                    "is_closed": True,
+                }
+            ],
+            index=[pd.Timestamp("2026-01-01 10:00:00")],
+        )
+        context_df = pd.DataFrame(
+            [{"open": 100.0, "high": 102.0, "low": 99.0, "close": 101.0, "is_closed": True}],
+            index=[pd.Timestamp("2026-01-01 08:00:00")],
+        )
+
+        signal = TradingBot.check_signal(
+            bot,
+            candle,
+            timeframe="1h",
+            context_df=context_df,
+            context_timeframe="4h",
+        )
+
+        self.assertEqual(signal, "NEUTRO")
+        self.assertIsNotNone(bot._last_context_evaluation)
+        self.assertIsNotNone(bot._last_price_structure_evaluation)
+        self.assertIsNotNone(bot._last_confirmation_evaluation)
+        self.assertIsNotNone(bot._last_entry_quality_evaluation)
+        self.assertIsNotNone(bot._last_scenario_evaluation)
+        self.assertEqual(bot._last_trade_decision["action"], "wait")
+        self.assertIn("Timeframe maior sem vies", bot._last_trade_decision["block_reason"])
+
     def test_hard_block_evaluation_blocks_countertrend_signal(self):
         bot = TradingBot.__new__(TradingBot)
 

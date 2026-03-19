@@ -713,7 +713,7 @@ class TelegramTradingBot:
             scenario_evaluation = None
             trade_decision = None
             hard_block_evaluation = None
-            signal = self.trading_bot.check_signal(
+            signal_pipeline = self.trading_bot.evaluate_signal_pipeline(
                 data,
                 timeframe=timeframe,
                 require_volume=strategy_settings.get("require_volume", True),
@@ -723,13 +723,14 @@ class TelegramTradingBot:
                 stop_loss_pct=strategy_settings.get("stop_loss_pct"),
                 take_profit_pct=strategy_settings.get("take_profit_pct"),
             )
-            context_evaluation = getattr(self.trading_bot, "_last_context_evaluation", None)
-            structure_evaluation = getattr(self.trading_bot, "_last_price_structure_evaluation", None)
-            confirmation_evaluation = getattr(self.trading_bot, "_last_confirmation_evaluation", None)
-            entry_quality_evaluation = getattr(self.trading_bot, "_last_entry_quality_evaluation", None)
-            scenario_evaluation = getattr(self.trading_bot, "_last_scenario_evaluation", None)
-            trade_decision = getattr(self.trading_bot, "_last_trade_decision", None)
-            hard_block_evaluation = getattr(self.trading_bot, "_last_hard_block_evaluation", None)
+            signal = signal_pipeline["analytical_signal"]
+            context_evaluation = signal_pipeline.get("context_evaluation")
+            structure_evaluation = signal_pipeline.get("structure_evaluation")
+            confirmation_evaluation = signal_pipeline.get("confirmation_evaluation")
+            entry_quality_evaluation = signal_pipeline.get("entry_quality_evaluation")
+            scenario_evaluation = signal_pipeline.get("scenario_evaluation")
+            trade_decision = signal_pipeline.get("trade_decision")
+            hard_block_evaluation = signal_pipeline.get("hard_block_evaluation")
             emoji = TelegramBotConfig.get_signal_emoji(signal)
 
             ai_signal = "NEUTRO"

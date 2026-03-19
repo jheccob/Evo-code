@@ -107,6 +107,19 @@ class ImportSmokeTests(unittest.TestCase):
         self.assertIn("TradingBot(allow_simulated_data=False)", source)
         self.assertGreaterEqual(source.count("st.session_state.futures_trading = None"), 2)
 
+    def test_dashboard_and_telegram_use_central_signal_pipeline(self):
+        with open("app.py", "r", encoding="utf-8") as app_file:
+            app_source = app_file.read()
+        with open("telegram_bot.py", "r", encoding="utf-8") as bot_file:
+            bot_source = bot_file.read()
+        with open("trading_bot.py", "r", encoding="utf-8") as trading_bot_file:
+            trading_bot_source = trading_bot_file.read()
+
+        self.assertIn("def evaluate_signal_pipeline(", trading_bot_source)
+        self.assertIn(".evaluate_signal_pipeline(", app_source)
+        self.assertIn(".evaluate_signal_pipeline(", bot_source)
+        self.assertNotIn("data[data['signal'].isin(", app_source)
+
     def test_main_production_source_checks_telegram_library_before_logging_success(self):
         with open("main_production.py", "r", encoding="utf-8") as main_file:
             source = main_file.read()
