@@ -7,7 +7,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-from config import ProductionConfig
+from config import AppConfig, ProductionConfig
 from services.billing_service import BillingService
 from services.rate_limiter import RateLimiter
 from user_manager import UserManager
@@ -120,6 +120,14 @@ class ImportSmokeTests(unittest.TestCase):
         self.assertIn(".evaluate_signal_pipeline(", bot_source)
         self.assertNotIn("data[data['signal'].isin(", app_source)
 
+    def test_dashboard_exposes_backtest_signal_pipeline_metrics(self):
+        with open("app.py", "r", encoding="utf-8") as app_file:
+            app_source = app_file.read()
+
+        self.assertIn("Pipeline de Sinais", app_source)
+        self.assertIn("Taxa de Aprovação", app_source)
+        self.assertIn("single_setup_symbol", app_source)
+
     def test_main_production_source_checks_telegram_library_before_logging_success(self):
         with open("main_production.py", "r", encoding="utf-8") as main_file:
             source = main_file.read()
@@ -156,6 +164,12 @@ class ProductionConfigSmokeTests(unittest.TestCase):
             reloaded = importlib.reload(config_module)
             self.assertEqual(reloaded.AppConfig.DB_PATH, "/data/trading_bot.db")
             importlib.reload(config_module)
+
+    def test_app_config_supported_pairs_are_not_limited_to_primary_symbol(self):
+        supported_pairs = AppConfig.get_supported_pairs()
+        self.assertIn(AppConfig.PRIMARY_SYMBOL, supported_pairs)
+        self.assertIn("ETH/USDT", supported_pairs)
+        self.assertGreater(len(supported_pairs), 1)
 
 
 class RailwayConfigSmokeTests(unittest.TestCase):

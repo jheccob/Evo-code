@@ -67,10 +67,19 @@ class AppConfig:
 
     @classmethod
     def get_supported_pairs(cls):
-        if cls.SINGLE_SETUP_MODE:
-            return [cls.PRIMARY_SYMBOL]
-        return ["XLM/USDT", "BTC/USDT", "ETH/USDT", "ADA/USDT", "DOT/USDT",
-                "MATIC/USDT", "LINK/USDT", "UNI/USDT", "SOL/USDT", "AVAX/USDT"]
+        supported_pairs = [
+            cls.PRIMARY_SYMBOL,
+            "ETH/USDT",
+            "XLM/USDT",
+            "ADA/USDT",
+            "DOT/USDT",
+            "MATIC/USDT",
+            "LINK/USDT",
+            "UNI/USDT",
+            "SOL/USDT",
+            "AVAX/USDT",
+        ]
+        return list(dict.fromkeys(pair for pair in supported_pairs if pair))
 
     @classmethod
     def get_supported_timeframes(cls):

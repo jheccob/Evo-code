@@ -472,9 +472,18 @@ supported_timeframes = AppConfig.get_supported_timeframes()
 # Escolha do modo de operação
 if AppConfig.SINGLE_SETUP_MODE:
     enable_multi_symbol = False
-    symbol = AppConfig.DEFAULT_SYMBOL
+    symbol = st.sidebar.selectbox(
+        "📈 Par para análise:",
+        available_pairs,
+        index=available_pairs.index(AppConfig.DEFAULT_SYMBOL) if AppConfig.DEFAULT_SYMBOL in available_pairs else 0,
+        help="O setup principal continua fixo, mas a auditoria analítica pode ser feita em outros pares.",
+        key="single_setup_symbol",
+    )
     selected_symbols = [symbol]
-    st.sidebar.info(f"Setup unico ativo: {symbol} em {AppConfig.DEFAULT_TIMEFRAME}")
+    st.sidebar.info(
+        f"Setup principal: {AppConfig.PRIMARY_SYMBOL} em {AppConfig.DEFAULT_TIMEFRAME} | "
+        f"Analisando: {symbol}"
+    )
 else:
     trading_mode = st.sidebar.radio(
         "Modo de Análise:",
@@ -3287,6 +3296,78 @@ with tab2:
             st.metric("✅ Trades Vencedores", stats['winning_trades'])
         with col4:
             st.metric("❌ Trades Perdedores", stats['losing_trades'])
+
+        signal_pipeline_stats = results.get('signal_pipeline_stats') or {
+            'candidate_count': results.get('candidate_count', 0),
+            'approved_count': results.get('approved_count', 0),
+            'blocked_count': results.get('blocked_count', 0),
+            'approval_rate_pct': results.get('approval_rate_pct', 0.0),
+            'block_reason_counts': results.get('block_reason_counts', {}),
+            'structure_state_counts': results.get('structure_state_counts', {}),
+            'confirmation_state_counts': results.get('confirmation_state_counts', {}),
+            'entry_quality_counts': results.get('entry_quality_counts', {}),
+        }
+
+        st.markdown("---")
+        st.subheader("🧠 Pipeline de Sinais")
+
+        pipeline_col1, pipeline_col2, pipeline_col3, pipeline_col4 = st.columns(4)
+        with pipeline_col1:
+            st.metric("Candidatos", int(signal_pipeline_stats.get('candidate_count', 0) or 0))
+        with pipeline_col2:
+            st.metric("Aprovados", int(signal_pipeline_stats.get('approved_count', 0) or 0))
+        with pipeline_col3:
+            st.metric("Bloqueados", int(signal_pipeline_stats.get('blocked_count', 0) or 0))
+        with pipeline_col4:
+            st.metric("Taxa de Aprovação", f"{float(signal_pipeline_stats.get('approval_rate_pct', 0.0) or 0.0):.2f}%")
+
+        breakdown_col1, breakdown_col2, breakdown_col3 = st.columns(3)
+        with breakdown_col1:
+            st.caption("Motivos de Bloqueio")
+            block_reason_counts = signal_pipeline_stats.get('block_reason_counts') or {}
+            if block_reason_counts:
+                st.dataframe(
+                    pd.DataFrame(
+                        [{"Motivo": reason, "Qtd": count} for reason, count in block_reason_counts.items()]
+                    ),
+                    width="stretch",
+                    hide_index=True,
+                )
+            else:
+                st.info("Nenhum bloqueio registrado neste backtest.")
+        with breakdown_col2:
+            st.caption("Estrutura / Confirmação")
+            structure_state_counts = signal_pipeline_stats.get('structure_state_counts') or {}
+            confirmation_state_counts = signal_pipeline_stats.get('confirmation_state_counts') or {}
+            if structure_state_counts or confirmation_state_counts:
+                structure_rows = [
+                    {"Tipo": "Estrutura", "Estado": state, "Qtd": count}
+                    for state, count in structure_state_counts.items()
+                ]
+                confirmation_rows = [
+                    {"Tipo": "Confirmação", "Estado": state, "Qtd": count}
+                    for state, count in confirmation_state_counts.items()
+                ]
+                st.dataframe(
+                    pd.DataFrame(structure_rows + confirmation_rows),
+                    width="stretch",
+                    hide_index=True,
+                )
+            else:
+                st.info("Sem estados estruturais agregados para exibir.")
+        with breakdown_col3:
+            st.caption("Qualidade da Entrada")
+            entry_quality_counts = signal_pipeline_stats.get('entry_quality_counts') or {}
+            if entry_quality_counts:
+                st.dataframe(
+                    pd.DataFrame(
+                        [{"Qualidade": quality, "Qtd": count} for quality, count in entry_quality_counts.items()]
+                    ),
+                    width="stretch",
+                    hide_index=True,
+                )
+            else:
+                st.info("Sem estatísticas de entrada para exibir.")
 
         if results.get('validation'):
             validation = results['validation']
