@@ -5533,3 +5533,161 @@ NameError: name 'status' is not defined. Did you mean: 'stats'?
 2026-03-19 07:27:16,641 - trading_bot - WARNING - Stream indisponivel; tentando REST real
 2026-03-19 07:27:17,086 - trading_bot - INFO - Sinal COMPRA: RSI 25.0 | Confianca 95%
 2026-03-19 07:27:17,089 - trading_bot - INFO - Sinal COMPRA_FRACA: RSI 31.0 | Confianca 95%
+2026-03-19 09:14:42,914 - main_production - INFO - python-telegram-bot importado com sucesso
+2026-03-19 09:14:42,942 - telegram_bot - INFO - python-telegram-bot v22.6 importado com sucesso
+2026-03-19 09:15:01,665 - main_production - INFO - Serviços importados com sucesso
+2026-03-19 09:15:02,107 - main_production - INFO - Iniciando Trading Bot Professional
+2026-03-19 09:15:02,108 - main_production - INFO - TELEGRAM_CHAT_ID nao configurado. Alertas outbound do dashboard ficam desabilitados neste modo.
+2026-03-19 09:15:02,108 - main_production - INFO - Bot Telegram inicializado com sucesso
+2026-03-19 09:15:02,108 - main_production - INFO - Trading Bot Professional - Modo Produção
+2026-03-19 09:15:02,108 - main_production - INFO - Bot pronto para receber comandos
+2026-03-19 09:15:02,109 - main_production - INFO - Digite /start no Telegram
+2026-03-19 09:15:02,109 - main_production - ERROR - Erro fatal (tentativa 1/3): Falha ao iniciar ou manter o polling do bot
+2026-03-19 09:15:02,109 - main_production - INFO - Tentando reiniciar em 5 segundos...
+2026-03-19 09:15:02,109 - main_production - INFO - TELEGRAM_CHAT_ID nao configurado. Alertas outbound do dashboard ficam desabilitados neste modo.
+2026-03-19 09:15:02,110 - main_production - INFO - Bot Telegram inicializado com sucesso
+2026-03-19 09:15:02,110 - main_production - INFO - Trading Bot Professional - Modo Produção
+2026-03-19 09:15:02,110 - main_production - INFO - Bot pronto para receber comandos
+2026-03-19 09:15:02,111 - main_production - INFO - Digite /start no Telegram
+2026-03-19 09:15:02,111 - main_production - ERROR - Erro fatal (tentativa 2/3): Falha ao iniciar ou manter o polling do bot
+2026-03-19 09:15:02,111 - main_production - INFO - Tentando reiniciar em 5 segundos...
+2026-03-19 09:15:02,111 - main_production - INFO - TELEGRAM_CHAT_ID nao configurado. Alertas outbound do dashboard ficam desabilitados neste modo.
+2026-03-19 09:15:02,112 - main_production - INFO - Bot Telegram inicializado com sucesso
+2026-03-19 09:15:02,112 - main_production - INFO - Trading Bot Professional - Modo Produção
+2026-03-19 09:15:02,112 - main_production - INFO - Bot pronto para receber comandos
+2026-03-19 09:15:02,112 - main_production - INFO - Digite /start no Telegram
+2026-03-19 09:15:02,113 - main_production - ERROR - Erro fatal (tentativa 3/3): Falha ao iniciar ou manter o polling do bot
+2026-03-19 09:15:02,113 - main_production - CRITICAL - Falha após 3 tentativas. Verificar logs e configuração.
+2026-03-19 09:15:02,133 - config.config - INFO - Configuracoes do bot 24/7 validadas com sucesso
+2026-03-19 09:15:02,133 - config.config - ERROR - ❌ TELEGRAM_CHAT_ID não configurado
+2026-03-19 09:15:02,206 - services.rate_limiter - WARNING - RateLimiter usando fallback em memoria: aioredis nao esta instalado
+2026-03-19 09:15:02,210 - user_manager - INFO - UserManager usando backend json em C:\Users\PC\AppData\Local\Temp\tmp_v62ofm1.json
+2026-03-19 09:15:02,790 - user_manager - INFO - UserManager usando backend sqlite em C:\Users\PC\AppData\Local\Temp\tmpl2s2ah4e.db
+2026-03-19 09:17:46,846 - main_production - INFO - python-telegram-bot importado com sucesso
+2026-03-19 09:17:46,889 - main_production - INFO - Serviços importados com sucesso
+2026-03-19 09:17:48,524 - main_production - INFO - Iniciando Trading Bot Professional
+2026-03-19 09:17:48,526 - main_production - INFO - TELEGRAM_CHAT_ID nao configurado. Alertas outbound do dashboard ficam desabilitados neste modo.
+2026-03-19 09:17:48,526 - main_production - INFO - Bot Telegram inicializado com sucesso
+2026-03-19 09:17:48,527 - main_production - INFO - Trading Bot Professional - Modo Produção
+2026-03-19 09:17:48,527 - main_production - INFO - Bot pronto para receber comandos
+2026-03-19 09:17:48,527 - main_production - INFO - Digite /start no Telegram
+2026-03-19 09:17:48,528 - main_production - ERROR - Erro fatal (tentativa 1/3): Falha ao iniciar ou manter o polling do bot
+2026-03-19 09:17:48,528 - main_production - INFO - Tentando reiniciar em 5 segundos...
+2026-03-19 09:17:48,529 - main_production - INFO - TELEGRAM_CHAT_ID nao configurado. Alertas outbound do dashboard ficam desabilitados neste modo.
+2026-03-19 09:17:48,529 - main_production - INFO - Bot Telegram inicializado com sucesso
+2026-03-19 09:17:48,529 - main_production - INFO - Trading Bot Professional - Modo Produção
+2026-03-19 09:17:48,530 - main_production - INFO - Bot pronto para receber comandos
+2026-03-19 09:17:48,530 - main_production - INFO - Digite /start no Telegram
+2026-03-19 09:17:48,531 - main_production - ERROR - Erro fatal (tentativa 2/3): Falha ao iniciar ou manter o polling do bot
+2026-03-19 09:17:48,531 - main_production - INFO - Tentando reiniciar em 5 segundos...
+2026-03-19 09:17:48,532 - main_production - INFO - TELEGRAM_CHAT_ID nao configurado. Alertas outbound do dashboard ficam desabilitados neste modo.
+2026-03-19 09:17:48,533 - main_production - INFO - Bot Telegram inicializado com sucesso
+2026-03-19 09:17:48,533 - main_production - INFO - Trading Bot Professional - Modo Produção
+2026-03-19 09:17:48,533 - main_production - INFO - Bot pronto para receber comandos
+2026-03-19 09:17:48,534 - main_production - INFO - Digite /start no Telegram
+2026-03-19 09:17:48,534 - main_production - ERROR - Erro fatal (tentativa 3/3): Falha ao iniciar ou manter o polling do bot
+2026-03-19 09:17:48,535 - main_production - CRITICAL - Falha após 3 tentativas. Verificar logs e configuração.
+2026-03-19 09:17:48,627 - config.config - INFO - Configuracoes do bot 24/7 validadas com sucesso
+2026-03-19 09:17:48,629 - config.config - ERROR - ❌ TELEGRAM_CHAT_ID não configurado
+2026-03-19 09:17:48,644 - services.rate_limiter - WARNING - RateLimiter usando fallback em memoria: aioredis nao esta instalado
+2026-03-19 09:17:48,657 - user_manager - INFO - UserManager usando backend json em C:\Users\PC\AppData\Local\Temp\tmp9h_w8qvi.json
+2026-03-19 09:17:48,965 - user_manager - INFO - UserManager usando backend sqlite em C:\Users\PC\AppData\Local\Temp\tmpetcef7k3.db
+2026-03-19 09:17:49,998 - trading_bot - INFO - Sinal COMPRA: RSI 15.0 | Confianca 95%
+2026-03-19 09:17:50,478 - trading_bot - INFO - Sinal COMPRA: RSI 39.0 | Confianca 95%
+2026-03-19 09:17:50,504 - trading_bot - INFO - Sinal COMPRA: RSI 38.0 | Confianca 95%
+2026-03-19 09:17:50,541 - trading_bot - INFO - Sinal COMPRA: RSI 34.0 | Confianca 95%
+2026-03-19 09:17:50,550 - trading_bot - INFO - Sinal COMPRA: RSI 40.0 | Confianca 95%
+2026-03-19 09:17:50,557 - trading_bot - INFO - Sinal COMPRA: RSI 38.0 | Confianca 95%
+2026-03-19 09:17:50,571 - trading_bot - INFO - Sinal COMPRA: RSI 38.0 | Confianca 95%
+2026-03-19 09:17:50,579 - trading_bot - INFO - Sinal COMPRA: RSI 38.0 | Confianca 95%
+2026-03-19 09:17:50,586 - trading_bot - INFO - Sinal COMPRA: RSI 38.0 | Confianca 95%
+2026-03-19 09:17:50,597 - trading_bot - INFO - Sinal COMPRA: RSI 38.0 | Confianca 95%
+2026-03-19 09:17:50,611 - trading_bot - INFO - Sinal COMPRA: RSI 25.0 | Confianca 95%
+2026-03-19 09:17:50,748 - trading_bot - INFO - Sinal COMPRA: RSI 34.0 | Confianca 95%
+2026-03-19 09:17:50,785 - trading_bot - INFO - Sinal COMPRA: RSI 34.0 | Confianca 95%
+2026-03-19 09:17:50,862 - trading_bot - INFO - 🌐 Tentando endpoint: https://fapi.binance.com/fapi/v1/klines?symbol=BTCUSDT&interval=1h&limit=1
+2026-03-19 09:17:50,927 - trading_bot - INFO - 📊 Dados públicos obtidos: 1 candles
+2026-03-19 09:17:50,930 - trading_bot - INFO - Conectando ao stream real de mercado para BTC/USDT 1h
+2026-03-19 09:17:50,931 - trading_bot - WARNING - Falha ao obter dados pelo stream real: stream down
+2026-03-19 09:17:50,932 - trading_bot - WARNING - Stream indisponivel; tentando REST real
+2026-03-19 09:17:50,982 - trading_bot - INFO - Sinal COMPRA: RSI 25.0 | Confianca 95%
+2026-03-19 09:17:50,988 - trading_bot - INFO - Sinal COMPRA_FRACA: RSI 31.0 | Confianca 95%
+2026-03-19 09:28:05,128 - main_production - INFO - python-telegram-bot importado com sucesso
+2026-03-19 09:28:05,160 - telegram_bot - INFO - python-telegram-bot v22.6 importado com sucesso
+2026-03-19 09:28:20,494 - main_production - INFO - Serviços importados com sucesso
+2026-03-19 09:28:21,042 - main_production - INFO - Iniciando Trading Bot Professional
+2026-03-19 09:28:21,042 - main_production - INFO - TELEGRAM_CHAT_ID nao configurado. Alertas outbound do dashboard ficam desabilitados neste modo.
+2026-03-19 09:28:21,043 - main_production - INFO - Bot Telegram inicializado com sucesso
+2026-03-19 09:28:21,043 - main_production - INFO - Trading Bot Professional - Modo Produção
+2026-03-19 09:28:21,043 - main_production - INFO - Bot pronto para receber comandos
+2026-03-19 09:28:21,043 - main_production - INFO - Digite /start no Telegram
+2026-03-19 09:28:21,044 - main_production - ERROR - Erro fatal (tentativa 1/3): Falha ao iniciar ou manter o polling do bot
+2026-03-19 09:28:21,044 - main_production - INFO - Tentando reiniciar em 5 segundos...
+2026-03-19 09:28:21,044 - main_production - INFO - TELEGRAM_CHAT_ID nao configurado. Alertas outbound do dashboard ficam desabilitados neste modo.
+2026-03-19 09:28:21,045 - main_production - INFO - Bot Telegram inicializado com sucesso
+2026-03-19 09:28:21,045 - main_production - INFO - Trading Bot Professional - Modo Produção
+2026-03-19 09:28:21,045 - main_production - INFO - Bot pronto para receber comandos
+2026-03-19 09:28:21,046 - main_production - INFO - Digite /start no Telegram
+2026-03-19 09:28:21,046 - main_production - ERROR - Erro fatal (tentativa 2/3): Falha ao iniciar ou manter o polling do bot
+2026-03-19 09:28:21,046 - main_production - INFO - Tentando reiniciar em 5 segundos...
+2026-03-19 09:28:21,047 - main_production - INFO - TELEGRAM_CHAT_ID nao configurado. Alertas outbound do dashboard ficam desabilitados neste modo.
+2026-03-19 09:28:21,047 - main_production - INFO - Bot Telegram inicializado com sucesso
+2026-03-19 09:28:21,047 - main_production - INFO - Trading Bot Professional - Modo Produção
+2026-03-19 09:28:21,048 - main_production - INFO - Bot pronto para receber comandos
+2026-03-19 09:28:21,048 - main_production - INFO - Digite /start no Telegram
+2026-03-19 09:28:21,048 - main_production - ERROR - Erro fatal (tentativa 3/3): Falha ao iniciar ou manter o polling do bot
+2026-03-19 09:28:21,049 - main_production - CRITICAL - Falha após 3 tentativas. Verificar logs e configuração.
+2026-03-19 09:28:21,074 - config.config - INFO - Configuracoes do bot 24/7 validadas com sucesso
+2026-03-19 09:28:21,074 - config.config - ERROR - ❌ TELEGRAM_CHAT_ID não configurado
+2026-03-19 09:28:21,079 - services.rate_limiter - WARNING - RateLimiter usando fallback em memoria: aioredis nao esta instalado
+2026-03-19 09:28:21,086 - user_manager - INFO - UserManager usando backend json em C:\Users\PC\AppData\Local\Temp\tmpr1rloujb.json
+2026-03-19 09:28:21,324 - user_manager - INFO - UserManager usando backend sqlite em C:\Users\PC\AppData\Local\Temp\tmpiqwhqepk.db
+2026-03-19 10:16:01,689 - main_production - INFO - python-telegram-bot importado com sucesso
+2026-03-19 10:16:01,710 - main_production - INFO - Serviços importados com sucesso
+2026-03-19 10:16:02,631 - main_production - INFO - Iniciando Trading Bot Professional
+2026-03-19 10:16:02,631 - main_production - INFO - TELEGRAM_CHAT_ID nao configurado. Alertas outbound do dashboard ficam desabilitados neste modo.
+2026-03-19 10:16:02,632 - main_production - INFO - Bot Telegram inicializado com sucesso
+2026-03-19 10:16:02,632 - main_production - INFO - Trading Bot Professional - Modo Produção
+2026-03-19 10:16:02,632 - main_production - INFO - Bot pronto para receber comandos
+2026-03-19 10:16:02,633 - main_production - INFO - Digite /start no Telegram
+2026-03-19 10:16:02,633 - main_production - ERROR - Erro fatal (tentativa 1/3): Falha ao iniciar ou manter o polling do bot
+2026-03-19 10:16:02,633 - main_production - INFO - Tentando reiniciar em 5 segundos...
+2026-03-19 10:16:02,634 - main_production - INFO - TELEGRAM_CHAT_ID nao configurado. Alertas outbound do dashboard ficam desabilitados neste modo.
+2026-03-19 10:16:02,634 - main_production - INFO - Bot Telegram inicializado com sucesso
+2026-03-19 10:16:02,634 - main_production - INFO - Trading Bot Professional - Modo Produção
+2026-03-19 10:16:02,635 - main_production - INFO - Bot pronto para receber comandos
+2026-03-19 10:16:02,635 - main_production - INFO - Digite /start no Telegram
+2026-03-19 10:16:02,635 - main_production - ERROR - Erro fatal (tentativa 2/3): Falha ao iniciar ou manter o polling do bot
+2026-03-19 10:16:02,635 - main_production - INFO - Tentando reiniciar em 5 segundos...
+2026-03-19 10:16:02,636 - main_production - INFO - TELEGRAM_CHAT_ID nao configurado. Alertas outbound do dashboard ficam desabilitados neste modo.
+2026-03-19 10:16:02,636 - main_production - INFO - Bot Telegram inicializado com sucesso
+2026-03-19 10:16:02,636 - main_production - INFO - Trading Bot Professional - Modo Produção
+2026-03-19 10:16:02,637 - main_production - INFO - Bot pronto para receber comandos
+2026-03-19 10:16:02,637 - main_production - INFO - Digite /start no Telegram
+2026-03-19 10:16:02,638 - main_production - ERROR - Erro fatal (tentativa 3/3): Falha ao iniciar ou manter o polling do bot
+2026-03-19 10:16:02,638 - main_production - CRITICAL - Falha após 3 tentativas. Verificar logs e configuração.
+2026-03-19 10:16:02,663 - config.config - INFO - Configuracoes do bot 24/7 validadas com sucesso
+2026-03-19 10:16:02,664 - config.config - ERROR - ❌ TELEGRAM_CHAT_ID não configurado
+2026-03-19 10:16:02,668 - services.rate_limiter - WARNING - RateLimiter usando fallback em memoria: aioredis nao esta instalado
+2026-03-19 10:16:02,674 - user_manager - INFO - UserManager usando backend json em C:\Users\PC\AppData\Local\Temp\tmpqb1qc5ky.json
+2026-03-19 10:16:02,807 - user_manager - INFO - UserManager usando backend sqlite em C:\Users\PC\AppData\Local\Temp\tmphssgo46j.db
+2026-03-19 10:16:03,072 - trading_bot - INFO - Sinal COMPRA: RSI 15.0 | Confianca 95%
+2026-03-19 10:16:03,303 - trading_bot - INFO - Sinal COMPRA: RSI 39.0 | Confianca 95%
+2026-03-19 10:16:03,326 - trading_bot - INFO - Sinal COMPRA: RSI 38.0 | Confianca 95%
+2026-03-19 10:16:03,346 - trading_bot - INFO - Sinal COMPRA: RSI 34.0 | Confianca 95%
+2026-03-19 10:16:03,352 - trading_bot - INFO - Sinal COMPRA: RSI 40.0 | Confianca 95%
+2026-03-19 10:16:03,358 - trading_bot - INFO - Sinal COMPRA: RSI 38.0 | Confianca 95%
+2026-03-19 10:16:03,366 - trading_bot - INFO - Sinal COMPRA: RSI 38.0 | Confianca 95%
+2026-03-19 10:16:03,371 - trading_bot - INFO - Sinal COMPRA: RSI 38.0 | Confianca 95%
+2026-03-19 10:16:03,374 - trading_bot - INFO - Sinal COMPRA: RSI 38.0 | Confianca 95%
+2026-03-19 10:16:03,378 - trading_bot - INFO - Sinal COMPRA: RSI 38.0 | Confianca 95%
+2026-03-19 10:16:03,384 - trading_bot - INFO - Sinal COMPRA: RSI 25.0 | Confianca 95%
+2026-03-19 10:16:03,460 - trading_bot - INFO - Sinal COMPRA: RSI 34.0 | Confianca 95%
+2026-03-19 10:16:03,478 - trading_bot - INFO - Sinal COMPRA: RSI 34.0 | Confianca 95%
+2026-03-19 10:16:03,542 - trading_bot - INFO - 🌐 Tentando endpoint: https://fapi.binance.com/fapi/v1/klines?symbol=BTCUSDT&interval=1h&limit=1
+2026-03-19 10:16:03,544 - trading_bot - INFO - 📊 Dados públicos obtidos: 1 candles
+2026-03-19 10:16:03,546 - trading_bot - INFO - Conectando ao stream real de mercado para BTC/USDT 1h
+2026-03-19 10:16:03,547 - trading_bot - WARNING - Falha ao obter dados pelo stream real: stream down
+2026-03-19 10:16:03,547 - trading_bot - WARNING - Stream indisponivel; tentando REST real
+2026-03-19 10:16:03,586 - trading_bot - INFO - Sinal COMPRA: RSI 25.0 | Confianca 95%
+2026-03-19 10:16:03,588 - trading_bot - INFO - Sinal COMPRA_FRACA: RSI 31.0 | Confianca 95%
