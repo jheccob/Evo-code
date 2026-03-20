@@ -4,6 +4,7 @@ from datetime import datetime
 import os
 import tempfile
 import unittest
+from unittest import mock
 
 import pandas as pd
 
@@ -172,9 +173,10 @@ class PipelineAwareTradingBot(DeterministicTradingBot):
                 "blocked_signal": None,
                 "analytical_signal": "COMPRA",
                 "block_reason": None,
+                "regime_evaluation": {"regime": "trend_bull"},
                 "structure_evaluation": {"structure_state": "breakout"},
                 "confirmation_evaluation": {"confirmation_state": "confirmed"},
-                "entry_quality_evaluation": {"entry_quality": "good"},
+                "entry_quality_evaluation": {"entry_quality": "strong", "setup_type": "continuation_breakout", "entry_score": 7.8},
             },
             212: {
                 "candidate_signal": "COMPRA",
@@ -182,9 +184,10 @@ class PipelineAwareTradingBot(DeterministicTradingBot):
                 "blocked_signal": "COMPRA",
                 "analytical_signal": "NEUTRO",
                 "block_reason": "Estrutura fraca",
+                "regime_evaluation": {"regime": "range"},
                 "structure_evaluation": {"structure_state": "weak_structure"},
                 "confirmation_evaluation": {"confirmation_state": "confirmed"},
-                "entry_quality_evaluation": {"entry_quality": "good"},
+                "entry_quality_evaluation": {"entry_quality": "strong", "setup_type": "continuation_breakout", "entry_score": 7.2},
             },
             213: {
                 "candidate_signal": "VENDA",
@@ -192,9 +195,10 @@ class PipelineAwareTradingBot(DeterministicTradingBot):
                 "blocked_signal": "VENDA",
                 "analytical_signal": "NEUTRO",
                 "block_reason": "Volume fraco",
+                "regime_evaluation": {"regime": "trend_bear"},
                 "structure_evaluation": {"structure_state": "pullback"},
                 "confirmation_evaluation": {"confirmation_state": "weak"},
-                "entry_quality_evaluation": {"entry_quality": "bad"},
+                "entry_quality_evaluation": {"entry_quality": "bad", "setup_type": "pullback_trend", "entry_score": 3.4},
             },
         }
         return sequence.get(
@@ -205,9 +209,10 @@ class PipelineAwareTradingBot(DeterministicTradingBot):
                 "blocked_signal": None,
                 "analytical_signal": "NEUTRO",
                 "block_reason": None,
+                "regime_evaluation": {"regime": "range"},
                 "structure_evaluation": {"structure_state": "mid_range"},
                 "confirmation_evaluation": {"confirmation_state": "mixed"},
-                "entry_quality_evaluation": {"entry_quality": "acceptable"},
+                "entry_quality_evaluation": {"entry_quality": "acceptable", "setup_type": "reversal_controlled", "entry_score": 5.2},
             },
         )
 
@@ -323,6 +328,40 @@ class BacktestEngineTests(unittest.TestCase):
         data.loc[pd.Timestamp("2026-01-03 12:05:00"), "high"] = 100.7
         return data
 
+    def _build_management_market_data(self):
+        timestamps = pd.date_range("2026-01-01", periods=260, freq="5min")
+        data = pd.DataFrame(
+            {
+                "open": [100.0] * len(timestamps),
+                "high": [100.2] * len(timestamps),
+                "low": [99.8] * len(timestamps),
+                "close": [100.0] * len(timestamps),
+                "volume": [1_000.0] * len(timestamps),
+                "atr": [1.0] * len(timestamps),
+                "ema_21": [100.0] * len(timestamps),
+                "market_regime": ["trend_bull"] * len(timestamps),
+                "volatility_state": ["normal_volatility"] * len(timestamps),
+                "regime_score": [8.0] * len(timestamps),
+                "parabolic": [False] * len(timestamps),
+            },
+            index=timestamps,
+        )
+        data.iloc[212, data.columns.get_loc("high")] = 102.4
+        data.iloc[212, data.columns.get_loc("low")] = 100.2
+        data.iloc[212, data.columns.get_loc("close")] = 102.1
+        data.iloc[212, data.columns.get_loc("ema_21")] = 101.1
+        data.iloc[213, data.columns.get_loc("open")] = 102.2
+        data.iloc[213, data.columns.get_loc("high")] = 104.8
+        data.iloc[213, data.columns.get_loc("low")] = 102.1
+        data.iloc[213, data.columns.get_loc("close")] = 104.3
+        data.iloc[213, data.columns.get_loc("ema_21")] = 102.2
+        data.iloc[214, data.columns.get_loc("open")] = 104.2
+        data.iloc[214, data.columns.get_loc("high")] = 106.2
+        data.iloc[214, data.columns.get_loc("low")] = 103.8
+        data.iloc[214, data.columns.get_loc("close")] = 106.0
+        data.iloc[214, data.columns.get_loc("ema_21")] = 103.2
+        return data
+
     def test_run_backtest_returns_dashboard_contract_and_respects_small_take_profit_pct(self):
         bot = DeterministicTradingBot()
         engine = FixedDataBacktestEngine(self._build_market_data(), bot)
@@ -378,14 +417,28 @@ class BacktestEngineTests(unittest.TestCase):
         self.assertAlmostEqual(results["approval_rate_pct"], 33.33, places=2)
         self.assertEqual(results["block_reason_counts"]["Estrutura fraca"], 1)
         self.assertEqual(results["block_reason_counts"]["Volume fraco"], 1)
+        self.assertEqual(results["regime_counts"]["trend_bull"], 1)
+        self.assertEqual(results["regime_counts"]["range"], 1)
+        self.assertEqual(results["regime_counts"]["trend_bear"], 1)
         self.assertEqual(results["structure_state_counts"]["breakout"], 1)
         self.assertEqual(results["structure_state_counts"]["weak_structure"], 1)
         self.assertEqual(results["structure_state_counts"]["pullback"], 1)
         self.assertEqual(results["confirmation_state_counts"]["confirmed"], 2)
         self.assertEqual(results["confirmation_state_counts"]["weak"], 1)
-        self.assertEqual(results["entry_quality_counts"]["good"], 2)
+        self.assertEqual(results["entry_quality_counts"]["strong"], 2)
         self.assertEqual(results["entry_quality_counts"]["bad"], 1)
+        self.assertEqual(results["setup_type_counts"]["continuation_breakout"], 2)
+        self.assertEqual(results["setup_type_counts"]["pullback_trend"], 1)
+        self.assertEqual(results["setup_type_approved_counts"]["continuation_breakout"], 1)
         self.assertEqual(results["signal_pipeline_stats"]["candidate_count"], 3)
+        self.assertEqual(results["signal_audit_summary"]["candidate_count"], 3)
+        self.assertEqual(results["signal_audit_summary"]["blocked_count"], 2)
+        self.assertIn("approval_by_regime", results["signal_audit_summary"])
+        self.assertEqual(results["signal_pipeline_stats"]["regime_counts"]["trend_bull"], 1)
+        self.assertEqual(len(results["regime_summary"]), 1)
+        self.assertEqual(results["regime_summary"][0]["regime"], "trend_bull")
+        self.assertEqual(results["regime_summary"][0]["total_trades"], 1)
+        self.assertEqual(results["setup_type_summary"][0]["setup_type"], "continuation_breakout")
 
     def test_run_backtest_persists_run_and_trade_metrics_in_sqlite(self):
         bot = DeterministicTradingBot()
@@ -415,10 +468,14 @@ class BacktestEngineTests(unittest.TestCase):
 
             runs = database.get_backtest_runs()
             trades = database.get_backtest_trades(results["saved_run_id"])
+            trade_analytics = database.get_trade_analytics(run_id=results["saved_run_id"])
+            signal_audit = database.get_signal_audit(run_id=results["saved_run_id"])
             summary = database.get_backtest_performance_summary(symbol="BTC/USDT", timeframe="5m")
 
             self.assertEqual(len(runs), 1)
             self.assertEqual(len(trades), 1)
+            self.assertEqual(len(trade_analytics), 1)
+            self.assertGreaterEqual(len(signal_audit), 1)
             self.assertEqual(summary["total_runs"], 1)
             self.assertEqual(summary["total_trades"], 1)
             self.assertEqual(summary["breakdown_by_market"][0]["symbol"], "BTC/USDT")
@@ -430,6 +487,21 @@ class BacktestEngineTests(unittest.TestCase):
             self.assertEqual(trades[0]["exit_reason"], trades[0]["reason"])
             self.assertEqual(trades[0]["sample_type"], "backtest")
             self.assertGreaterEqual(float(trades[0]["signal_score"]), 0.0)
+            self.assertIn("break_even_active", trades[0])
+            self.assertIn("mfe_pct", trades[0])
+            self.assertIn("risk_mode", trades[0])
+            self.assertIn("risk_amount", trades[0])
+            self.assertIn("size_reduced", trades[0])
+            self.assertEqual(trade_analytics[0]["setup_type"], results["trades"][0]["setup_name"])
+            self.assertIn("mfe_pct", trade_analytics[0])
+            self.assertIn("mae_pct", trade_analytics[0])
+            self.assertIn("profit_given_back_pct", trade_analytics[0])
+            self.assertIn("notes", trade_analytics[0])
+            self.assertIsInstance(trade_analytics[0]["notes"], list)
+            self.assertIn("candidate_signal", signal_audit[0])
+            self.assertIn("scenario_score", signal_audit[0])
+            self.assertIn("risk_mode", signal_audit[0])
+            self.assertIsInstance(signal_audit[0]["notes"], list)
         finally:
             if os.path.exists(temp_db.name):
                 os.remove(temp_db.name)
@@ -468,6 +540,108 @@ class BacktestEngineTests(unittest.TestCase):
         finally:
             if os.path.exists(temp_db.name):
                 os.remove(temp_db.name)
+
+    def test_run_backtest_tracks_position_management_counters_and_trade_fields(self):
+        bot = DeterministicTradingBot()
+        engine = FixedDataBacktestEngine(self._build_management_market_data(), bot)
+
+        results = engine.run_backtest(
+            symbol="BTC/USDT",
+            timeframe="5m",
+            start_date=datetime(2026, 1, 1, 0, 0),
+            end_date=datetime(2026, 1, 1, 21, 35),
+            initial_balance=1_000,
+            stop_loss_pct=2.0,
+            take_profit_pct=6.0,
+            fee_rate=0.0,
+            slippage=0.0,
+        )
+
+        self.assertEqual(results["stats"]["total_trades"], 1)
+        self.assertEqual(results["stats"]["break_even_activated_count"], 1)
+        self.assertEqual(results["stats"]["trailing_activated_count"], 1)
+        self.assertEqual(results["stats"]["exit_reason_counts"]["TAKE_PROFIT"], 1)
+        self.assertIn("position_management_summary", results)
+        self.assertGreaterEqual(results["trades"][0]["mfe_pct"], 4.0)
+        self.assertTrue(results["trades"][0]["break_even_active"])
+        self.assertTrue(results["trades"][0]["trailing_active"])
+        self.assertIn("trade_autopsy", results)
+        self.assertIn("equity_diagnostics", results)
+        self.assertGreaterEqual(results["trade_autopsy"][0]["profit_given_back_pct"], 0.0)
+        self.assertIn("timestamp_exit", results["trade_autopsy"][0])
+        self.assertIn("setup_type", results["trade_autopsy"][0])
+        self.assertIn("pnl_pct", results["trade_autopsy"][0])
+        self.assertIn("stop_initial", results["trade_autopsy"][0])
+        self.assertIn("average_drawdown_pct", results["equity_diagnostics"])
+        self.assertIn("profit_giveback_pct", results["equity_diagnostics"])
+
+    def test_build_equity_diagnostics_measures_profit_giveback_after_peak(self):
+        engine = BacktestEngine(trading_bot=DeterministicTradingBot())
+        portfolio_df = pd.DataFrame(
+            {
+                "timestamp": pd.date_range("2026-01-01", periods=7, freq="1h"),
+                "portfolio_value": [1000.0, 1100.0, 1080.0, 1150.0, 1120.0, 1180.0, 1140.0],
+            }
+        )
+
+        diagnostics = engine._build_equity_diagnostics(portfolio_df, initial_balance=1000.0)
+
+        self.assertAlmostEqual(diagnostics["profit_giveback_pct"], 22.22, places=2)
+        self.assertGreater(diagnostics["max_drawdown_pct"], 0.0)
+        self.assertGreaterEqual(diagnostics["max_recovery_periods"], 0)
+
+    def test_run_backtest_blocks_trade_when_risk_engine_disallows_entry(self):
+        from config import ProductionConfig
+
+        bot = DeterministicTradingBot()
+        engine = FixedDataBacktestEngine(self._build_market_data(), bot)
+
+        with mock.patch.object(ProductionConfig, "RISK_DRAWDOWN_BLOCK_PCT", 0.0):
+            results = engine.run_backtest(
+                symbol="BTC/USDT",
+                timeframe="5m",
+                start_date=datetime(2026, 1, 1, 0, 0),
+                end_date=datetime(2026, 1, 1, 21, 35),
+                initial_balance=1_000,
+                stop_loss_pct=2.0,
+                take_profit_pct=0.5,
+                fee_rate=0.0,
+                slippage=0.0,
+            )
+
+        self.assertEqual(results["stats"]["total_trades"], 0)
+        self.assertEqual(results["risk_engine_summary"]["risk_blocked_count"], 1)
+        self.assertGreaterEqual(
+            results["risk_engine_summary"]["risk_block_reason_counts"].get(
+                "Drawdown corrente de 0.00% acima do limite de 0.00%.", 0
+            ),
+            1,
+        )
+
+    def test_run_backtest_tracks_reduced_risk_mode_on_trade(self):
+        from config import ProductionConfig
+
+        bot = DeterministicTradingBot()
+        engine = FixedDataBacktestEngine(self._build_market_data(), bot)
+
+        with mock.patch.object(ProductionConfig, "RISK_DRAWDOWN_WARNING_PCT", 0.0), \
+             mock.patch.object(ProductionConfig, "RISK_DRAWDOWN_BLOCK_PCT", 100.0), \
+             mock.patch.object(ProductionConfig, "RISK_REDUCED_MODE_MULTIPLIER", 0.5):
+            results = engine.run_backtest(
+                symbol="BTC/USDT",
+                timeframe="5m",
+                start_date=datetime(2026, 1, 1, 0, 0),
+                end_date=datetime(2026, 1, 1, 21, 35),
+                initial_balance=1_000,
+                stop_loss_pct=2.0,
+                take_profit_pct=0.5,
+                fee_rate=0.0,
+                slippage=0.0,
+            )
+
+        self.assertEqual(results["risk_engine_summary"]["reduced_size_count"], 1)
+        self.assertEqual(results["trades"][0]["risk_mode"], "reduced")
+        self.assertTrue(results["trades"][0]["size_reduced"])
 
     def test_run_backtest_forwards_existing_signal_filter_flags(self):
         bot = DeterministicTradingBot()
@@ -939,6 +1113,9 @@ class DashboardBacktestIntegrationTests(unittest.TestCase):
         self.assertIn("backtest_scan_results", source)
         self.assertIn("optimize_rsi_parameters(", source)
         self.assertIn("backtest_optimization_results", source)
+        self.assertIn("trade_autopsy", source)
+        self.assertIn("signal_audit", source)
+        self.assertIn("time_analytics", source)
 
 
 if __name__ == "__main__":

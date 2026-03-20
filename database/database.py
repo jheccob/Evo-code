@@ -68,6 +68,7 @@ class TradingDatabase:
                 timeframe TEXT NOT NULL,
                 context_timeframe TEXT,
                 strategy_version TEXT,
+                regime TEXT,
                 signal_type TEXT NOT NULL,  -- 'buy', 'sell', 'hold'
                 price REAL NOT NULL,
                 rsi REAL,
@@ -189,9 +190,24 @@ class TradingDatabase:
                 atr REAL DEFAULT 0.0,
                 entry_timestamp TEXT,
                 entry_reason TEXT,
+                entry_quality TEXT,
+                rejection_reason TEXT,
                 exit_timestamp TEXT NOT NULL,
                 entry_price REAL NOT NULL,
                 exit_price REAL NOT NULL,
+                initial_stop_price REAL,
+                initial_take_price REAL,
+                final_stop_price REAL,
+                final_take_price REAL,
+                break_even_active BOOLEAN DEFAULT FALSE,
+                trailing_active BOOLEAN DEFAULT FALSE,
+                protection_level TEXT,
+                regime_exit_flag BOOLEAN DEFAULT FALSE,
+                structure_exit_flag BOOLEAN DEFAULT FALSE,
+                post_pump_protection BOOLEAN DEFAULT FALSE,
+                mfe_pct REAL DEFAULT 0.0,
+                mae_pct REAL DEFAULT 0.0,
+                max_unrealized_rr REAL DEFAULT 0.0,
                 exit_reason TEXT,
                 profit_loss_pct REAL NOT NULL,
                 profit_loss REAL NOT NULL,
@@ -221,6 +237,8 @@ class TradingDatabase:
                 source TEXT NOT NULL,
                 entry_timestamp TEXT NOT NULL,
                 entry_reason TEXT,
+                entry_quality TEXT,
+                rejection_reason TEXT,
                 entry_price REAL NOT NULL,
                 stop_loss_pct REAL NOT NULL DEFAULT 0.0,
                 take_profit_pct REAL NOT NULL DEFAULT 0.0,
@@ -228,6 +246,19 @@ class TradingDatabase:
                 slippage REAL DEFAULT 0.0,
                 stop_loss_price REAL,
                 take_profit_price REAL,
+                initial_stop_price REAL,
+                initial_take_price REAL,
+                final_stop_price REAL,
+                final_take_price REAL,
+                break_even_active BOOLEAN DEFAULT FALSE,
+                trailing_active BOOLEAN DEFAULT FALSE,
+                protection_level TEXT,
+                regime_exit_flag BOOLEAN DEFAULT FALSE,
+                structure_exit_flag BOOLEAN DEFAULT FALSE,
+                post_pump_protection BOOLEAN DEFAULT FALSE,
+                mfe_pct REAL DEFAULT 0.0,
+                mae_pct REAL DEFAULT 0.0,
+                max_unrealized_rr REAL DEFAULT 0.0,
                 status TEXT NOT NULL DEFAULT 'OPEN',
                 outcome TEXT NOT NULL DEFAULT 'OPEN',
                 close_reason TEXT,
@@ -304,8 +335,187 @@ class TradingDatabase:
             )
         ''')
 
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS trade_analytics (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_id INTEGER NOT NULL,
+                symbol TEXT NOT NULL,
+                timeframe TEXT NOT NULL,
+                strategy_version TEXT,
+                setup_type TEXT,
+                regime TEXT,
+                regime_score REAL DEFAULT 0.0,
+                trend_state TEXT,
+                volatility_state TEXT,
+                context_bias TEXT,
+                structure_state TEXT,
+                confirmation_state TEXT,
+                entry_quality TEXT,
+                entry_score REAL DEFAULT 0.0,
+                risk_mode TEXT,
+                position_size REAL DEFAULT 0.0,
+                position_notional REAL DEFAULT 0.0,
+                risk_amount REAL DEFAULT 0.0,
+                stop_initial REAL,
+                take_initial REAL,
+                stop_final REAL,
+                take_final REAL,
+                exit_reason TEXT,
+                entry_timestamp TEXT,
+                exit_timestamp TEXT,
+                holding_time_minutes REAL DEFAULT 0.0,
+                holding_candles INTEGER DEFAULT 0,
+                pnl_pct REAL DEFAULT 0.0,
+                pnl_abs REAL DEFAULT 0.0,
+                mfe_pct REAL DEFAULT 0.0,
+                mae_pct REAL DEFAULT 0.0,
+                rr_realized REAL DEFAULT 0.0,
+                break_even_activated BOOLEAN DEFAULT FALSE,
+                trailing_activated BOOLEAN DEFAULT FALSE,
+                regime_shift_during_trade BOOLEAN DEFAULT FALSE,
+                profit_given_back_pct REAL DEFAULT 0.0,
+                notes TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (run_id) REFERENCES backtest_runs(id) ON DELETE CASCADE
+            )
+        ''')
+
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS signal_audit (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_id INTEGER NOT NULL,
+                symbol TEXT NOT NULL,
+                timeframe TEXT NOT NULL,
+                strategy_version TEXT,
+                timestamp TEXT NOT NULL,
+                candidate_signal TEXT,
+                approved_signal TEXT,
+                blocked_signal TEXT,
+                block_reason TEXT,
+                regime TEXT,
+                regime_score REAL DEFAULT 0.0,
+                trend_state TEXT,
+                volatility_state TEXT,
+                context_bias TEXT,
+                structure_state TEXT,
+                confirmation_state TEXT,
+                entry_quality TEXT,
+                entry_score REAL DEFAULT 0.0,
+                scenario_score REAL DEFAULT 0.0,
+                setup_type TEXT,
+                risk_mode TEXT,
+                notes TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (run_id) REFERENCES backtest_runs(id) ON DELETE CASCADE
+            )
+        ''')
+
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS setup_regime_baselines (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                symbol TEXT NOT NULL,
+                timeframe TEXT NOT NULL,
+                strategy_version TEXT NOT NULL,
+                regime TEXT NOT NULL,
+                baseline_source TEXT NOT NULL DEFAULT 'backtest',
+                baseline_profit_factor REAL DEFAULT 0.0,
+                baseline_expectancy_pct REAL DEFAULT 0.0,
+                baseline_win_rate REAL DEFAULT 0.0,
+                baseline_drawdown REAL DEFAULT 0.0,
+                baseline_trade_count INTEGER DEFAULT 0,
+                total_return_pct REAL DEFAULT 0.0,
+                oos_profit_factor REAL DEFAULT 0.0,
+                oos_expectancy_pct REAL DEFAULT 0.0,
+                walk_forward_pass_rate_pct REAL DEFAULT 0.0,
+                performance_status TEXT,
+                window_days INTEGER DEFAULT 0,
+                notes TEXT,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(symbol, timeframe, strategy_version, regime)
+            )
+        ''')
+
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS alignment_metrics (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                symbol TEXT NOT NULL,
+                timeframe TEXT NOT NULL,
+                strategy_version TEXT NOT NULL,
+                regime TEXT,
+                window_days INTEGER DEFAULT 0,
+                window_trades INTEGER DEFAULT 0,
+                baseline_source TEXT,
+                baseline_profit_factor REAL DEFAULT 0.0,
+                baseline_expectancy_pct REAL DEFAULT 0.0,
+                baseline_win_rate REAL DEFAULT 0.0,
+                baseline_trade_count INTEGER DEFAULT 0,
+                paper_profit_factor REAL DEFAULT 0.0,
+                paper_expectancy_pct REAL DEFAULT 0.0,
+                paper_win_rate REAL DEFAULT 0.0,
+                paper_trade_count INTEGER DEFAULT 0,
+                live_profit_factor REAL DEFAULT 0.0,
+                live_expectancy_pct REAL DEFAULT 0.0,
+                live_win_rate REAL DEFAULT 0.0,
+                live_trade_count INTEGER DEFAULT 0,
+                paper_pf_alignment_pct REAL DEFAULT 0.0,
+                paper_expectancy_alignment_pct REAL DEFAULT 0.0,
+                paper_win_rate_delta_pct REAL DEFAULT 0.0,
+                live_pf_alignment_pct REAL DEFAULT 0.0,
+                live_expectancy_alignment_pct REAL DEFAULT 0.0,
+                live_win_rate_delta_pct REAL DEFAULT 0.0,
+                alignment_status TEXT,
+                notes TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS governance_decisions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                symbol TEXT NOT NULL,
+                timeframe TEXT NOT NULL,
+                strategy_version TEXT NOT NULL,
+                regime TEXT,
+                governance_status TEXT NOT NULL,
+                governance_mode TEXT NOT NULL,
+                current_regime_status TEXT,
+                alignment_status TEXT,
+                promotion_status TEXT,
+                degradation_status TEXT,
+                action TEXT,
+                action_reason TEXT,
+                allowed_regimes TEXT,
+                reduced_regimes TEXT,
+                blocked_regimes TEXT,
+                notes TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS setup_governance_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                symbol TEXT NOT NULL,
+                timeframe TEXT NOT NULL,
+                strategy_version TEXT NOT NULL,
+                regime TEXT,
+                previous_status TEXT,
+                previous_mode TEXT,
+                governance_status TEXT NOT NULL,
+                governance_mode TEXT NOT NULL,
+                alignment_status TEXT,
+                promotion_status TEXT,
+                degradation_status TEXT,
+                action TEXT,
+                action_reason TEXT,
+                notes TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+
         self._ensure_column(cursor, 'trading_signals', 'context_timeframe', 'TEXT')
         self._ensure_column(cursor, 'trading_signals', 'strategy_version', 'TEXT')
+        self._ensure_column(cursor, 'trading_signals', 'regime', 'TEXT')
         self._ensure_column(cursor, 'backtest_runs', 'context_timeframe', 'TEXT')
         self._ensure_column(cursor, 'backtest_runs', 'strategy_version', 'TEXT')
         self._ensure_column(cursor, 'backtest_trades', 'context_timeframe', 'TEXT')
@@ -317,14 +527,50 @@ class TradingDatabase:
         self._ensure_column(cursor, 'backtest_trades', 'signal_score', 'REAL DEFAULT 0.0')
         self._ensure_column(cursor, 'backtest_trades', 'atr', 'REAL DEFAULT 0.0')
         self._ensure_column(cursor, 'backtest_trades', 'entry_reason', 'TEXT')
+        self._ensure_column(cursor, 'backtest_trades', 'entry_quality', 'TEXT')
+        self._ensure_column(cursor, 'backtest_trades', 'rejection_reason', 'TEXT')
         self._ensure_column(cursor, 'backtest_trades', 'exit_reason', 'TEXT')
+        self._ensure_column(cursor, 'backtest_trades', 'initial_stop_price', 'REAL')
+        self._ensure_column(cursor, 'backtest_trades', 'initial_take_price', 'REAL')
+        self._ensure_column(cursor, 'backtest_trades', 'final_stop_price', 'REAL')
+        self._ensure_column(cursor, 'backtest_trades', 'final_take_price', 'REAL')
+        self._ensure_column(cursor, 'backtest_trades', 'break_even_active', 'BOOLEAN DEFAULT FALSE')
+        self._ensure_column(cursor, 'backtest_trades', 'trailing_active', 'BOOLEAN DEFAULT FALSE')
+        self._ensure_column(cursor, 'backtest_trades', 'protection_level', 'TEXT')
+        self._ensure_column(cursor, 'backtest_trades', 'regime_exit_flag', 'BOOLEAN DEFAULT FALSE')
+        self._ensure_column(cursor, 'backtest_trades', 'structure_exit_flag', 'BOOLEAN DEFAULT FALSE')
+        self._ensure_column(cursor, 'backtest_trades', 'post_pump_protection', 'BOOLEAN DEFAULT FALSE')
+        self._ensure_column(cursor, 'backtest_trades', 'mfe_pct', 'REAL DEFAULT 0.0')
+        self._ensure_column(cursor, 'backtest_trades', 'mae_pct', 'REAL DEFAULT 0.0')
+        self._ensure_column(cursor, 'backtest_trades', 'max_unrealized_rr', 'REAL DEFAULT 0.0')
         self._ensure_column(cursor, 'backtest_trades', 'sample_type', "TEXT DEFAULT 'backtest'")
+        self._ensure_column(cursor, 'backtest_trades', 'risk_mode', "TEXT DEFAULT 'normal'")
+        self._ensure_column(cursor, 'backtest_trades', 'risk_amount', 'REAL DEFAULT 0.0')
+        self._ensure_column(cursor, 'backtest_trades', 'position_notional', 'REAL DEFAULT 0.0')
+        self._ensure_column(cursor, 'backtest_trades', 'quantity', 'REAL DEFAULT 0.0')
+        self._ensure_column(cursor, 'backtest_trades', 'size_reduced', 'BOOLEAN DEFAULT FALSE')
+        self._ensure_column(cursor, 'backtest_trades', 'risk_reason', 'TEXT')
         self._ensure_column(cursor, 'paper_trades', 'setup_name', 'TEXT')
         self._ensure_column(cursor, 'paper_trades', 'regime', 'TEXT')
         self._ensure_column(cursor, 'paper_trades', 'signal_score', 'REAL DEFAULT 0.0')
         self._ensure_column(cursor, 'paper_trades', 'atr', 'REAL DEFAULT 0.0')
         self._ensure_column(cursor, 'paper_trades', 'entry_reason', 'TEXT')
+        self._ensure_column(cursor, 'paper_trades', 'entry_quality', 'TEXT')
+        self._ensure_column(cursor, 'paper_trades', 'rejection_reason', 'TEXT')
         self._ensure_column(cursor, 'paper_trades', 'exit_reason', 'TEXT')
+        self._ensure_column(cursor, 'paper_trades', 'initial_stop_price', 'REAL')
+        self._ensure_column(cursor, 'paper_trades', 'initial_take_price', 'REAL')
+        self._ensure_column(cursor, 'paper_trades', 'final_stop_price', 'REAL')
+        self._ensure_column(cursor, 'paper_trades', 'final_take_price', 'REAL')
+        self._ensure_column(cursor, 'paper_trades', 'break_even_active', 'BOOLEAN DEFAULT FALSE')
+        self._ensure_column(cursor, 'paper_trades', 'trailing_active', 'BOOLEAN DEFAULT FALSE')
+        self._ensure_column(cursor, 'paper_trades', 'protection_level', 'TEXT')
+        self._ensure_column(cursor, 'paper_trades', 'regime_exit_flag', 'BOOLEAN DEFAULT FALSE')
+        self._ensure_column(cursor, 'paper_trades', 'structure_exit_flag', 'BOOLEAN DEFAULT FALSE')
+        self._ensure_column(cursor, 'paper_trades', 'post_pump_protection', 'BOOLEAN DEFAULT FALSE')
+        self._ensure_column(cursor, 'paper_trades', 'mfe_pct', 'REAL DEFAULT 0.0')
+        self._ensure_column(cursor, 'paper_trades', 'mae_pct', 'REAL DEFAULT 0.0')
+        self._ensure_column(cursor, 'paper_trades', 'max_unrealized_rr', 'REAL DEFAULT 0.0')
         self._ensure_column(cursor, 'paper_trades', 'sample_type', "TEXT DEFAULT 'paper'")
         self._ensure_column(cursor, 'paper_trades', 'fee_rate', 'REAL DEFAULT 0.0')
         self._ensure_column(cursor, 'paper_trades', 'slippage', 'REAL DEFAULT 0.0')
@@ -334,6 +580,9 @@ class TradingDatabase:
         self._ensure_column(cursor, 'paper_trades', 'planned_position_notional', 'REAL DEFAULT 0.0')
         self._ensure_column(cursor, 'paper_trades', 'planned_quantity', 'REAL DEFAULT 0.0')
         self._ensure_column(cursor, 'paper_trades', 'account_reference_balance', 'REAL DEFAULT 0.0')
+        self._ensure_column(cursor, 'paper_trades', 'risk_mode', "TEXT DEFAULT 'normal'")
+        self._ensure_column(cursor, 'paper_trades', 'size_reduced', 'BOOLEAN DEFAULT FALSE')
+        self._ensure_column(cursor, 'paper_trades', 'risk_reason', 'TEXT')
         self._ensure_column(cursor, 'backtest_runs', 'validation_split_pct', 'REAL DEFAULT 0.0')
         self._ensure_column(cursor, 'backtest_runs', 'in_sample_end', 'TEXT')
         self._ensure_column(cursor, 'backtest_runs', 'out_of_sample_start', 'TEXT')
@@ -696,14 +945,15 @@ class TradingDatabase:
         
         cursor.execute('''
             INSERT INTO trading_signals 
-            (symbol, timeframe, context_timeframe, strategy_version, signal_type, price, rsi, macd_signal, macd_value, 
+            (symbol, timeframe, context_timeframe, strategy_version, regime, signal_type, price, rsi, macd_signal, macd_value, 
              signal_strength, volume, created_at_br)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''', (
             signal_data.get('symbol'),
             signal_data.get('timeframe'),
             signal_data.get('context_timeframe'),
             signal_data.get('strategy_version'),
+            signal_data.get('regime'),
             signal_data.get('signal'),
             signal_data.get('price'),
             signal_data.get('rsi'),
@@ -726,10 +976,13 @@ class TradingDatabase:
             cursor = conn.cursor()
             columns = [
                 'symbol', 'timeframe', 'context_timeframe', 'setup_name', 'strategy_version', 'regime', 'signal_score', 'atr', 'sample_type',
-                'signal', 'side', 'source', 'entry_timestamp', 'entry_reason', 'entry_price',
+                'signal', 'side', 'source', 'entry_timestamp', 'entry_reason', 'entry_quality', 'rejection_reason', 'entry_price',
                 'stop_loss_pct', 'take_profit_pct', 'fee_rate', 'slippage', 'stop_loss_price', 'take_profit_price',
+                'initial_stop_price', 'initial_take_price', 'final_stop_price', 'final_take_price',
+                'break_even_active', 'trailing_active', 'protection_level', 'regime_exit_flag', 'structure_exit_flag',
+                'post_pump_protection', 'mfe_pct', 'mae_pct', 'max_unrealized_rr',
                 'planned_risk_pct', 'planned_risk_amount', 'planned_position_notional', 'planned_quantity',
-                'account_reference_balance',
+                'account_reference_balance', 'risk_mode', 'size_reduced', 'risk_reason',
                 'status', 'outcome', 'close_reason', 'exit_reason', 'exit_timestamp', 'exit_price', 'result_pct',
                 'created_at_br'
             ]
@@ -748,6 +1001,8 @@ class TradingDatabase:
                 'source': trade_data.get('source', 'system'),
                 'entry_timestamp': trade_data.get('entry_timestamp'),
                 'entry_reason': trade_data.get('entry_reason') or trade_data.get('signal'),
+                'entry_quality': trade_data.get('entry_quality'),
+                'rejection_reason': trade_data.get('rejection_reason'),
                 'entry_price': trade_data.get('entry_price'),
                 'stop_loss_pct': trade_data.get('stop_loss_pct', 0.0),
                 'take_profit_pct': trade_data.get('take_profit_pct', 0.0),
@@ -755,11 +1010,27 @@ class TradingDatabase:
                 'slippage': trade_data.get('slippage', 0.0),
                 'stop_loss_price': trade_data.get('stop_loss_price'),
                 'take_profit_price': trade_data.get('take_profit_price'),
+                'initial_stop_price': trade_data.get('initial_stop_price', trade_data.get('stop_loss_price')),
+                'initial_take_price': trade_data.get('initial_take_price', trade_data.get('take_profit_price')),
+                'final_stop_price': trade_data.get('final_stop_price', trade_data.get('stop_loss_price')),
+                'final_take_price': trade_data.get('final_take_price', trade_data.get('take_profit_price')),
+                'break_even_active': int(bool(trade_data.get('break_even_active', False))),
+                'trailing_active': int(bool(trade_data.get('trailing_active', False))),
+                'protection_level': trade_data.get('protection_level', 'normal'),
+                'regime_exit_flag': int(bool(trade_data.get('regime_exit_flag', False))),
+                'structure_exit_flag': int(bool(trade_data.get('structure_exit_flag', False))),
+                'post_pump_protection': int(bool(trade_data.get('post_pump_protection', False))),
+                'mfe_pct': trade_data.get('mfe_pct', 0.0),
+                'mae_pct': trade_data.get('mae_pct', 0.0),
+                'max_unrealized_rr': trade_data.get('max_unrealized_rr', 0.0),
                 'planned_risk_pct': trade_data.get('planned_risk_pct', 0.0),
                 'planned_risk_amount': trade_data.get('planned_risk_amount', 0.0),
                 'planned_position_notional': trade_data.get('planned_position_notional', 0.0),
                 'planned_quantity': trade_data.get('planned_quantity', 0.0),
                 'account_reference_balance': trade_data.get('account_reference_balance', 0.0),
+                'risk_mode': trade_data.get('risk_mode', 'normal'),
+                'size_reduced': int(bool(trade_data.get('size_reduced', False))),
+                'risk_reason': trade_data.get('risk_reason'),
                 'status': trade_data.get('status', 'OPEN'),
                 'outcome': trade_data.get('outcome', 'OPEN'),
                 'close_reason': trade_data.get('close_reason'),
@@ -928,6 +1199,66 @@ class TradingDatabase:
         conn.close()
         return trades
 
+    def get_paper_drawdown_summary(
+        self,
+        symbol: str = None,
+        timeframe: str = None,
+        strategy_version: str = None,
+    ) -> Dict[str, Any]:
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            '''
+            SELECT
+                planned_position_notional,
+                account_reference_balance,
+                result_pct,
+                exit_timestamp
+            FROM paper_trades
+            WHERE status = 'CLOSED'
+              AND exit_timestamp IS NOT NULL
+              AND (? IS NULL OR symbol = ?)
+              AND (? IS NULL OR timeframe = ?)
+              AND (? IS NULL OR strategy_version = ?)
+            ORDER BY exit_timestamp ASC, id ASC
+            ''',
+            (symbol, symbol, timeframe, timeframe, strategy_version, strategy_version),
+        )
+        rows = [dict(row) for row in cursor.fetchall()]
+        conn.close()
+
+        starting_balance = max(
+            (float(row.get("account_reference_balance", 0.0) or 0.0) for row in rows),
+            default=float(ProductionConfig.PAPER_ACCOUNT_BALANCE),
+        )
+        if starting_balance <= 0:
+            starting_balance = float(ProductionConfig.PAPER_ACCOUNT_BALANCE)
+
+        equity = starting_balance
+        peak_equity = starting_balance
+        current_drawdown_pct = 0.0
+        max_drawdown_pct = 0.0
+        for row in rows:
+            pnl = (
+                float(row.get("planned_position_notional", 0.0) or 0.0)
+                * float(row.get("result_pct", 0.0) or 0.0)
+                / 100.0
+            )
+            equity += pnl
+            peak_equity = max(peak_equity, equity)
+            if peak_equity > 0:
+                current_drawdown_pct = max(((peak_equity - equity) / peak_equity) * 100.0, 0.0)
+                max_drawdown_pct = max(max_drawdown_pct, current_drawdown_pct)
+
+        return {
+            "closed_trades": len(rows),
+            "starting_balance": round(starting_balance, 2),
+            "current_equity": round(equity, 2),
+            "peak_equity": round(peak_equity, 2),
+            "current_drawdown_pct": round(current_drawdown_pct, 4),
+            "max_drawdown_pct": round(max_drawdown_pct, 4),
+        }
+
     def close_paper_trade(
         self,
         trade_id: int,
@@ -936,6 +1267,17 @@ class TradingDatabase:
         outcome: str,
         close_reason: str,
         result_pct: float,
+        final_stop_price: float = None,
+        final_take_price: float = None,
+        break_even_active: bool = False,
+        trailing_active: bool = False,
+        protection_level: str = None,
+        regime_exit_flag: bool = False,
+        structure_exit_flag: bool = False,
+        post_pump_protection: bool = False,
+        mfe_pct: float = 0.0,
+        mae_pct: float = 0.0,
+        max_unrealized_rr: float = 0.0,
     ):
         """Fechar paper trade com outcome calculado."""
         conn = self.get_connection()
@@ -955,9 +1297,39 @@ class TradingDatabase:
                     exit_reason = ?,
                     exit_timestamp = ?,
                     exit_price = ?,
-                    result_pct = ?
+                    result_pct = ?,
+                    final_stop_price = COALESCE(?, final_stop_price),
+                    final_take_price = COALESCE(?, final_take_price),
+                    break_even_active = ?,
+                    trailing_active = ?,
+                    protection_level = COALESCE(?, protection_level),
+                    regime_exit_flag = ?,
+                    structure_exit_flag = ?,
+                    post_pump_protection = ?,
+                    mfe_pct = ?,
+                    mae_pct = ?,
+                    max_unrealized_rr = ?
                 WHERE id = ?
-            ''', (outcome, close_reason, close_reason, exit_timestamp, exit_price, result_pct, trade_id))
+            ''', (
+                outcome,
+                close_reason,
+                close_reason,
+                exit_timestamp,
+                exit_price,
+                result_pct,
+                final_stop_price,
+                final_take_price,
+                int(bool(break_even_active)),
+                int(bool(trailing_active)),
+                protection_level,
+                int(bool(regime_exit_flag)),
+                int(bool(structure_exit_flag)),
+                int(bool(post_pump_protection)),
+                mfe_pct,
+                mae_pct,
+                max_unrealized_rr,
+                trade_id,
+            ))
             conn.commit()
         finally:
             conn.close()
@@ -971,6 +1343,63 @@ class TradingDatabase:
                 persist=True,
                 notes=f"Snapshot apos fechamento do paper trade #{trade_id}",
             )
+
+    def update_paper_trade_management(
+        self,
+        trade_id: int,
+        stop_loss_price: float = None,
+        take_profit_price: float = None,
+        break_even_active: bool = False,
+        trailing_active: bool = False,
+        protection_level: str = None,
+        regime_exit_flag: bool = False,
+        structure_exit_flag: bool = False,
+        post_pump_protection: bool = False,
+        mfe_pct: float = 0.0,
+        mae_pct: float = 0.0,
+        max_unrealized_rr: float = 0.0,
+    ):
+        conn = self.get_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                UPDATE paper_trades
+                SET stop_loss_price = COALESCE(?, stop_loss_price),
+                    take_profit_price = COALESCE(?, take_profit_price),
+                    final_stop_price = COALESCE(?, final_stop_price),
+                    final_take_price = COALESCE(?, final_take_price),
+                    break_even_active = ?,
+                    trailing_active = ?,
+                    protection_level = COALESCE(?, protection_level),
+                    regime_exit_flag = ?,
+                    structure_exit_flag = ?,
+                    post_pump_protection = ?,
+                    mfe_pct = ?,
+                    mae_pct = ?,
+                    max_unrealized_rr = ?
+                WHERE id = ?
+                ''',
+                (
+                    stop_loss_price,
+                    take_profit_price,
+                    stop_loss_price,
+                    take_profit_price,
+                    int(bool(break_even_active)),
+                    int(bool(trailing_active)),
+                    protection_level,
+                    int(bool(regime_exit_flag)),
+                    int(bool(structure_exit_flag)),
+                    int(bool(post_pump_protection)),
+                    mfe_pct,
+                    mae_pct,
+                    max_unrealized_rr,
+                    trade_id,
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
 
     def get_paper_trade_summary(
         self,
@@ -1119,7 +1548,13 @@ class TradingDatabase:
         conn.commit()
         conn.close()
     
-    def save_backtest_result(self, run_data: Dict[str, Any], trades: List[Dict[str, Any]]) -> int:
+    def save_backtest_result(
+        self,
+        run_data: Dict[str, Any],
+        trades: List[Dict[str, Any]],
+        trade_analytics: Optional[List[Dict[str, Any]]] = None,
+        signal_audit: Optional[List[Dict[str, Any]]] = None,
+    ) -> int:
         """Salvar um backtest completo com resumo e trades."""
         conn = self.get_connection()
         try:
@@ -1200,9 +1635,30 @@ class TradingDatabase:
                     trade.get('atr', 0.0),
                     self._normalize_timestamp(trade.get('entry_timestamp')),
                     trade.get('entry_reason') or trade.get('signal'),
+                    trade.get('entry_quality'),
+                    trade.get('rejection_reason'),
                     self._normalize_timestamp(trade.get('timestamp')),
                     trade.get('entry_price'),
                     trade.get('price'),
+                    trade.get('initial_stop_price'),
+                    trade.get('initial_take_price'),
+                    trade.get('final_stop_price'),
+                    trade.get('final_take_price'),
+                    int(bool(trade.get('break_even_active', False))),
+                    int(bool(trade.get('trailing_active', False))),
+                    trade.get('protection_level'),
+                    int(bool(trade.get('regime_exit_flag', False))),
+                    int(bool(trade.get('structure_exit_flag', False))),
+                    int(bool(trade.get('post_pump_protection', False))),
+                    trade.get('mfe_pct', 0.0),
+                    trade.get('mae_pct', 0.0),
+                    trade.get('max_unrealized_rr', 0.0),
+                    trade.get('risk_mode', 'normal'),
+                    trade.get('risk_amount', 0.0),
+                    trade.get('position_notional', 0.0),
+                    trade.get('quantity', 0.0),
+                    int(bool(trade.get('size_reduced', False))),
+                    trade.get('risk_reason'),
                     trade.get('exit_reason') or trade.get('reason'),
                     trade.get('profit_loss_pct'),
                     trade.get('profit_loss'),
@@ -1215,13 +1671,114 @@ class TradingDatabase:
             ]
 
             if trade_rows:
+                trade_placeholders = ', '.join(['?'] * len(trade_rows[0]))
                 cursor.executemany('''
                     INSERT INTO backtest_trades (
                         run_id, symbol, timeframe, context_timeframe, setup_name, strategy_version, regime, signal_score, atr, entry_timestamp,
-                        entry_reason, exit_timestamp, entry_price, exit_price, exit_reason, profit_loss_pct, profit_loss,
-                        signal, side, reason, sample_type
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        entry_reason, entry_quality, rejection_reason, exit_timestamp, entry_price, exit_price,
+                        initial_stop_price, initial_take_price, final_stop_price, final_take_price,
+                        break_even_active, trailing_active, protection_level, regime_exit_flag, structure_exit_flag,
+                        post_pump_protection, mfe_pct, mae_pct, max_unrealized_rr,
+                        risk_mode, risk_amount, position_notional, quantity, size_reduced, risk_reason,
+                        exit_reason, profit_loss_pct, profit_loss, signal, side, reason, sample_type
+                    ) VALUES (''' + trade_placeholders + ''')
                 ''', trade_rows)
+
+            analytics_rows = [
+                (
+                    run_id,
+                    run_data.get('symbol'),
+                    run_data.get('timeframe'),
+                    trade.get('strategy_version') or run_data.get('strategy_version'),
+                    trade.get('setup_name'),
+                    trade.get('regime'),
+                    trade.get('regime_score', 0.0),
+                    trade.get('trend_state'),
+                    trade.get('volatility_state'),
+                    trade.get('context_bias'),
+                    trade.get('structure_state'),
+                    trade.get('confirmation_state'),
+                    trade.get('entry_quality'),
+                    trade.get('entry_score', 0.0),
+                    trade.get('risk_mode'),
+                    trade.get('quantity', 0.0),
+                    trade.get('position_notional', 0.0),
+                    trade.get('risk_amount', 0.0),
+                    trade.get('initial_stop_price'),
+                    trade.get('initial_take_price'),
+                    trade.get('final_stop_price'),
+                    trade.get('final_take_price'),
+                    trade.get('exit_reason') or trade.get('reason'),
+                    self._normalize_timestamp(trade.get('entry_timestamp')),
+                    self._normalize_timestamp(trade.get('timestamp')),
+                    trade.get('holding_time_minutes', 0.0),
+                    trade.get('holding_candles', 0),
+                    trade.get('profit_loss_pct', 0.0),
+                    trade.get('profit_loss', 0.0),
+                    trade.get('mfe_pct', 0.0),
+                    trade.get('mae_pct', 0.0),
+                    trade.get('rr_realized', 0.0),
+                    int(bool(trade.get('break_even_active', False))),
+                    int(bool(trade.get('trailing_active', False))),
+                    int(bool(trade.get('regime_shift_during_trade', False))),
+                    trade.get('profit_given_back_pct', 0.0),
+                    json.dumps(trade.get('notes') or []),
+                )
+                for trade in (trade_analytics or trades or [])
+            ]
+
+            if analytics_rows:
+                analytics_placeholders = ', '.join(['?'] * len(analytics_rows[0]))
+                cursor.executemany('''
+                    INSERT INTO trade_analytics (
+                        run_id, symbol, timeframe, strategy_version, setup_type, regime, regime_score,
+                        trend_state, volatility_state, context_bias, structure_state, confirmation_state,
+                        entry_quality, entry_score, risk_mode, position_size, position_notional, risk_amount,
+                        stop_initial, take_initial, stop_final, take_final, exit_reason, entry_timestamp,
+                        exit_timestamp, holding_time_minutes, holding_candles, pnl_pct, pnl_abs, mfe_pct,
+                        mae_pct, rr_realized, break_even_activated, trailing_activated,
+                        regime_shift_during_trade, profit_given_back_pct, notes
+                    ) VALUES (''' + analytics_placeholders + ''')
+                ''', analytics_rows)
+
+            signal_audit_rows = [
+                (
+                    run_id,
+                    audit.get('symbol') or run_data.get('symbol'),
+                    audit.get('timeframe') or run_data.get('timeframe'),
+                    audit.get('strategy_version') or run_data.get('strategy_version'),
+                    self._normalize_timestamp(audit.get('timestamp')),
+                    audit.get('candidate_signal'),
+                    audit.get('approved_signal'),
+                    audit.get('blocked_signal'),
+                    audit.get('block_reason'),
+                    audit.get('regime'),
+                    audit.get('regime_score', 0.0),
+                    audit.get('trend_state'),
+                    audit.get('volatility_state'),
+                    audit.get('context_bias'),
+                    audit.get('structure_state'),
+                    audit.get('confirmation_state'),
+                    audit.get('entry_quality'),
+                    audit.get('entry_score', 0.0),
+                    audit.get('scenario_score', 0.0),
+                    audit.get('setup_type'),
+                    audit.get('risk_mode'),
+                    json.dumps(audit.get('notes') or []),
+                )
+                for audit in (signal_audit or [])
+            ]
+
+            if signal_audit_rows:
+                signal_audit_placeholders = ', '.join(['?'] * len(signal_audit_rows[0]))
+                cursor.executemany('''
+                    INSERT INTO signal_audit (
+                        run_id, symbol, timeframe, strategy_version, timestamp, candidate_signal,
+                        approved_signal, blocked_signal, block_reason, regime, regime_score, trend_state,
+                        volatility_state, context_bias, structure_state, confirmation_state, entry_quality,
+                        entry_score, scenario_score, setup_type, risk_mode, notes
+                    ) VALUES (''' + signal_audit_placeholders + ''')
+                ''', signal_audit_rows)
 
             conn.commit()
         except Exception:
@@ -1278,6 +1835,1035 @@ class TradingDatabase:
 
         conn.close()
         return trades
+
+    def get_trade_analytics(
+        self,
+        run_id: int = None,
+        symbol: str = None,
+        timeframe: str = None,
+        strategy_version: str = None,
+        limit: int = 500,
+    ) -> List[Dict]:
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            '''
+            SELECT * FROM trade_analytics
+            WHERE (? IS NULL OR run_id = ?)
+              AND (? IS NULL OR symbol = ?)
+              AND (? IS NULL OR timeframe = ?)
+              AND (? IS NULL OR strategy_version = ?)
+            ORDER BY exit_timestamp DESC, id DESC
+            LIMIT ?
+            ''',
+            (run_id, run_id, symbol, symbol, timeframe, timeframe, strategy_version, strategy_version, limit),
+        )
+        rows = [dict(row) for row in cursor.fetchall()]
+        for row in rows:
+            notes = row.get("notes")
+            if isinstance(notes, str) and notes:
+                try:
+                    row["notes"] = json.loads(notes)
+                except json.JSONDecodeError:
+                    pass
+        conn.close()
+        return rows
+
+    def get_signal_audit(
+        self,
+        run_id: int = None,
+        symbol: str = None,
+        timeframe: str = None,
+        strategy_version: str = None,
+        limit: int = 1000,
+    ) -> List[Dict]:
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            '''
+            SELECT * FROM signal_audit
+            WHERE (? IS NULL OR run_id = ?)
+              AND (? IS NULL OR symbol = ?)
+              AND (? IS NULL OR timeframe = ?)
+              AND (? IS NULL OR strategy_version = ?)
+            ORDER BY timestamp DESC, id DESC
+            LIMIT ?
+            ''',
+            (run_id, run_id, symbol, symbol, timeframe, timeframe, strategy_version, strategy_version, limit),
+        )
+        rows = [dict(row) for row in cursor.fetchall()]
+        for row in rows:
+            notes = row.get("notes")
+            if isinstance(notes, str) and notes:
+                try:
+                    row["notes"] = json.loads(notes)
+                except json.JSONDecodeError:
+                    pass
+        conn.close()
+        return rows
+
+    @staticmethod
+    def _decode_json_field(raw_value: Any, default: Any) -> Any:
+        if isinstance(raw_value, str) and raw_value:
+            try:
+                return json.loads(raw_value)
+            except json.JSONDecodeError:
+                return default
+        return raw_value if raw_value not in (None, "") else default
+
+    @staticmethod
+    def _normalize_governance_regime(regime: Optional[str], parabolic: bool = False) -> Optional[str]:
+        if parabolic:
+            return "parabolic"
+        if regime is None:
+            return None
+        normalized = str(regime).strip().lower()
+        return normalized or None
+
+    @staticmethod
+    def _summarize_result_rows(
+        rows: List[Dict[str, Any]],
+        result_key: str,
+        giveback_key: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        total_trades = len(rows)
+        if total_trades <= 0:
+            return {
+                "trade_count": 0,
+                "win_rate": 0.0,
+                "profit_factor": 0.0,
+                "expectancy_pct": 0.0,
+                "total_return_pct": 0.0,
+                "avg_profit_giveback_pct": 0.0,
+            }
+
+        results = [float(row.get(result_key, 0.0) or 0.0) for row in rows]
+        gross_profit = sum(value for value in results if value > 0)
+        gross_loss = sum(abs(value) for value in results if value < 0)
+        wins = sum(1 for value in results if value > 0)
+        total_return_pct = sum(results)
+        expectancy_pct = total_return_pct / total_trades if total_trades else 0.0
+        if gross_loss > 0:
+            profit_factor = gross_profit / gross_loss
+        elif gross_profit > 0:
+            profit_factor = 999.0
+        else:
+            profit_factor = 0.0
+
+        givebacks: List[float] = []
+        if giveback_key:
+            for row in rows:
+                givebacks.append(float(row.get(giveback_key, 0.0) or 0.0))
+
+        return {
+            "trade_count": total_trades,
+            "win_rate": round((wins / total_trades) * 100, 2) if total_trades else 0.0,
+            "profit_factor": round(profit_factor, 4),
+            "expectancy_pct": round(expectancy_pct, 4),
+            "total_return_pct": round(total_return_pct, 4),
+            "avg_profit_giveback_pct": round(sum(givebacks) / len(givebacks), 4) if givebacks else 0.0,
+        }
+
+    def _get_recent_trade_analytics_rows(
+        self,
+        symbol: str = None,
+        timeframe: str = None,
+        strategy_version: str = None,
+        regime: str = None,
+        window_days: Optional[int] = None,
+    ) -> List[Dict[str, Any]]:
+        conn = self.get_connection()
+        try:
+            cursor = conn.cursor()
+            window_modifier = f"-{int(window_days)} days" if window_days else None
+            cursor.execute(
+                '''
+                SELECT ta.*
+                FROM trade_analytics ta
+                WHERE (? IS NULL OR ta.symbol = ?)
+                  AND (? IS NULL OR ta.timeframe = ?)
+                  AND (? IS NULL OR ta.strategy_version = ?)
+                  AND (? IS NULL OR ta.regime = ?)
+                  AND (? IS NULL OR ta.created_at >= datetime('now', ?))
+                ORDER BY ta.id DESC
+                ''',
+                (
+                    symbol, symbol,
+                    timeframe, timeframe,
+                    strategy_version, strategy_version,
+                    regime, regime,
+                    window_modifier, window_modifier,
+                ),
+            )
+            rows = [dict(row) for row in cursor.fetchall()]
+            for row in rows:
+                row["notes"] = self._decode_json_field(row.get("notes"), [])
+            return rows
+        finally:
+            conn.close()
+
+    def _get_recent_runtime_trade_rows(
+        self,
+        symbol: str = None,
+        timeframe: str = None,
+        strategy_version: str = None,
+        regime: str = None,
+        sample_type: str = "paper",
+        window_days: Optional[int] = None,
+        max_trades: Optional[int] = None,
+    ) -> List[Dict[str, Any]]:
+        conn = self.get_connection()
+        try:
+            cursor = conn.cursor()
+            window_modifier = f"-{int(window_days)} days" if window_days else None
+            limit = int(max_trades or 500)
+            cursor.execute(
+                '''
+                SELECT *
+                FROM paper_trades
+                WHERE status = 'CLOSED'
+                  AND (? IS NULL OR symbol = ?)
+                  AND (? IS NULL OR timeframe = ?)
+                  AND (? IS NULL OR strategy_version = ?)
+                  AND (? IS NULL OR regime = ?)
+                  AND (? IS NULL OR sample_type = ?)
+                  AND (? IS NULL OR created_at >= datetime('now', ?))
+                ORDER BY id DESC
+                LIMIT ?
+                ''',
+                (
+                    symbol, symbol,
+                    timeframe, timeframe,
+                    strategy_version, strategy_version,
+                    regime, regime,
+                    sample_type, sample_type,
+                    window_modifier, window_modifier,
+                    limit,
+                ),
+            )
+            return [dict(row) for row in cursor.fetchall()]
+        finally:
+            conn.close()
+
+    def _build_regime_baseline_status(self, trade_count: int, profit_factor: float, expectancy_pct: float) -> str:
+        if trade_count >= ProductionConfig.GOVERNANCE_MIN_REGIME_TRADES and profit_factor >= ProductionConfig.GOVERNANCE_APPROVED_PF and expectancy_pct >= ProductionConfig.GOVERNANCE_MIN_EXPECTANCY_PCT:
+            return "approved"
+        reduced_min_trades = max(3, ProductionConfig.GOVERNANCE_MIN_REGIME_TRADES // 2)
+        if trade_count >= reduced_min_trades and profit_factor >= ProductionConfig.GOVERNANCE_REDUCED_PF:
+            return "reduced"
+        return "blocked"
+
+    def refresh_setup_regime_baselines(
+        self,
+        symbol: str = None,
+        timeframe: str = None,
+        strategy_version: str = None,
+        persist: bool = True,
+    ) -> List[Dict[str, Any]]:
+        backtest_summary = self.get_backtest_performance_summary(
+            symbol=symbol,
+            timeframe=timeframe,
+            strategy_version=strategy_version,
+        )
+        rows = self._get_recent_trade_analytics_rows(
+            symbol=symbol,
+            timeframe=timeframe,
+            strategy_version=strategy_version,
+            window_days=ProductionConfig.GOVERNANCE_LOOKBACK_DAYS,
+        )
+        if not rows:
+            return []
+
+        grouped: Dict[str, List[Dict[str, Any]]] = {}
+        for row in rows:
+            regime_key = self._normalize_governance_regime(row.get("regime")) or "unknown"
+            grouped.setdefault(regime_key, []).append(row)
+
+        baseline_source = "oos" if float(backtest_summary.get("avg_out_of_sample_profit_factor", 0.0) or 0.0) > 0 else "backtest"
+        baselines = []
+        for regime_key, regime_rows in grouped.items():
+            metrics = self._summarize_result_rows(regime_rows, "pnl_pct", "profit_given_back_pct")
+            status = self._build_regime_baseline_status(
+                metrics["trade_count"],
+                float(metrics["profit_factor"] or 0.0),
+                float(metrics["expectancy_pct"] or 0.0),
+            )
+            notes = []
+            if metrics["trade_count"] < ProductionConfig.GOVERNANCE_MIN_REGIME_TRADES:
+                notes.append("insufficient_sample")
+            if metrics["avg_profit_giveback_pct"] >= ProductionConfig.GOVERNANCE_MAX_PROFIT_GIVEBACK_WARNING_PCT:
+                notes.append("high_profit_giveback")
+
+            baselines.append(
+                {
+                    "symbol": symbol,
+                    "timeframe": timeframe,
+                    "strategy_version": strategy_version,
+                    "regime": regime_key,
+                    "baseline_source": baseline_source,
+                    "baseline_profit_factor": float(metrics["profit_factor"] or 0.0),
+                    "baseline_expectancy_pct": float(metrics["expectancy_pct"] or 0.0),
+                    "baseline_win_rate": float(metrics["win_rate"] or 0.0),
+                    "baseline_drawdown": float(backtest_summary.get("avg_max_drawdown", 0.0) or 0.0),
+                    "baseline_trade_count": int(metrics["trade_count"] or 0),
+                    "total_return_pct": float(metrics["total_return_pct"] or 0.0),
+                    "oos_profit_factor": float(backtest_summary.get("avg_out_of_sample_profit_factor", 0.0) or 0.0),
+                    "oos_expectancy_pct": float(backtest_summary.get("avg_out_of_sample_expectancy_pct", 0.0) or 0.0),
+                    "walk_forward_pass_rate_pct": float(backtest_summary.get("avg_walk_forward_pass_rate_pct", 0.0) or 0.0),
+                    "performance_status": status,
+                    "window_days": int(ProductionConfig.GOVERNANCE_LOOKBACK_DAYS),
+                    "notes": notes,
+                }
+            )
+
+        if persist and symbol and timeframe and strategy_version:
+            conn = self.get_connection()
+            try:
+                cursor = conn.cursor()
+                cursor.execute(
+                    '''
+                    DELETE FROM setup_regime_baselines
+                    WHERE symbol = ? AND timeframe = ? AND strategy_version = ?
+                    ''',
+                    (symbol, timeframe, strategy_version),
+                )
+                for baseline in baselines:
+                    cursor.execute(
+                        '''
+                        INSERT INTO setup_regime_baselines (
+                            symbol, timeframe, strategy_version, regime, baseline_source,
+                            baseline_profit_factor, baseline_expectancy_pct, baseline_win_rate,
+                            baseline_drawdown, baseline_trade_count, total_return_pct,
+                            oos_profit_factor, oos_expectancy_pct, walk_forward_pass_rate_pct,
+                            performance_status, window_days, notes, updated_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                        ''',
+                        (
+                            baseline["symbol"],
+                            baseline["timeframe"],
+                            baseline["strategy_version"],
+                            baseline["regime"],
+                            baseline["baseline_source"],
+                            baseline["baseline_profit_factor"],
+                            baseline["baseline_expectancy_pct"],
+                            baseline["baseline_win_rate"],
+                            baseline["baseline_drawdown"],
+                            baseline["baseline_trade_count"],
+                            baseline["total_return_pct"],
+                            baseline["oos_profit_factor"],
+                            baseline["oos_expectancy_pct"],
+                            baseline["walk_forward_pass_rate_pct"],
+                            baseline["performance_status"],
+                            baseline["window_days"],
+                            json.dumps(baseline["notes"]),
+                        ),
+                    )
+                conn.commit()
+            finally:
+                conn.close()
+
+        return baselines
+
+    def get_setup_regime_baselines(
+        self,
+        symbol: str = None,
+        timeframe: str = None,
+        strategy_version: str = None,
+        refresh: bool = False,
+    ) -> List[Dict[str, Any]]:
+        if refresh and symbol and timeframe and strategy_version:
+            self.refresh_setup_regime_baselines(
+                symbol=symbol,
+                timeframe=timeframe,
+                strategy_version=strategy_version,
+                persist=True,
+            )
+
+        conn = self.get_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                SELECT *
+                FROM setup_regime_baselines
+                WHERE (? IS NULL OR symbol = ?)
+                  AND (? IS NULL OR timeframe = ?)
+                  AND (? IS NULL OR strategy_version = ?)
+                ORDER BY baseline_trade_count DESC, regime ASC
+                ''',
+                (symbol, symbol, timeframe, timeframe, strategy_version, strategy_version),
+            )
+            rows = [dict(row) for row in cursor.fetchall()]
+            for row in rows:
+                row["notes"] = self._decode_json_field(row.get("notes"), [])
+            return rows
+        finally:
+            conn.close()
+
+    def _resolve_governance_identity(
+        self,
+        symbol: str = None,
+        timeframe: str = None,
+        strategy_version: str = None,
+    ) -> Dict[str, Any]:
+        resolved_symbol = symbol
+        resolved_timeframe = timeframe
+        resolved_strategy_version = strategy_version
+        active_profile = None
+
+        if resolved_symbol and resolved_timeframe:
+            active_profile = self.get_active_strategy_profile(resolved_symbol, resolved_timeframe)
+            if active_profile and not resolved_strategy_version:
+                resolved_strategy_version = active_profile.get("strategy_version")
+
+        if resolved_strategy_version and (not resolved_symbol or not resolved_timeframe):
+            profiles = self.get_strategy_profiles(status=None, limit=200)
+            for profile in profiles:
+                if profile.get("strategy_version") != resolved_strategy_version:
+                    continue
+                active_profile = profile if profile.get("status") == "active" else active_profile
+                resolved_symbol = profile.get("symbol") or resolved_symbol
+                resolved_timeframe = profile.get("timeframe") or resolved_timeframe
+                break
+
+        if resolved_strategy_version and resolved_symbol and resolved_timeframe and active_profile is None:
+            profiles = self.get_strategy_profiles(
+                symbol=resolved_symbol,
+                timeframe=resolved_timeframe,
+                status=None,
+                limit=200,
+            )
+            for profile in profiles:
+                if profile.get("strategy_version") != resolved_strategy_version:
+                    continue
+                if profile.get("status") == "active":
+                    active_profile = profile
+                break
+
+        if resolved_strategy_version is None:
+            recent_runs = self.get_backtest_runs(
+                symbol=resolved_symbol,
+                timeframe=resolved_timeframe,
+                limit=1,
+            )
+            if recent_runs:
+                resolved_symbol = recent_runs[0].get("symbol") or resolved_symbol
+                resolved_timeframe = recent_runs[0].get("timeframe") or resolved_timeframe
+                resolved_strategy_version = recent_runs[0].get("strategy_version") or resolved_strategy_version
+
+        return {
+            "symbol": resolved_symbol,
+            "timeframe": resolved_timeframe,
+            "strategy_version": resolved_strategy_version,
+            "active_profile": active_profile,
+        }
+
+    def _evaluate_alignment_state(
+        self,
+        sample_metrics: Dict[str, Any],
+        baseline_metrics: Dict[str, Any],
+        label: str,
+    ) -> Dict[str, Any]:
+        sample_trade_count = int(sample_metrics.get("trade_count", 0) or 0)
+        baseline_trade_count = int(baseline_metrics.get("baseline_trade_count", 0) or 0)
+        sample_pf = float(sample_metrics.get("profit_factor", 0.0) or 0.0)
+        sample_expectancy = float(sample_metrics.get("expectancy_pct", 0.0) or 0.0)
+        sample_win_rate = float(sample_metrics.get("win_rate", 0.0) or 0.0)
+        baseline_pf = float(baseline_metrics.get("baseline_profit_factor", 0.0) or 0.0)
+        baseline_expectancy = float(baseline_metrics.get("baseline_expectancy_pct", 0.0) or 0.0)
+        baseline_win_rate = float(baseline_metrics.get("baseline_win_rate", 0.0) or 0.0)
+        avg_giveback = float(sample_metrics.get("avg_profit_giveback_pct", 0.0) or 0.0)
+
+        pf_alignment_pct = round((sample_pf / baseline_pf) * 100, 2) if baseline_pf > 0 else 0.0
+        if abs(baseline_expectancy) > 1e-9:
+            expectancy_alignment_pct = round((sample_expectancy / baseline_expectancy) * 100, 2)
+        elif sample_expectancy >= 0:
+            expectancy_alignment_pct = 100.0
+        else:
+            expectancy_alignment_pct = 0.0
+        win_rate_delta_pct = round(sample_win_rate - baseline_win_rate, 2)
+
+        notes: List[str] = []
+        if sample_trade_count < ProductionConfig.GOVERNANCE_MIN_ALIGNMENT_TRADES:
+            notes.append(f"{label}_insufficient_sample")
+        if baseline_trade_count < ProductionConfig.GOVERNANCE_MIN_REGIME_TRADES:
+            notes.append(f"{label}_baseline_small_sample")
+
+        if notes:
+            return {
+                "status": "insufficient",
+                "pf_alignment_pct": pf_alignment_pct,
+                "expectancy_alignment_pct": expectancy_alignment_pct,
+                "win_rate_delta_pct": win_rate_delta_pct,
+                "notes": notes,
+            }
+
+        status = "aligned"
+        if sample_pf < max(1.0, baseline_pf * ProductionConfig.GOVERNANCE_ALIGNMENT_BROKEN_PF_MULTIPLIER):
+            status = "broken"
+            notes.append(f"{label}_profit_factor_broken")
+        elif sample_pf < max(1.0, baseline_pf * ProductionConfig.GOVERNANCE_ALIGNMENT_WARNING_PF_MULTIPLIER):
+            status = "warning"
+            notes.append(f"{label}_profit_factor_warning")
+
+        if baseline_expectancy > 0:
+            if sample_expectancy < baseline_expectancy * ProductionConfig.GOVERNANCE_ALIGNMENT_BROKEN_EXPECTANCY_MULTIPLIER:
+                status = "broken"
+                notes.append(f"{label}_expectancy_broken")
+            elif sample_expectancy < baseline_expectancy * ProductionConfig.GOVERNANCE_ALIGNMENT_WARNING_EXPECTANCY_MULTIPLIER and status == "aligned":
+                status = "warning"
+                notes.append(f"{label}_expectancy_warning")
+        elif sample_expectancy < 0 and status == "aligned":
+            status = "degraded"
+            notes.append(f"{label}_negative_expectancy")
+
+        if baseline_win_rate > 0:
+            if sample_win_rate < baseline_win_rate - ProductionConfig.GOVERNANCE_ALIGNMENT_BROKEN_WINRATE_GAP:
+                status = "broken"
+                notes.append(f"{label}_winrate_broken")
+            elif sample_win_rate < baseline_win_rate - ProductionConfig.GOVERNANCE_ALIGNMENT_WARNING_WINRATE_GAP and status == "aligned":
+                status = "warning"
+                notes.append(f"{label}_winrate_warning")
+
+        if avg_giveback >= ProductionConfig.GOVERNANCE_MAX_PROFIT_GIVEBACK_BLOCK_PCT:
+            status = "broken"
+            notes.append(f"{label}_profit_giveback_broken")
+        elif avg_giveback >= ProductionConfig.GOVERNANCE_MAX_PROFIT_GIVEBACK_WARNING_PCT and status == "aligned":
+            status = "degraded"
+            notes.append(f"{label}_profit_giveback_warning")
+
+        if sample_pf < 1.0 and status == "warning":
+            status = "degraded"
+            notes.append(f"{label}_profit_factor_below_one")
+
+        return {
+            "status": status,
+            "pf_alignment_pct": pf_alignment_pct,
+            "expectancy_alignment_pct": expectancy_alignment_pct,
+            "win_rate_delta_pct": win_rate_delta_pct,
+            "notes": notes,
+        }
+
+    def _build_alignment_snapshot(
+        self,
+        symbol: str,
+        timeframe: str,
+        strategy_version: str,
+        current_regime: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        baselines = self.get_setup_regime_baselines(
+            symbol=symbol,
+            timeframe=timeframe,
+            strategy_version=strategy_version,
+            refresh=True,
+        )
+        backtest_summary = self.get_backtest_performance_summary(
+            symbol=symbol,
+            timeframe=timeframe,
+            strategy_version=strategy_version,
+        )
+
+        current_baseline = None
+        if current_regime:
+            for baseline in baselines:
+                if baseline.get("regime") == current_regime:
+                    current_baseline = baseline
+                    break
+
+        use_oos = float(backtest_summary.get("avg_out_of_sample_profit_factor", 0.0) or 0.0) > 0
+        overall_baseline = {
+            "baseline_source": "oos" if use_oos else "backtest",
+            "baseline_profit_factor": float(backtest_summary.get("avg_out_of_sample_profit_factor" if use_oos else "avg_profit_factor", 0.0) or 0.0),
+            "baseline_expectancy_pct": float(backtest_summary.get("avg_out_of_sample_expectancy_pct" if use_oos else "avg_expectancy_pct", 0.0) or 0.0),
+            "baseline_win_rate": float(backtest_summary.get("aggregate_win_rate", backtest_summary.get("avg_win_rate", 0.0)) or 0.0),
+            "baseline_trade_count": int(backtest_summary.get("aggregate_total_trades", backtest_summary.get("total_trades", 0)) or 0),
+        }
+        baseline_metrics = current_baseline or overall_baseline
+
+        paper_rows = self._get_recent_runtime_trade_rows(
+            symbol=symbol,
+            timeframe=timeframe,
+            strategy_version=strategy_version,
+            regime=current_regime,
+            sample_type="paper",
+            window_days=ProductionConfig.GOVERNANCE_LOOKBACK_DAYS,
+            max_trades=ProductionConfig.GOVERNANCE_LOOKBACK_TRADES,
+        )
+        paper_scope = "paper_regime"
+        if current_regime and len(paper_rows) < ProductionConfig.GOVERNANCE_MIN_ALIGNMENT_TRADES:
+            paper_rows = self._get_recent_runtime_trade_rows(
+                symbol=symbol,
+                timeframe=timeframe,
+                strategy_version=strategy_version,
+                regime=None,
+                sample_type="paper",
+                window_days=ProductionConfig.GOVERNANCE_LOOKBACK_DAYS,
+                max_trades=ProductionConfig.GOVERNANCE_LOOKBACK_TRADES,
+            )
+            paper_scope = "paper_overall"
+        paper_metrics = self._summarize_result_rows(paper_rows, "result_pct")
+        paper_alignment = self._evaluate_alignment_state(paper_metrics, baseline_metrics, paper_scope)
+
+        live_rows = self._get_recent_runtime_trade_rows(
+            symbol=symbol,
+            timeframe=timeframe,
+            strategy_version=strategy_version,
+            regime=current_regime,
+            sample_type="live",
+            window_days=ProductionConfig.GOVERNANCE_LOOKBACK_DAYS,
+            max_trades=ProductionConfig.GOVERNANCE_LOOKBACK_TRADES,
+        )
+        live_scope = "live_regime"
+        if current_regime and len(live_rows) < ProductionConfig.GOVERNANCE_MIN_ALIGNMENT_TRADES:
+            live_rows = self._get_recent_runtime_trade_rows(
+                symbol=symbol,
+                timeframe=timeframe,
+                strategy_version=strategy_version,
+                regime=None,
+                sample_type="live",
+                window_days=ProductionConfig.GOVERNANCE_LOOKBACK_DAYS,
+                max_trades=ProductionConfig.GOVERNANCE_LOOKBACK_TRADES,
+            )
+            live_scope = "live_overall"
+        live_metrics = self._summarize_result_rows(live_rows, "result_pct")
+        live_reference = baseline_metrics
+        if paper_metrics.get("trade_count", 0) >= ProductionConfig.GOVERNANCE_MIN_ALIGNMENT_TRADES:
+            live_reference = {
+                "baseline_profit_factor": paper_metrics.get("profit_factor", 0.0),
+                "baseline_expectancy_pct": paper_metrics.get("expectancy_pct", 0.0),
+                "baseline_win_rate": paper_metrics.get("win_rate", 0.0),
+                "baseline_trade_count": paper_metrics.get("trade_count", 0),
+            }
+        live_alignment = self._evaluate_alignment_state(live_metrics, live_reference, live_scope)
+
+        severity_rank = {"aligned": 0, "insufficient": 1, "warning": 2, "degraded": 3, "broken": 4}
+        alignment_status = paper_alignment["status"]
+        if live_metrics.get("trade_count", 0) <= 0:
+            live_alignment["status"] = "unavailable"
+            live_alignment["notes"] = []
+        elif severity_rank.get(live_alignment["status"], 0) > severity_rank.get(alignment_status, 0):
+            alignment_status = live_alignment["status"]
+
+        notes = list(paper_alignment.get("notes", [])) + list(live_alignment.get("notes", []))
+        return {
+            "current_regime": current_regime,
+            "baseline_metrics": baseline_metrics,
+            "paper_metrics": paper_metrics,
+            "live_metrics": live_metrics,
+            "paper_alignment": paper_alignment,
+            "live_alignment": live_alignment,
+            "alignment_status": alignment_status,
+            "notes": notes,
+            "window_days": int(ProductionConfig.GOVERNANCE_LOOKBACK_DAYS),
+            "window_trades": int(ProductionConfig.GOVERNANCE_LOOKBACK_TRADES),
+        }
+
+    def _persist_alignment_snapshot(
+        self,
+        symbol: str,
+        timeframe: str,
+        strategy_version: str,
+        snapshot: Dict[str, Any],
+    ) -> None:
+        conn = self.get_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                INSERT INTO alignment_metrics (
+                    symbol, timeframe, strategy_version, regime, window_days, window_trades,
+                    baseline_source, baseline_profit_factor, baseline_expectancy_pct, baseline_win_rate,
+                    baseline_trade_count, paper_profit_factor, paper_expectancy_pct, paper_win_rate,
+                    paper_trade_count, live_profit_factor, live_expectancy_pct, live_win_rate, live_trade_count,
+                    paper_pf_alignment_pct, paper_expectancy_alignment_pct, paper_win_rate_delta_pct,
+                    live_pf_alignment_pct, live_expectancy_alignment_pct, live_win_rate_delta_pct,
+                    alignment_status, notes
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ''',
+                (
+                    symbol,
+                    timeframe,
+                    strategy_version,
+                    snapshot.get("current_regime"),
+                    snapshot.get("window_days", 0),
+                    snapshot.get("window_trades", 0),
+                    snapshot.get("baseline_metrics", {}).get("baseline_source"),
+                    snapshot.get("baseline_metrics", {}).get("baseline_profit_factor", 0.0),
+                    snapshot.get("baseline_metrics", {}).get("baseline_expectancy_pct", 0.0),
+                    snapshot.get("baseline_metrics", {}).get("baseline_win_rate", 0.0),
+                    snapshot.get("baseline_metrics", {}).get("baseline_trade_count", 0),
+                    snapshot.get("paper_metrics", {}).get("profit_factor", 0.0),
+                    snapshot.get("paper_metrics", {}).get("expectancy_pct", 0.0),
+                    snapshot.get("paper_metrics", {}).get("win_rate", 0.0),
+                    snapshot.get("paper_metrics", {}).get("trade_count", 0),
+                    snapshot.get("live_metrics", {}).get("profit_factor", 0.0),
+                    snapshot.get("live_metrics", {}).get("expectancy_pct", 0.0),
+                    snapshot.get("live_metrics", {}).get("win_rate", 0.0),
+                    snapshot.get("live_metrics", {}).get("trade_count", 0),
+                    snapshot.get("paper_alignment", {}).get("pf_alignment_pct", 0.0),
+                    snapshot.get("paper_alignment", {}).get("expectancy_alignment_pct", 0.0),
+                    snapshot.get("paper_alignment", {}).get("win_rate_delta_pct", 0.0),
+                    snapshot.get("live_alignment", {}).get("pf_alignment_pct", 0.0),
+                    snapshot.get("live_alignment", {}).get("expectancy_alignment_pct", 0.0),
+                    snapshot.get("live_alignment", {}).get("win_rate_delta_pct", 0.0),
+                    snapshot.get("alignment_status"),
+                    json.dumps(snapshot.get("notes", [])),
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def get_alignment_metrics(
+        self,
+        symbol: str = None,
+        timeframe: str = None,
+        strategy_version: str = None,
+        limit: int = 50,
+    ) -> List[Dict[str, Any]]:
+        conn = self.get_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                SELECT *
+                FROM alignment_metrics
+                WHERE (? IS NULL OR symbol = ?)
+                  AND (? IS NULL OR timeframe = ?)
+                  AND (? IS NULL OR strategy_version = ?)
+                ORDER BY created_at DESC, id DESC
+                LIMIT ?
+                ''',
+                (symbol, symbol, timeframe, timeframe, strategy_version, strategy_version, limit),
+            )
+            rows = [dict(row) for row in cursor.fetchall()]
+            for row in rows:
+                row["notes"] = self._decode_json_field(row.get("notes"), [])
+            return rows
+        finally:
+            conn.close()
+
+    def _persist_governance_decision(self, decision: Dict[str, Any]) -> None:
+        if not decision.get("symbol") or not decision.get("timeframe") or not decision.get("strategy_version"):
+            return
+
+        conn = self.get_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                SELECT governance_status, governance_mode
+                FROM governance_decisions
+                WHERE symbol = ? AND timeframe = ? AND strategy_version = ?
+                ORDER BY id DESC
+                LIMIT 1
+                ''',
+                (decision["symbol"], decision["timeframe"], decision["strategy_version"]),
+            )
+            previous = cursor.fetchone()
+            previous_status = previous["governance_status"] if previous else None
+            previous_mode = previous["governance_mode"] if previous else None
+
+            cursor.execute(
+                '''
+                INSERT INTO governance_decisions (
+                    symbol, timeframe, strategy_version, regime, governance_status, governance_mode,
+                    current_regime_status, alignment_status, promotion_status, degradation_status,
+                    action, action_reason, allowed_regimes, reduced_regimes, blocked_regimes, notes
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ''',
+                (
+                    decision["symbol"],
+                    decision["timeframe"],
+                    decision["strategy_version"],
+                    decision.get("current_regime"),
+                    decision.get("governance_status"),
+                    decision.get("governance_mode"),
+                    decision.get("current_regime_status"),
+                    decision.get("alignment_status"),
+                    decision.get("promotion_status"),
+                    decision.get("degradation_status"),
+                    decision.get("action"),
+                    decision.get("action_reason"),
+                    json.dumps(decision.get("allowed_regimes", [])),
+                    json.dumps(decision.get("reduced_regimes", [])),
+                    json.dumps(decision.get("blocked_regimes", [])),
+                    json.dumps(decision.get("notes", [])),
+                ),
+            )
+
+            if previous_status != decision.get("governance_status") or previous_mode != decision.get("governance_mode"):
+                cursor.execute(
+                    '''
+                    INSERT INTO setup_governance_history (
+                        symbol, timeframe, strategy_version, regime, previous_status, previous_mode,
+                        governance_status, governance_mode, alignment_status, promotion_status,
+                        degradation_status, action, action_reason, notes
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ''',
+                    (
+                        decision["symbol"],
+                        decision["timeframe"],
+                        decision["strategy_version"],
+                        decision.get("current_regime"),
+                        previous_status,
+                        previous_mode,
+                        decision.get("governance_status"),
+                        decision.get("governance_mode"),
+                        decision.get("alignment_status"),
+                        decision.get("promotion_status"),
+                        decision.get("degradation_status"),
+                        decision.get("action"),
+                        decision.get("action_reason"),
+                        json.dumps(decision.get("notes", [])),
+                    ),
+                )
+
+            conn.commit()
+        finally:
+            conn.close()
+
+    def get_governance_history(
+        self,
+        symbol: str = None,
+        timeframe: str = None,
+        strategy_version: str = None,
+        limit: int = 50,
+    ) -> List[Dict[str, Any]]:
+        conn = self.get_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                SELECT *
+                FROM setup_governance_history
+                WHERE (? IS NULL OR symbol = ?)
+                  AND (? IS NULL OR timeframe = ?)
+                  AND (? IS NULL OR strategy_version = ?)
+                ORDER BY created_at DESC, id DESC
+                LIMIT ?
+                ''',
+                (symbol, symbol, timeframe, timeframe, strategy_version, strategy_version, limit),
+            )
+            rows = [dict(row) for row in cursor.fetchall()]
+            for row in rows:
+                row["notes"] = self._decode_json_field(row.get("notes"), [])
+            return rows
+        finally:
+            conn.close()
+
+    def evaluate_strategy_governance(
+        self,
+        symbol: str = None,
+        timeframe: str = None,
+        strategy_version: str = None,
+        current_regime: str = None,
+        persist: bool = False,
+    ) -> Dict[str, Any]:
+        identity = self._resolve_governance_identity(
+            symbol=symbol,
+            timeframe=timeframe,
+            strategy_version=strategy_version,
+        )
+        symbol = identity.get("symbol")
+        timeframe = identity.get("timeframe")
+        strategy_version = identity.get("strategy_version")
+        active_profile = identity.get("active_profile")
+
+        if not symbol or not timeframe:
+            return {
+                "symbol": symbol,
+                "timeframe": timeframe,
+                "strategy_version": strategy_version,
+                "governance_status": "research",
+                "governance_mode": "blocked",
+                "allowed_regimes": [],
+                "reduced_regimes": [],
+                "blocked_regimes": [],
+                "alignment_status": "insufficient",
+                "promotion_status": "insufficient_sample",
+                "degradation_status": "none",
+                "action": "block",
+                "action_reason": "runtime_governance: setup_identity_unresolved",
+                "notes": ["setup_identity_unresolved"],
+            }
+
+        backtest_summary = self.get_backtest_performance_summary(
+            symbol=symbol,
+            timeframe=timeframe,
+            strategy_version=strategy_version,
+        )
+        paper_summary = self.get_paper_trade_summary(
+            symbol=symbol,
+            timeframe=timeframe,
+            strategy_version=strategy_version,
+        )
+        edge_summary = self.get_edge_monitor_summary(
+            symbol=symbol,
+            timeframe=timeframe,
+            strategy_version=strategy_version,
+        )
+        baselines = self.refresh_setup_regime_baselines(
+            symbol=symbol,
+            timeframe=timeframe,
+            strategy_version=strategy_version,
+            persist=persist,
+        ) if strategy_version else []
+
+        allowed_regimes = [row["regime"] for row in baselines if row.get("performance_status") == "approved"]
+        reduced_regimes = [row["regime"] for row in baselines if row.get("performance_status") == "reduced"]
+        blocked_regimes = [row["regime"] for row in baselines if row.get("performance_status") == "blocked"]
+
+        current_regime = self._normalize_governance_regime(current_regime)
+        current_regime_status = "unknown"
+        if current_regime in allowed_regimes:
+            current_regime_status = "approved"
+        elif current_regime in reduced_regimes:
+            current_regime_status = "reduced"
+        elif current_regime in blocked_regimes or current_regime == "parabolic":
+            current_regime_status = "blocked"
+
+        alignment = self._build_alignment_snapshot(
+            symbol=symbol,
+            timeframe=timeframe,
+            strategy_version=strategy_version,
+            current_regime=current_regime,
+        ) if strategy_version else {
+            "alignment_status": "insufficient",
+            "notes": ["alignment_unavailable"],
+            "baseline_metrics": {},
+            "paper_metrics": {},
+            "live_metrics": {},
+            "paper_alignment": {},
+            "live_alignment": {},
+        }
+        alignment_status = alignment.get("alignment_status", "insufficient")
+
+        total_backtest_trades = int(backtest_summary.get("aggregate_total_trades", backtest_summary.get("total_trades", 0)) or 0)
+        has_backtest = total_backtest_trades > 0
+        quality_score = self._compute_strategy_quality_score(
+            backtest_summary=backtest_summary,
+            paper_summary=paper_summary,
+            edge_summary=edge_summary,
+        )
+
+        latest_run = None
+        promotion_ready = False
+        if strategy_version:
+            recent_runs = self.get_backtest_runs(
+                symbol=symbol,
+                timeframe=timeframe,
+                strategy_version=strategy_version,
+                limit=1,
+            )
+            latest_run = recent_runs[0] if recent_runs else None
+        if latest_run:
+            readiness = self.get_backtest_run_promotion_readiness(latest_run["id"])
+            promotion_ready = bool(readiness.get("ready"))
+        elif has_backtest:
+            promotion_ready = (
+                total_backtest_trades >= ProductionConfig.MIN_BACKTEST_TRADES_FOR_PROMOTION
+                and float(backtest_summary.get("avg_profit_factor", 0.0) or 0.0) >= ProductionConfig.MIN_PROMOTION_PROFIT_FACTOR
+            )
+
+        governance_status = "research"
+        governance_mode = "blocked"
+        promotion_status = "insufficient_sample"
+        degradation_status = "none"
+        action = "block"
+        action_reason = "runtime_governance: insufficient_sample"
+        notes = list(alignment.get("notes", []))
+
+        if not has_backtest:
+            governance_status = "research"
+            promotion_status = "insufficient_sample"
+            action_reason = "runtime_governance: no_backtest"
+            notes.append("no_backtest")
+        elif not active_profile:
+            if promotion_ready:
+                governance_status = "candidate"
+                promotion_status = "eligible"
+                action_reason = "runtime_governance: candidate_waiting_activation"
+                notes.append("candidate_waiting_activation")
+            else:
+                governance_status = "research"
+                promotion_status = "not_ready"
+                action_reason = "runtime_governance: setup_not_ready_for_activation"
+                notes.append("setup_not_ready_for_activation")
+        else:
+            promotion_status = "approved" if promotion_ready else "active"
+            if current_regime_status == "blocked":
+                governance_status = "suspended" if current_regime == "parabolic" else "blocked"
+                governance_mode = "blocked"
+                action = "block"
+                action_reason = "regime_not_approved"
+                notes.append(f"regime_not_approved:{current_regime}")
+            elif alignment_status == "broken":
+                governance_status = "blocked"
+                governance_mode = "blocked"
+                degradation_status = "broken"
+                action = "block"
+                action_reason = "live_degradation"
+            elif alignment_status == "degraded":
+                governance_status = "degraded"
+                governance_mode = "blocked"
+                degradation_status = "degraded"
+                action = "block"
+                action_reason = "setup_degraded"
+            elif current_regime_status == "reduced" or alignment_status == "warning":
+                governance_status = "reduced"
+                governance_mode = "reduced"
+                degradation_status = "warning" if alignment_status == "warning" else "none"
+                action = "reduce"
+                action_reason = "paper_alignment_warning" if alignment_status == "warning" else "regime_reduced"
+            elif alignment_status == "insufficient":
+                governance_status = "observing"
+                governance_mode = "reduced"
+                action = "observe"
+                action_reason = "paper_alignment_insufficient"
+            else:
+                governance_status = "approved"
+                governance_mode = "normal"
+                action = "allow"
+                action_reason = "approved_for_runtime"
+
+            if quality_score < ProductionConfig.MIN_LIVE_QUALITY_SCORE and governance_mode != "blocked":
+                governance_status = "reduced"
+                governance_mode = "reduced"
+                action = "reduce"
+                action_reason = "quality_score_warning"
+                notes.append("quality_score_warning")
+
+        decision = {
+            "symbol": symbol,
+            "timeframe": timeframe,
+            "strategy_version": strategy_version,
+            "active_profile": active_profile,
+            "current_regime": current_regime,
+            "current_regime_status": current_regime_status,
+            "governance_status": governance_status,
+            "governance_mode": governance_mode,
+            "allowed_regimes": allowed_regimes,
+            "reduced_regimes": reduced_regimes,
+            "blocked_regimes": blocked_regimes,
+            "alignment_status": alignment_status,
+            "promotion_status": promotion_status,
+            "degradation_status": degradation_status,
+            "action": action,
+            "action_reason": action_reason,
+            "notes": notes,
+            "quality_score": round(float(quality_score or 0.0), 2),
+            "edge_status": edge_summary.get("status"),
+            "baseline_regimes": baselines,
+            "alignment_metrics": alignment,
+            "governance_reduction_multiplier": float(ProductionConfig.GOVERNANCE_REDUCED_SIZE_MULTIPLIER),
+        }
+
+        if persist and strategy_version:
+            self._persist_alignment_snapshot(symbol, timeframe, strategy_version, alignment)
+            self._persist_governance_decision(decision)
+
+        return decision
 
     def get_backtest_performance_summary(
         self,
@@ -1558,22 +3144,16 @@ class TradingDatabase:
             timeframe=timeframe,
             strategy_version=strategy_version,
         )
-
-        governance_status = None
-        governance_summary = self.get_strategy_governance_summary(
+        governance_state = self.evaluate_strategy_governance(
             symbol=symbol,
             timeframe=timeframe,
-            active_only=False,
-            limit=100,
+            strategy_version=strategy_version,
+            persist=persist,
         )
-        for row in governance_summary.get("profiles", []):
-            if strategy_version is not None and row.get("strategy_version") != strategy_version:
-                continue
-            governance_status = row.get("governance_status")
-            symbol = row.get("symbol") or symbol
-            timeframe = row.get("timeframe") or timeframe
-            strategy_version = row.get("strategy_version") or strategy_version
-            break
+        governance_status = governance_state.get("governance_status")
+        symbol = governance_state.get("symbol") or symbol
+        timeframe = governance_state.get("timeframe") or timeframe
+        strategy_version = governance_state.get("strategy_version") or strategy_version
 
         if symbol is None and backtest_summary.get("breakdown_by_market"):
             symbol = backtest_summary["breakdown_by_market"][0].get("symbol")
@@ -1618,6 +3198,8 @@ class TradingDatabase:
             "baseline_source": edge_summary.get('baseline_source'),
             "edge_status": edge_summary.get('status'),
             "governance_status": governance_status or "unknown",
+            "governance_mode": governance_state.get("governance_mode"),
+            "alignment_status": governance_state.get("alignment_status"),
             "quality_score": quality_score,
             "notes": notes,
         }
@@ -1789,7 +3371,12 @@ class TradingDatabase:
         counts = {
             "approved": 0,
             "observing": 0,
+            "reduced": 0,
             "blocked": 0,
+            "degraded": 0,
+            "suspended": 0,
+            "candidate": 0,
+            "research": 0,
             "ready_for_paper": 0,
             "needs_work": 0,
             "disabled": 0,
@@ -1799,36 +3386,32 @@ class TradingDatabase:
             readiness = None
             if profile.get('source_run_id'):
                 readiness = self.get_backtest_run_promotion_readiness(profile['source_run_id'])
-
+            adaptive = self.evaluate_strategy_governance(
+                symbol=profile.get('symbol'),
+                timeframe=profile.get('timeframe'),
+                strategy_version=profile.get('strategy_version'),
+                persist=False,
+            )
             edge_summary = self.get_edge_monitor_summary(
                 symbol=profile.get('symbol'),
                 timeframe=profile.get('timeframe'),
                 strategy_version=profile.get('strategy_version'),
             )
 
-            governance_status = "observing"
-            governance_message = "Setup ativo em acompanhamento."
+            governance_status = adaptive.get("governance_status", "observing")
+            governance_message = adaptive.get("action_reason") or "Setup em governanca adaptativa."
             if profile.get('status') == 'disabled':
                 governance_status = "disabled"
                 governance_message = "Setup desativado."
             elif profile.get('status') != 'active':
                 if readiness and readiness.get('ready'):
-                    governance_status = "ready_for_paper"
-                    governance_message = "Setup apto para ativacao em paper."
+                    governance_status = "candidate"
+                    governance_message = "Setup elegivel para ativacao em paper."
+                    counts["ready_for_paper"] = counts.get("ready_for_paper", 0) + 1
                 else:
-                    governance_status = "needs_work"
+                    governance_status = "research"
                     governance_message = "Setup ainda nao atingiu os criterios minimos."
-            else:
-                edge_status = edge_summary.get('status')
-                if edge_status == 'aligned':
-                    governance_status = "approved"
-                    governance_message = "Setup aprovado em paper com edge alinhado ao baseline."
-                elif edge_status in {'awaiting_live_data', 'insufficient_live_data', 'watchlist'}:
-                    governance_status = "observing"
-                    governance_message = edge_summary.get('status_message') or "Setup ativo, aguardando confirmacao em paper."
-                elif edge_status in {'degraded', 'no_backtest'}:
-                    governance_status = "blocked"
-                    governance_message = edge_summary.get('status_message') or "Setup bloqueado por degradacao."
+                    counts["needs_work"] = counts.get("needs_work", 0) + 1
 
             counts[governance_status] = counts.get(governance_status, 0) + 1
             rows.append(
@@ -1840,6 +3423,10 @@ class TradingDatabase:
                     "profile_status": profile.get('status'),
                     "governance_status": governance_status,
                     "governance_message": governance_message,
+                    "governance_mode": adaptive.get("governance_mode"),
+                    "alignment_status": adaptive.get("alignment_status"),
+                    "allowed_regimes": adaptive.get("allowed_regimes", []),
+                    "blocked_regimes": adaptive.get("blocked_regimes", []),
                     "source_run_id": profile.get('source_run_id'),
                     "paper_closed_trades": edge_summary.get('paper_closed_trades', 0),
                     "baseline_profit_factor": edge_summary.get('baseline_profit_factor', 0.0),
@@ -1889,20 +3476,13 @@ class TradingDatabase:
                 resolved_timeframe = profile.get("timeframe") or resolved_timeframe
                 break
 
-        governance_row = None
-        if resolved_symbol and resolved_timeframe:
-            governance_summary = self.get_strategy_governance_summary(
-                symbol=resolved_symbol,
-                timeframe=resolved_timeframe,
-                active_only=True,
-                limit=50,
-            )
-            for row in governance_summary.get("profiles", []):
-                if resolved_strategy_version is not None and row.get("strategy_version") != resolved_strategy_version:
-                    continue
-                governance_row = row
-                resolved_strategy_version = row.get("strategy_version") or resolved_strategy_version
-                break
+        governance_state = self.evaluate_strategy_governance(
+            symbol=resolved_symbol,
+            timeframe=resolved_timeframe,
+            strategy_version=resolved_strategy_version,
+            persist=False,
+        )
+        resolved_strategy_version = governance_state.get("strategy_version") or resolved_strategy_version
 
         metrics = self.compute_strategy_metrics(
             symbol=resolved_symbol,
@@ -1911,7 +3491,8 @@ class TradingDatabase:
             persist=False,
         )
 
-        governance_status = (governance_row or {}).get("governance_status") or metrics.get("governance_status") or "unknown"
+        governance_status = governance_state.get("governance_status") or metrics.get("governance_status") or "unknown"
+        governance_mode = governance_state.get("governance_mode") or "blocked"
         edge_status = metrics.get("edge_status") or "unknown"
         paper_closed_trades = int(metrics.get("paper_closed_trades", 0) or 0)
         quality_score = float(metrics.get("quality_score", 0.0) or 0.0)
@@ -1924,7 +3505,7 @@ class TradingDatabase:
             reasons.append("Nenhum setup ativo encontrado para execucao live.")
 
         if ProductionConfig.REQUIRE_APPROVED_GOVERNANCE_FOR_LIVE and governance_status != "approved":
-            reasons.append(f"Governanca atual do setup: {governance_status}.")
+            reasons.append(f"Governanca atual do setup: {governance_status}/{governance_mode}.")
 
         if edge_status != "aligned":
             reasons.append(f"Edge monitor atual: {edge_status}.")
@@ -1956,6 +3537,7 @@ class TradingDatabase:
             "strategy_version": resolved_strategy_version,
             "active_profile": active_profile,
             "governance_status": governance_status,
+            "governance_mode": governance_mode,
             "edge_status": edge_status,
             "paper_closed_trades": paper_closed_trades,
             "quality_score": round(quality_score, 2),

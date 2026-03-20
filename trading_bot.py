@@ -1,10 +1,8 @@
-import ccxt
 import inspect
 import pandas as pd
 import numpy as np
 import logging
 from datetime import datetime
-import os
 from typing import Dict, Optional
 from indicators import TechnicalIndicators
 from config import AppConfig, ProductionConfig
@@ -27,6 +25,7 @@ class TradingBot:
         self.indicators = TechnicalIndicators()
         self._stream_clients = {}
         self._last_context_evaluation = None
+        self._last_regime_evaluation = None
         self._last_price_structure_evaluation = None
         self._last_confirmation_evaluation = None
         self._last_entry_quality_evaluation = None
@@ -60,6 +59,251 @@ class TradingBot:
         raw_value = default_pct if value is None else float(value or 0.0)
         return raw_value / 100 if raw_value > 1 else raw_value
 
+    @staticmethod
+    def _prefer_closed_candles(df: Optional[pd.DataFrame]) -> Optional[pd.DataFrame]:
+        if df is None or df.empty:
+            return df
+
+        working_df = df
+        if "is_closed" in working_df.columns:
+            closed_df = working_df[working_df["is_closed"].fillna(False)]
+            if not closed_df.empty:
+                return closed_df
+            if len(working_df) > 1:
+                return working_df.iloc[:-1]
+        return working_df
+
+    def evaluate_market_regime(
+        self,
+        df: Optional[pd.DataFrame],
+        timeframe: Optional[str] = None,
+        as_of_timestamp=None,
+        persist: bool = True,
+    ) -> Dict[str, object]:
+        current_timeframe = timeframe or self.timeframe or "5m"
+        evaluation = {
+            "timeframe": current_timeframe,
+            "regime": "range",
+            "regime_score": 0.0,
+            "market_bias": "neutral",
+            "adx": 0.0,
+            "atr_pct": 0.0,
+            "ema_distance_pct": 0.0,
+            "ema_200_distance_pct": 0.0,
+            "ema_slope": 0.0,
+            "recent_range_pct": 0.0,
+            "volatility_state": "normal_volatility",
+            "trend_state": "range",
+            "parabolic": False,
+            "legacy_regime": "ranging",
+            "price_above_ema_200": False,
+            "is_tradeable": False,
+            "notes": [],
+            "reason": "Sem dados suficientes para classificar o regime.",
+            "has_minimum_history": False,
+            "timestamp": None,
+        }
+        if df is None or df.empty:
+            if persist:
+                self._last_regime_evaluation = evaluation
+            return evaluation
+
+        working_df = self._prefer_closed_candles(df)
+        if as_of_timestamp is not None:
+            working_df = working_df.loc[working_df.index <= pd.Timestamp(as_of_timestamp)]
+        has_precomputed_regime_inputs = (
+            {"adx", "di_plus", "di_minus", "atr"}.issubset(working_df.columns)
+            and any(column in working_df.columns for column in ("ema_21", "sma_21"))
+            and any(column in working_df.columns for column in ("ema_200", "sma_200"))
+        )
+        min_history = 8 if has_precomputed_regime_inputs else 30
+        if len(working_df) < min_history:
+            if persist:
+                self._last_regime_evaluation = evaluation
+            return evaluation
+
+        regime_df = working_df.copy()
+        close_series = regime_df["close"].astype(float)
+        high_series = regime_df["high"].astype(float)
+        low_series = regime_df["low"].astype(float)
+
+        if "ema_21" not in regime_df.columns:
+            if "sma_21" in regime_df.columns:
+                regime_df["ema_21"] = regime_df["sma_21"].astype(float)
+            else:
+                regime_df["ema_21"] = close_series.ewm(span=21, adjust=False).mean()
+        if "ema_200" not in regime_df.columns:
+            if "sma_200" in regime_df.columns:
+                regime_df["ema_200"] = regime_df["sma_200"].astype(float)
+            else:
+                regime_df["ema_200"] = close_series.ewm(span=200, adjust=False).mean()
+        if "atr" not in regime_df.columns:
+            regime_df["atr"] = self.indicators.calculate_atr(high_series, low_series, close_series)
+        if "adx" not in regime_df.columns or "di_plus" not in regime_df.columns or "di_minus" not in regime_df.columns:
+            adx_data = self.indicators.calculate_adx(high_series, low_series, close_series)
+            regime_df["adx"] = adx_data["adx"]
+            regime_df["di_plus"] = adx_data["di_plus"]
+            regime_df["di_minus"] = adx_data["di_minus"]
+
+        recent_window = regime_df.tail(min(40, len(regime_df)))
+        regime_row = recent_window.iloc[-1]
+
+        close_price = float(regime_row.get("close", 0.0) or 0.0)
+        ema_21 = float(regime_row.get("ema_21", 0.0) or 0.0)
+        ema_200 = float(regime_row.get("ema_200", 0.0) or 0.0)
+        adx = float(regime_row.get("adx", 0.0) or 0.0)
+        atr_value = float(regime_row.get("atr", 0.0) or 0.0)
+        di_plus = float(regime_row.get("di_plus", 0.0) or 0.0)
+        di_minus = float(regime_row.get("di_minus", 0.0) or 0.0)
+
+        atr_pct_series = (recent_window["atr"].astype(float) / recent_window["close"].replace(0, np.nan).astype(float)) * 100.0
+        atr_pct_series = atr_pct_series.replace([np.inf, -np.inf], np.nan).dropna()
+        atr_pct = float(atr_pct_series.iloc[-1]) if not atr_pct_series.empty else 0.0
+        atr_pct_baseline = float(atr_pct_series.tail(min(20, len(atr_pct_series))).median()) if not atr_pct_series.empty else 0.0
+
+        range_window = min(10, len(recent_window))
+        recent_range_pct = 0.0
+        recent_range_baseline = 0.0
+        if range_window >= 3:
+            rolling_range_pct = (
+                recent_window["high"].rolling(range_window).max()
+                - recent_window["low"].rolling(range_window).min()
+            ) / recent_window["close"].replace(0, np.nan)
+            rolling_range_pct = (rolling_range_pct * 100.0).replace([np.inf, -np.inf], np.nan).dropna()
+            if not rolling_range_pct.empty:
+                recent_range_pct = float(rolling_range_pct.iloc[-1])
+                recent_range_baseline = float(rolling_range_pct.tail(min(12, len(rolling_range_pct))).median())
+
+        ema_21_series = recent_window["ema_21"].astype(float)
+        ema_slope_raw = self._calculate_context_slope(ema_21_series, lookback=min(6, max(2, len(ema_21_series) - 1)))
+        ema_spread_pct = ((ema_21 - ema_200) / abs(ema_200) * 100.0) if ema_200 else 0.0
+        ema_slope_pct = float(ema_spread_pct * 0.25) if pd.isna(ema_slope_raw) else float(ema_slope_raw * 100.0)
+
+        ema_distance_pct = abs(close_price - ema_21) / abs(ema_21) * 100.0 if ema_21 else 0.0
+        ema_200_distance_pct = abs(close_price - ema_200) / abs(ema_200) * 100.0 if ema_200 else 0.0
+        directional_spread = abs(di_plus - di_minus)
+        price_above_ema_200 = bool(ema_200 and close_price >= ema_200)
+
+        high_volatility = bool(
+            atr_pct >= 1.2
+            or (atr_pct_baseline > 0 and atr_pct >= atr_pct_baseline * 1.15)
+            or recent_range_pct >= 4.5
+            or (recent_range_baseline > 0 and recent_range_pct >= recent_range_baseline * 1.10)
+        )
+        low_volatility = bool(
+            atr_pct > 0
+            and atr_pct <= max(atr_pct_baseline * 0.78 if atr_pct_baseline > 0 else 0.0, 0.35)
+            and atr_pct <= 0.7
+            and recent_range_pct <= max(recent_range_baseline * 0.85 if recent_range_baseline > 0 else 0.0, 1.8)
+        )
+        volatility_state = "high_volatility" if high_volatility else "low_volatility" if low_volatility else "normal_volatility"
+
+        trend_bull = bool(
+            close_price > ema_200
+            and ema_21 > ema_200
+            and ema_slope_pct >= 0.18
+            and adx >= 22
+            and directional_spread >= 6
+        )
+        trend_bear = bool(
+            close_price < ema_200
+            and ema_21 < ema_200
+            and ema_slope_pct <= -0.18
+            and adx >= 22
+            and directional_spread >= 6
+        )
+        is_range = bool(
+            adx < 20
+            and abs(ema_slope_pct) <= 0.12
+            and recent_range_pct <= max(recent_range_baseline * 1.05 if recent_range_baseline > 0 else 0.0, 2.2)
+            and ema_distance_pct <= 1.2
+            and ema_200_distance_pct <= 2.8
+        )
+
+        parabolic = bool(
+            not is_range
+            and adx >= 30
+            and high_volatility
+            and ema_distance_pct >= max(atr_pct * 1.9, 3.8)
+            and abs(ema_slope_pct) >= 0.55
+        )
+
+        if trend_bull and not is_range:
+            regime = "trend_bull"
+            trend_state = "trend_bull"
+            market_bias = "bullish"
+        elif trend_bear and not is_range:
+            regime = "trend_bear"
+            trend_state = "trend_bear"
+            market_bias = "bearish"
+        else:
+            regime = "range"
+            trend_state = "range"
+            market_bias = "neutral"
+
+        regime_score = 0.0
+        regime_score += min(max(adx - 15.0, 0.0), 20.0) * 0.15
+        regime_score += min(abs(ema_slope_pct) * 4.0, 2.2)
+        regime_score += min(ema_200_distance_pct * 0.35, 1.5)
+        regime_score += min(directional_spread * 0.08, 1.5)
+        if regime.startswith("trend_"):
+            regime_score += 1.4
+        elif is_range:
+            regime_score += 0.8
+        if parabolic:
+            regime_score += 0.8
+        if high_volatility:
+            regime_score += 0.9 if regime != "range" else 0.4
+        elif low_volatility:
+            regime_score -= 0.6 if regime != "range" else 0.1
+        if regime == "range":
+            regime_score = min(regime_score, 4.8 if low_volatility else 5.2)
+
+        notes = []
+        if regime == "range":
+            notes.append("mercado lateral sem deslocamento direcional claro")
+        else:
+            notes.append(f"mercado em {regime}")
+        notes.append(f"ADX {adx:.1f}")
+        notes.append(f"ATR% {atr_pct:.2f}")
+        notes.append(f"dist EMA21 {ema_distance_pct:.2f}%")
+        notes.append(f"slope EMA21 {ema_slope_pct:.2f}%")
+        if volatility_state != "normal_volatility":
+            notes.append(volatility_state)
+        if parabolic:
+            notes.append("movimento acelerado/parabolico")
+
+        regime_score = round(float(max(0.0, min(10.0, regime_score))), 2)
+        legacy_regime = "volatile" if high_volatility and regime == "range" else "trending" if regime != "range" else "ranging"
+        is_tradeable = regime != "range" and market_bias in {"bullish", "bearish"} and regime_score >= 5.0 and not low_volatility
+
+        evaluation.update(
+            {
+                "regime": regime,
+                "regime_score": regime_score,
+                "market_bias": market_bias,
+                "adx": round(adx, 2),
+                "atr_pct": round(atr_pct, 2),
+                "ema_distance_pct": round(ema_distance_pct, 2),
+                "ema_200_distance_pct": round(ema_200_distance_pct, 2),
+                "ema_slope": round(ema_slope_pct, 4),
+                "recent_range_pct": round(recent_range_pct, 2),
+                "volatility_state": volatility_state,
+                "trend_state": trend_state,
+                "parabolic": parabolic,
+                "legacy_regime": legacy_regime,
+                "price_above_ema_200": price_above_ema_200,
+                "is_tradeable": is_tradeable,
+                "notes": notes,
+                "reason": " | ".join(notes[:5]),
+                "has_minimum_history": True,
+                "timestamp": pd.Timestamp(recent_window.index[-1]).isoformat(),
+            }
+        )
+        if persist:
+            self._last_regime_evaluation = evaluation
+        return evaluation
+
     def _clear_hard_block(self):
         self._last_hard_block_evaluation = {
             "hard_block": False,
@@ -89,6 +333,7 @@ class TradingBot:
             "block_reason": block_reason,
             "block_source": block_source,
             "context_evaluation": getattr(self, "_last_context_evaluation", None),
+            "regime_evaluation": getattr(self, "_last_regime_evaluation", None),
             "structure_evaluation": getattr(self, "_last_price_structure_evaluation", None),
             "confirmation_evaluation": getattr(self, "_last_confirmation_evaluation", None),
             "entry_quality_evaluation": getattr(self, "_last_entry_quality_evaluation", None),
@@ -370,8 +615,9 @@ class TradingBot:
             "market_bias": "neutral",
             "strength": 0.0,
             "context_strength": 0.0,
-            "regime": "range_low_vol",
-            "volatility_state": "low_vol",
+            "regime": "range",
+            "volatility_state": "low_volatility",
+            "trend_state": "range",
             "is_tradeable": False,
             "timestamp": None,
             "reason": "Sem contexto configurado.",
@@ -381,13 +627,7 @@ class TradingBot:
             self._last_context_evaluation = evaluation
             return evaluation
 
-        working_df = context_df
-        if "is_closed" in working_df.columns:
-            closed_context = working_df[working_df["is_closed"].fillna(False)]
-            if not closed_context.empty:
-                working_df = closed_context
-            elif len(working_df) > 1:
-                working_df = working_df.iloc[:-1]
+        working_df = self._prefer_closed_candles(context_df)
 
         if working_df.empty:
             evaluation["reason"] = "Sem candle fechado no contexto."
@@ -401,274 +641,39 @@ class TradingBot:
             self._last_context_evaluation = evaluation
             return evaluation
 
-        context_row = working_df.iloc[-1]
-        recent_window = working_df.tail(min(30, len(working_df)))
-        price = context_row.get("close", np.nan)
-        sma_21 = context_row.get("sma_21", np.nan)
-        sma_50 = context_row.get("sma_50", np.nan)
-        sma_200 = context_row.get("sma_200", np.nan)
-        macd_hist = context_row.get("macd_histogram", context_row.get("macd", 0) - context_row.get("macd_signal", 0))
-        adx = context_row.get("adx", np.nan)
-        di_plus = context_row.get("di_plus", np.nan)
-        di_minus = context_row.get("di_minus", np.nan)
-        rsi = context_row.get("rsi", np.nan)
-        base_regime = context_row.get("market_regime", "trending")
-
-        sma_21_slope = self._calculate_context_slope(recent_window.get("sma_21"))
-        sma_50_slope = self._calculate_context_slope(recent_window.get("sma_50"))
-        sma_200_slope = self._calculate_context_slope(recent_window.get("sma_200"))
-
-        atr_pct = float("nan")
-        atr_pct_baseline = float("nan")
-        atr_series = recent_window.get("atr")
-        close_series = recent_window.get("close")
-        if atr_series is not None and close_series is not None:
-            atr_pct_series = atr_series / close_series.replace(0, np.nan)
-            clean_atr_pct = atr_pct_series.dropna()
-            if not clean_atr_pct.empty:
-                atr_pct = float(clean_atr_pct.iloc[-1])
-                atr_pct_baseline = float(clean_atr_pct.median())
-
-        recent_range_pct = float("nan")
-        recent_range_baseline = float("nan")
-        high_series = recent_window.get("high")
-        low_series = recent_window.get("low")
-        range_window = min(8, len(recent_window))
-        if (
-            high_series is not None
-            and low_series is not None
-            and close_series is not None
-            and range_window >= 2
-        ):
-            rolling_range_pct = (
-                high_series.rolling(range_window).max() - low_series.rolling(range_window).min()
-            ) / close_series.replace(0, np.nan)
-            clean_range = rolling_range_pct.dropna()
-            if not clean_range.empty:
-                recent_range_pct = float(clean_range.iloc[-1])
-                recent_range_baseline = float(clean_range.median())
-
-        bullish_score = 0.0
-        bearish_score = 0.0
-        directional_reasons = []
-
-        if not pd.isna(price) and not pd.isna(sma_21):
-            if float(price) >= float(sma_21):
-                bullish_score += 1.0
-                directional_reasons.append("preco acima da SMA21")
-            else:
-                bearish_score += 1.0
-                directional_reasons.append("preco abaixo da SMA21")
-        if not pd.isna(sma_21) and not pd.isna(sma_50):
-            if float(sma_21) >= float(sma_50):
-                bullish_score += 1.0
-                directional_reasons.append("SMA21 acima da SMA50")
-            else:
-                bearish_score += 1.0
-                directional_reasons.append("SMA21 abaixo da SMA50")
-        if not pd.isna(sma_50) and not pd.isna(sma_200):
-            if float(sma_50) >= float(sma_200):
-                bullish_score += 1.0
-                directional_reasons.append("SMA50 acima da SMA200")
-            else:
-                bearish_score += 1.0
-                directional_reasons.append("SMA50 abaixo da SMA200")
-        if not pd.isna(sma_21_slope):
-            if sma_21_slope > 0:
-                bullish_score += 1.0
-                directional_reasons.append("SMA21 inclinada para cima")
-            elif sma_21_slope < 0:
-                bearish_score += 1.0
-                directional_reasons.append("SMA21 inclinada para baixo")
-        if not pd.isna(sma_50_slope):
-            if sma_50_slope > 0:
-                bullish_score += 1.0
-                directional_reasons.append("SMA50 inclinada para cima")
-            elif sma_50_slope < 0:
-                bearish_score += 1.0
-                directional_reasons.append("SMA50 inclinada para baixo")
-        if not pd.isna(macd_hist):
-            if float(macd_hist) > 0:
-                bullish_score += 1.0
-                directional_reasons.append("MACD histograma positivo")
-            elif float(macd_hist) < 0:
-                bearish_score += 1.0
-                directional_reasons.append("MACD histograma negativo")
-
-        di_spread = 0.0
-        if not pd.isna(di_plus) and not pd.isna(di_minus):
-            di_spread = abs(float(di_plus) - float(di_minus))
-            if float(di_plus) > float(di_minus):
-                bullish_score += 1.0 if di_spread >= 8 else 0.5
-                directional_reasons.append("DI+ acima do DI-")
-            elif float(di_minus) > float(di_plus):
-                bearish_score += 1.0 if di_spread >= 8 else 0.5
-                directional_reasons.append("DI- acima do DI+")
-        if not pd.isna(rsi):
-            if float(rsi) >= 55:
-                bullish_score += 0.5
-                directional_reasons.append("RSI acima da linha de equilibrio")
-            elif float(rsi) <= 45:
-                bearish_score += 0.5
-                directional_reasons.append("RSI abaixo da linha de equilibrio")
-
-        trend_votes = 0
-        range_votes = 0
-        if base_regime == "trending":
-            trend_votes += 1
-        elif base_regime == "ranging":
-            range_votes += 1
-        elif base_regime == "volatile":
-            if not pd.isna(adx) and float(adx) >= 25 and di_spread >= 8:
-                trend_votes += 1
-            else:
-                range_votes += 1
-
-        if not pd.isna(adx):
-            if float(adx) >= 25:
-                trend_votes += 1
-            elif float(adx) < 22:
-                range_votes += 1
-        if di_spread >= 8:
-            trend_votes += 1
-        elif di_spread < 5:
-            range_votes += 1
-
-        slope_alignment = 0
-        if not pd.isna(sma_21_slope) and not pd.isna(sma_50_slope):
-            if sma_21_slope > 0 and sma_50_slope > 0:
-                slope_alignment = 1
-            elif sma_21_slope < 0 and sma_50_slope < 0:
-                slope_alignment = 1
-            else:
-                range_votes += 1
-        if slope_alignment:
-            trend_votes += 1
-
-        if not pd.isna(price) and not pd.isna(sma_21) and not pd.isna(sma_50):
-            if (float(price) > float(sma_21) > float(sma_50)) or (float(price) < float(sma_21) < float(sma_50)):
-                trend_votes += 1
-            else:
-                range_votes += 1
-
-        is_high_vol = False
-        if not pd.isna(atr_pct):
-            atr_threshold = max((atr_pct_baseline * 1.2) if not pd.isna(atr_pct_baseline) else 0.0, 0.018)
-            is_high_vol = atr_pct >= atr_threshold
-        if not pd.isna(recent_range_pct):
-            range_threshold = max((recent_range_baseline * 1.15) if not pd.isna(recent_range_baseline) else 0.0, 0.06)
-            is_high_vol = is_high_vol or recent_range_pct >= range_threshold
-        if base_regime == "volatile":
-            is_high_vol = True
-
-        volatility_state = "high_vol" if is_high_vol else "low_vol"
-        trend_state = "trend" if trend_votes >= max(3, range_votes + 1) else "range"
-        regime = f"{trend_state}_{volatility_state}"
-
-        if trend_state == "trend" and bullish_score >= 5 and bullish_score >= bearish_score + 1.5:
-            market_bias = "bullish"
-        elif trend_state == "trend" and bearish_score >= 5 and bearish_score >= bullish_score + 1.5:
-            market_bias = "bearish"
-        else:
-            market_bias = "neutral"
-
-        dominant_score = max(bullish_score, bearish_score)
-        directional_gap = abs(bullish_score - bearish_score)
-        context_strength = 0.0
-
-        ma_alignment_points = 0.0
-        if not pd.isna(price) and not pd.isna(sma_21):
-            ma_alignment_points += 0.5
-        if not pd.isna(sma_21) and not pd.isna(sma_50):
-            ma_alignment_points += 0.75
-        if not pd.isna(sma_50) and not pd.isna(sma_200):
-            ma_alignment_points += 0.75
-        if market_bias == "neutral":
-            ma_alignment_points *= 0.3
-        context_strength += ma_alignment_points
-
-        slope_points = 0.0
-        if not pd.isna(sma_21_slope):
-            slope_points += 0.75
-        if not pd.isna(sma_50_slope):
-            slope_points += 0.75
-        if not pd.isna(sma_200_slope):
-            slope_points += 0.25
-        if slope_alignment == 0:
-            slope_points *= 0.35
-        context_strength += min(1.75, slope_points)
-
-        context_strength += min(2.0, dominant_score * 0.35)
-        context_strength += min(1.5, directional_gap * 0.35)
-
-        if not pd.isna(adx):
-            if float(adx) >= 35:
-                context_strength += 1.5
-            elif float(adx) >= 25:
-                context_strength += 1.0
-            elif float(adx) >= 20:
-                context_strength += 0.5
-
-        if di_spread >= 15:
-            context_strength += 1.25
-        elif di_spread >= 8:
-            context_strength += 0.85
-        elif di_spread >= 4:
-            context_strength += 0.35
-
-        if trend_state == "trend":
-            context_strength += 0.75
-        if volatility_state == "low_vol":
-            context_strength += 0.75
-        elif trend_state == "trend":
-            context_strength += 0.4
-
-        if not pd.isna(recent_range_pct):
-            if 0.02 <= recent_range_pct <= 0.12:
-                context_strength += 0.5
-            elif recent_range_pct > 0.18:
-                context_strength -= 0.4
-
-        context_strength = round(float(max(0.0, min(10.0, context_strength))), 2)
-        strength = round(context_strength / 10.0, 2)
-        is_tradeable = market_bias != "neutral" and trend_state == "trend" and context_strength >= 5.0
-
-        reasons = []
-        if market_bias == "bullish":
-            reasons.append("vies direcional de alta no contexto")
-        elif market_bias == "bearish":
-            reasons.append("vies direcional de baixa no contexto")
-        else:
-            reasons.append("contexto sem vies direcional claro")
-        reasons.append(f"regime {regime}")
-        if not pd.isna(adx):
-            reasons.append(f"ADX {float(adx):.1f}")
-        if not pd.isna(atr_pct):
-            reasons.append(f"ATR% {atr_pct * 100:.2f}")
-        if not pd.isna(recent_range_pct):
-            reasons.append(f"range recente {recent_range_pct * 100:.2f}%")
-        if directional_reasons:
-            reasons.append(directional_reasons[0])
-        reason = " | ".join(reasons)
-
+        regime_evaluation = self.evaluate_market_regime(
+            working_df,
+            timeframe=context_timeframe,
+            as_of_timestamp=as_of_timestamp,
+            persist=False,
+        )
+        context_strength = float(regime_evaluation.get("regime_score", 0.0) or 0.0)
+        reason = str(regime_evaluation.get("reason") or "Sem contexto classificado.")
         evaluation = {
             "timeframe": context_timeframe,
-            "bias": market_bias,
-            "market_bias": market_bias,
-            "strength": strength,
+            "bias": regime_evaluation.get("market_bias", "neutral"),
+            "market_bias": regime_evaluation.get("market_bias", "neutral"),
+            "strength": round(context_strength / 10.0, 2),
             "context_strength": context_strength,
-            "regime": regime,
-            "volatility_state": volatility_state,
-            "is_tradeable": is_tradeable,
-            "atr_pct": None if pd.isna(atr_pct) else round(atr_pct * 100, 2),
-            "recent_range_pct": None if pd.isna(recent_range_pct) else round(recent_range_pct * 100, 2),
+            "regime": regime_evaluation.get("regime", "range"),
+            "volatility_state": regime_evaluation.get("volatility_state", "normal_volatility"),
+            "trend_state": regime_evaluation.get("trend_state", "range"),
+            "regime_score": context_strength,
+            "parabolic": bool(regime_evaluation.get("parabolic", False)),
+            "is_tradeable": bool(regime_evaluation.get("is_tradeable", False)),
+            "atr_pct": regime_evaluation.get("atr_pct"),
+            "recent_range_pct": regime_evaluation.get("recent_range_pct"),
+            "ema_distance_pct": regime_evaluation.get("ema_distance_pct"),
+            "ema_200_distance_pct": regime_evaluation.get("ema_200_distance_pct"),
+            "ema_slope": regime_evaluation.get("ema_slope"),
+            "price_above_ema_200": regime_evaluation.get("price_above_ema_200"),
             "ma_slopes": {
-                "sma_21": None if pd.isna(sma_21_slope) else round(sma_21_slope, 4),
-                "sma_50": None if pd.isna(sma_50_slope) else round(sma_50_slope, 4),
-                "sma_200": None if pd.isna(sma_200_slope) else round(sma_200_slope, 4),
+                "ema_21": regime_evaluation.get("ema_slope"),
             },
-            "timestamp": pd.Timestamp(working_df.index[-1]).isoformat(),
+            "timestamp": regime_evaluation.get("timestamp"),
+            "notes": list(regime_evaluation.get("notes", []) or []),
             "reason": reason,
+            "legacy_regime": regime_evaluation.get("legacy_regime", "ranging"),
         }
         self._last_context_evaluation = evaluation
         return evaluation
@@ -698,13 +703,7 @@ class TradingBot:
             self._last_price_structure_evaluation = evaluation
             return evaluation
 
-        working_df = df
-        if "is_closed" in working_df.columns:
-            closed_df = working_df[working_df["is_closed"].fillna(False)]
-            if not closed_df.empty:
-                working_df = closed_df
-            elif len(working_df) > 1:
-                working_df = working_df.iloc[:-1]
+        working_df = self._prefer_closed_candles(df)
 
         if len(working_df) < 6:
             self._last_price_structure_evaluation = evaluation
@@ -773,34 +772,38 @@ class TradingBot:
         support_zone_distance = abs(float(close_price) - recent_low) / range_span
         resistance_zone_distance = abs(recent_high - float(close_price)) / range_span
 
-        bullish_rejection = lower_wick >= max(body_size * 1.4, candle_range * 0.22)
-        bearish_rejection = upper_wick >= max(body_size * 1.4, candle_range * 0.22)
+        rejection_multiplier = 1.6 if current_timeframe in {"30m", "1h", "4h"} else 1.4
+        rejection_share_floor = 0.26 if current_timeframe in {"30m", "1h", "4h"} else 0.22
+        bullish_rejection = lower_wick >= max(body_size * rejection_multiplier, candle_range * rejection_share_floor)
+        bearish_rejection = upper_wick >= max(body_size * rejection_multiplier, candle_range * rejection_share_floor)
         bullish_impulse = (
             float(close_price) > float(open_price)
-            and body_share >= 0.58
-            and close_location >= 0.7
-            and body_size >= max(avg_body * 1.2, 0.0)
+            and body_share >= (0.54 if current_timeframe in {"30m", "1h", "4h"} else 0.58)
+            and close_location >= (0.66 if current_timeframe in {"30m", "1h", "4h"} else 0.7)
+            and body_size >= max(avg_body * (1.05 if current_timeframe in {"30m", "1h", "4h"} else 1.2), 0.0)
         )
         bearish_impulse = (
             float(close_price) < float(open_price)
-            and body_share >= 0.58
-            and close_location <= 0.3
-            and body_size >= max(avg_body * 1.2, 0.0)
+            and body_share >= (0.54 if current_timeframe in {"30m", "1h", "4h"} else 0.58)
+            and close_location <= (0.34 if current_timeframe in {"30m", "1h", "4h"} else 0.3)
+            and body_size >= max(avg_body * (1.05 if current_timeframe in {"30m", "1h", "4h"} else 1.2), 0.0)
         )
 
         breakout_threshold = 0.15 * float(atr_value) if not pd.isna(atr_value) and float(atr_value) > 0 else range_span * 0.01
         broke_recent_high = float(close_price) > recent_high + breakout_threshold
         broke_recent_low = float(close_price) < recent_low - breakout_threshold
 
+        zone_distance_threshold = 0.15 if current_timeframe in {"5m", "15m"} else 0.10
+
         if broke_recent_high:
             price_location = "resistance"
         elif broke_recent_low:
             price_location = "support"
-        elif distance_from_sma_atr <= 1.25 and (bullish_stack or bearish_stack):
+        elif distance_from_sma_atr <= (1.25 if current_timeframe in {"5m", "15m"} else 1.55) and (bullish_stack or bearish_stack):
             price_location = "trend_zone"
-        elif support_zone_distance <= 0.15:
+        elif support_zone_distance <= zone_distance_threshold:
             price_location = "support"
-        elif resistance_zone_distance <= 0.15:
+        elif resistance_zone_distance <= zone_distance_threshold:
             price_location = "resistance"
         else:
             price_location = "mid_range"
@@ -811,29 +814,82 @@ class TradingBot:
 
         is_pullback = False
         if bullish_stack and not pd.isna(sma_21):
-            pullback_floor = float(sma_21) - (float(atr_value) * 0.8 if not pd.isna(atr_value) and float(atr_value) > 0 else 0.0)
+            atr_buffer = float(atr_value) if not pd.isna(atr_value) and float(atr_value) > 0 else 0.0
+            pullback_floor = float(sma_21) - (atr_buffer * 1.0)
+            touch_threshold = float(sma_21) + (atr_buffer * 0.45)
+            recent_relief = prior_df["close"].diff().tail(min(3, len(prior_df))).dropna()
+            relief_candles = int((recent_relief <= 0).sum()) if not recent_relief.empty else 0
             is_pullback = (
-                float(low_price) <= float(sma_21)
+                float(low_price) <= touch_threshold
                 and float(close_price) >= pullback_floor
-                and float(close_price) >= float(open_price)
-                and higher_lows
+                and (float(close_price) >= float(open_price) or close_location >= 0.40)
+                and (higher_lows or price_location in {"trend_zone", "support"} or relief_candles >= 1)
             )
         elif bearish_stack and not pd.isna(sma_21):
-            pullback_ceiling = float(sma_21) + (float(atr_value) * 0.8 if not pd.isna(atr_value) and float(atr_value) > 0 else 0.0)
+            atr_buffer = float(atr_value) if not pd.isna(atr_value) and float(atr_value) > 0 else 0.0
+            pullback_ceiling = float(sma_21) + (atr_buffer * 1.0)
+            touch_threshold = float(sma_21) - (atr_buffer * 0.45)
+            recent_relief = prior_df["close"].diff().tail(min(3, len(prior_df))).dropna()
+            relief_candles = int((recent_relief >= 0).sum()) if not recent_relief.empty else 0
             is_pullback = (
-                float(high_price) >= float(sma_21)
+                float(high_price) >= touch_threshold
                 and float(close_price) <= pullback_ceiling
-                and float(close_price) <= float(open_price)
-                and lower_highs
+                and (float(close_price) <= float(open_price) or close_location <= 0.60)
+                and (lower_highs or price_location in {"trend_zone", "resistance"} or relief_candles >= 1)
             )
 
         losing_structure = False
         if bullish_stack and not pd.isna(sma_21):
-            losing_structure = float(close_price) < float(sma_21) and float(close_price) < float(recent_close)
+            losing_structure = (
+                float(close_price) < float(sma_21)
+                and float(close_price) < float(recent_close)
+                and close_location < 0.45
+            )
         elif bearish_stack and not pd.isna(sma_21):
-            losing_structure = float(close_price) > float(sma_21) and float(close_price) > float(recent_close)
+            losing_structure = (
+                float(close_price) > float(sma_21)
+                and float(close_price) > float(recent_close)
+                and close_location > 0.55
+            )
 
-        is_stretched = distance_from_sma_atr >= (2.6 if current_timeframe in {"5m", "15m"} else 2.9)
+        is_stretched = distance_from_sma_atr >= (2.6 if current_timeframe in {"5m", "15m"} else 3.2 if current_timeframe in {"30m", "1h", "4h"} else 2.9)
+        continuation_ready = False
+        if bullish_stack:
+            continuation_ready = (
+                float(close_price) >= float(recent_close) - (float(atr_value) * 0.10 if not pd.isna(atr_value) and float(atr_value) > 0 else 0.0)
+                and higher_lows
+                and body_share >= 0.22
+                and close_location >= 0.46
+            )
+        elif bearish_stack:
+            continuation_ready = (
+                float(close_price) <= float(recent_close) + (float(atr_value) * 0.10 if not pd.isna(atr_value) and float(atr_value) > 0 else 0.0)
+                and lower_highs
+                and body_share >= 0.22
+                and close_location <= 0.54
+            )
+
+        reversal_setup = (
+            (losing_structure and not continuation_ready and not is_pullback)
+            or (
+                is_stretched
+                and price_location == "resistance"
+                and bullish_stack
+                and bearish_rejection
+                and not continuation_ready
+                and not is_pullback
+            )
+            or (
+                is_stretched
+                and price_location == "support"
+                and bearish_stack
+                and bullish_rejection
+                and not continuation_ready
+                and not is_pullback
+            )
+            or (price_location == "resistance" and bearish_rejection and bullish_stack and not continuation_ready)
+            or (price_location == "support" and bullish_rejection and bearish_stack and not continuation_ready)
+        )
 
         structure_state = "weak_structure"
         reasons = []
@@ -843,16 +899,18 @@ class TradingBot:
         elif is_pullback:
             structure_state = "pullback"
             reasons.append("preco corrigindo para a zona de tendencia")
-        elif losing_structure or is_stretched or (
-            price_location == "resistance" and bearish_rejection and bullish_stack
-        ) or (
-            price_location == "support" and bullish_rejection and bearish_stack
-        ):
+        elif reversal_setup:
             structure_state = "reversal_risk"
             reasons.append("estrutura mostra risco de reversao")
-        elif (bullish_stack and bullish_impulse) or (bearish_stack and bearish_impulse):
+        elif continuation_ready or (bullish_stack and bullish_impulse) or (bearish_stack and bearish_impulse):
             structure_state = "continuation"
             reasons.append("estrutura de continuidade com impulso")
+        elif bullish_stack and price_location in {"trend_zone", "support"} and close_location >= 0.38 and not losing_structure:
+            structure_state = "continuation"
+            reasons.append("continuidade apos micro pausa")
+        elif bearish_stack and price_location in {"trend_zone", "resistance"} and close_location <= 0.62 and not losing_structure:
+            structure_state = "continuation"
+            reasons.append("continuidade apos micro pausa")
         else:
             reasons.append("estrutura fraca ou indefinida")
 
@@ -880,11 +938,16 @@ class TradingBot:
         else:
             structure_quality += 0.5
 
+        if continuation_ready:
+            structure_quality += 0.8
+
         if not pd.isna(volume_ratio):
             if float(volume_ratio) >= 1.6:
                 structure_quality += 1.0
             elif float(volume_ratio) >= 1.2:
                 structure_quality += 0.5
+            elif float(volume_ratio) >= 1.0 and structure_state in {"continuation", "pullback"}:
+                structure_quality += 0.2
             elif float(volume_ratio) < 0.9:
                 structure_quality -= 0.6
 
@@ -895,7 +958,7 @@ class TradingBot:
         elif market_regime == "volatile":
             structure_quality -= 0.5
 
-        if is_stretched:
+        if is_stretched and structure_state != "breakout":
             structure_quality -= 1.5
             reasons.append("preco esticado em relacao a media")
         if losing_structure:
@@ -956,6 +1019,8 @@ class TradingBot:
             "timestamp": pd.Timestamp(working_df.index[-1]).isoformat(),
             "recent_high": round(recent_high, 4),
             "recent_low": round(recent_low, 4),
+            "support_zone_distance": round(float(support_zone_distance), 4),
+            "resistance_zone_distance": round(float(resistance_zone_distance), 4),
             "distance_from_sma21_atr": round(distance_from_sma_atr, 2) if distance_from_sma_atr else 0.0,
             "impulse_candle": bool(bullish_impulse or bearish_impulse),
             "rejection_candle": bool(bullish_rejection or bearish_rejection),
@@ -1029,13 +1094,7 @@ class TradingBot:
             self._last_confirmation_evaluation = evaluation
             return evaluation
 
-        working_df = df
-        if "is_closed" in working_df.columns:
-            closed_df = working_df[working_df["is_closed"].fillna(False)]
-            if not closed_df.empty:
-                working_df = closed_df
-            elif len(working_df) > 1:
-                working_df = working_df.iloc[:-1]
+        working_df = self._prefer_closed_candles(df)
 
         if len(working_df) < 5:
             self._last_confirmation_evaluation = evaluation
@@ -1271,14 +1330,8 @@ class TradingBot:
         context_evaluation: Optional[Dict[str, object]] = None,
         structure_evaluation: Optional[Dict[str, object]] = None,
     ) -> Dict[str, object]:
-        working_df = df
+        working_df = self._prefer_closed_candles(df)
         if working_df is not None and not working_df.empty:
-            if "is_closed" in working_df.columns:
-                closed_df = working_df[working_df["is_closed"].fillna(False)]
-                if not closed_df.empty:
-                    working_df = closed_df
-                elif len(working_df) > 1:
-                    working_df = working_df.iloc[:-1]
             last_row = working_df.iloc[-1] if not working_df.empty else None
         else:
             last_row = None
@@ -1298,18 +1351,31 @@ class TradingBot:
         self._last_confirmation_evaluation = evaluation
         return evaluation
 
-    def validate_entry_quality(
+    def evaluate_contextual_entry(
         self,
         df: Optional[pd.DataFrame],
         market_bias: Optional[str] = None,
         structure_state: Optional[str] = None,
+        regime_evaluation: Optional[Dict[str, object]] = None,
+        structure_evaluation: Optional[Dict[str, object]] = None,
+        signal_hypothesis: Optional[str] = None,
+        timeframe: Optional[str] = None,
     ) -> Dict[str, object]:
-        current_timeframe = self.timeframe or "5m"
+        current_timeframe = timeframe or self.timeframe or "5m"
         evaluation = {
             "timeframe": current_timeframe,
+            "entry_signal": "wait",
             "entry_quality": "bad",
             "rr_estimate": 0.0,
             "entry_score": 0.0,
+            "quality_score": 0.0,
+            "setup_type": None,
+            "entry_reason": None,
+            "rejection_reason": None,
+            "rsi_state": "neutral",
+            "structure_state": structure_state or "weak_structure",
+            "candle_quality": "bad",
+            "momentum_state": "weak",
             "late_entry": False,
             "stretched_price": False,
             "entry_in_middle": True,
@@ -1318,35 +1384,25 @@ class TradingBot:
             "timestamp": None,
             "stop_distance_pct": 0.0,
             "target_distance_pct": 0.0,
-            "reason": "Sem dados suficientes para avaliar a qualidade da entrada.",
+            "reason": "Sem dados suficientes para avaliar a entrada contextual.",
             "notes": [],
             "conflicts": [],
             "price_location": "mid_range",
-            "structure_state": structure_state or "weak_structure",
+            "candle_is_acceptable": False,
         }
         if df is None or df.empty:
             self._last_entry_quality_evaluation = evaluation
             return evaluation
 
-        working_df = df
-        if "is_closed" in working_df.columns:
-            closed_df = working_df[working_df["is_closed"].fillna(False)]
-            if not closed_df.empty:
-                working_df = closed_df
-            elif len(working_df) > 1:
-                working_df = working_df.iloc[:-1]
+        working_df = self._prefer_closed_candles(df.copy())
 
-        if len(working_df) < 5:
+        if len(working_df) < 6:
             self._last_entry_quality_evaluation = evaluation
             return evaluation
 
         last_row = working_df.iloc[-1]
         prior_df = working_df.iloc[:-1]
-        signal_side = market_bias if market_bias in {"bullish", "bearish"} else self._resolve_confirmation_side(
-            last_row=last_row,
-        )
-        if signal_side == "neutral":
-            evaluation["reason"] = "Sem hipotese direcional clara para avaliar a entrada."
+        if prior_df.empty:
             self._last_entry_quality_evaluation = evaluation
             return evaluation
 
@@ -1360,26 +1416,43 @@ class TradingBot:
             self._last_entry_quality_evaluation = evaluation
             return evaluation
 
-        structure_evaluation = self.get_price_structure_evaluation(
+        regime_evaluation = regime_evaluation or self.evaluate_market_regime(
+            working_df,
+            timeframe=current_timeframe,
+        )
+        regime_name = str((regime_evaluation or {}).get("regime") or "range")
+        regime_score = float((regime_evaluation or {}).get("regime_score", 0.0) or 0.0)
+        regime_bias = str((regime_evaluation or {}).get("market_bias") or "")
+        volatility_state = str((regime_evaluation or {}).get("volatility_state") or "normal_volatility")
+        parabolic = bool((regime_evaluation or {}).get("parabolic", False))
+
+        signal_side = market_bias if market_bias in {"bullish", "bearish"} else self._resolve_confirmation_side(
+            signal_hypothesis=signal_hypothesis,
+            last_row=last_row,
+        )
+        if signal_side == "neutral" and regime_bias in {"bullish", "bearish"}:
+            signal_side = regime_bias
+        if signal_side == "neutral":
+            evaluation["reason"] = "Sem hipotese direcional clara para avaliar a entrada contextual."
+            self._last_entry_quality_evaluation = evaluation
+            return evaluation
+
+        structure_evaluation = structure_evaluation or self.get_price_structure_evaluation(
             working_df,
             timeframe=current_timeframe,
             market_bias=signal_side,
         )
-        structure_state = structure_state or structure_evaluation.get("structure_state", "weak_structure")
-        price_location = structure_evaluation.get("price_location", "mid_range")
+        structure_state = structure_state or str(structure_evaluation.get("structure_state", "weak_structure"))
+        structure_quality = float(structure_evaluation.get("structure_quality", 0.0) or 0.0)
+        price_location = str(structure_evaluation.get("price_location", "mid_range") or "mid_range")
+        resistance_zone_distance = float(structure_evaluation.get("resistance_zone_distance", 1.0) or 1.0)
+        support_zone_distance = float(structure_evaluation.get("support_zone_distance", 1.0) or 1.0)
         recent_high = structure_evaluation.get("recent_high")
         recent_low = structure_evaluation.get("recent_low")
         distance_from_ema_pct = structure_evaluation.get("distance_from_ema_pct")
         if distance_from_ema_pct is None and not pd.isna(ema_21) and float(ema_21) != 0:
             distance_from_ema_pct = abs(float(close_price) - float(ema_21)) / abs(float(ema_21)) * 100.0
         distance_from_ema_pct = float(distance_from_ema_pct or 0.0)
-        recent_window = prior_df.tail(min(4, len(prior_df)))
-        recent_swing_high = float(recent_window["high"].max()) if not recent_window.empty else None
-        recent_swing_low = float(recent_window["low"].min()) if not recent_window.empty else None
-        if recent_swing_high is None:
-            recent_swing_high = recent_high
-        if recent_swing_low is None:
-            recent_swing_low = recent_low
 
         candle_range = max(float(high_price) - float(low_price), 1e-9)
         body_size = abs(float(close_price) - float(open_price))
@@ -1387,59 +1460,84 @@ class TradingBot:
         close_location = (float(close_price) - float(low_price)) / candle_range
         upper_wick = float(high_price) - max(float(open_price), float(close_price))
         lower_wick = min(float(open_price), float(close_price)) - float(low_price)
+        adverse_wick = upper_wick if signal_side == "bullish" else lower_wick
+        adverse_wick_share = adverse_wick / candle_range if candle_range > 0 else 1.0
         avg_body = prior_df["close"].sub(prior_df["open"]).abs().tail(min(8, len(prior_df))).mean()
         avg_body = float(avg_body) if not pd.isna(avg_body) else body_size
         avg_range = prior_df["high"].sub(prior_df["low"]).tail(min(8, len(prior_df))).mean()
         avg_range = float(avg_range) if not pd.isna(avg_range) else candle_range
-        atr_pct = (float(atr_value) / float(close_price) * 100.0) if not pd.isna(atr_value) and float(close_price) > 0 else 0.0
-        avg_recent_atr = prior_df["atr"].tail(min(10, len(prior_df))).mean() if "atr" in prior_df.columns else np.nan
+        atr_pct = (
+            float(atr_value) / float(close_price) * 100.0
+            if not pd.isna(atr_value) and float(close_price) > 0
+            else 0.0
+        )
+        recent_atr_series = prior_df["atr"].tail(min(12, len(prior_df))) if "atr" in prior_df.columns else pd.Series(dtype=float)
+        avg_recent_atr = recent_atr_series.mean() if not recent_atr_series.empty else np.nan
         avg_recent_atr = float(avg_recent_atr) if not pd.isna(avg_recent_atr) else float(atr_value or 0.0)
         volatility_ratio = (
             float(atr_value) / avg_recent_atr
             if not pd.isna(atr_value) and avg_recent_atr and avg_recent_atr > 0
             else 1.0
         )
-        range_projection_pct = 0.0
-        if recent_high is not None and recent_low is not None and float(close_price) > 0:
-            range_projection_pct = abs(float(recent_high) - float(recent_low)) / float(close_price) * 100.0
-
-        stretched_threshold_pct = 2.2 if current_timeframe in {"15m", "30m", "1h"} else 2.6
+        stretched_threshold_pct = 2.45 if current_timeframe in {"30m", "1h"} else 2.75 if current_timeframe in {"4h", "1d"} else 2.15
         stretched_by_distance = distance_from_ema_pct >= stretched_threshold_pct
-        stretched_by_candle = body_size >= max(avg_body * 2.1, 0.0) and candle_range >= max(avg_range * 1.9, 0.0)
+        stretched_by_candle = (
+            body_size >= max(avg_body * 2.25, 0.0)
+            and candle_range >= max(avg_range * 2.0, 0.0)
+        )
         stretched_price = stretched_by_distance or stretched_by_candle
 
+        recent_window = prior_df.tail(min(5, len(prior_df)))
+        recent_swing_high = float(recent_window["high"].max()) if not recent_window.empty else recent_high
+        recent_swing_low = float(recent_window["low"].min()) if not recent_window.empty else recent_low
         breakout_extension = False
-        if signal_side == "bullish" and recent_high is not None and atr_pct > 0:
-            breakout_extension = float(close_price) > float(recent_high) + (float(atr_value) * 0.55)
-        elif signal_side == "bearish" and recent_low is not None and atr_pct > 0:
-            breakout_extension = float(close_price) < float(recent_low) - (float(atr_value) * 0.55)
+        if signal_side == "bullish" and recent_swing_high is not None and atr_pct > 0:
+            breakout_extension = float(close_price) > float(recent_swing_high) + (float(atr_value) * 0.65)
+        elif signal_side == "bearish" and recent_swing_low is not None and atr_pct > 0:
+            breakout_extension = float(close_price) < float(recent_swing_low) - (float(atr_value) * 0.65)
 
         candle_is_directional = (
             float(close_price) > float(open_price)
             if signal_side == "bullish"
             else float(close_price) < float(open_price)
         )
-        candle_close_is_clean = close_location >= 0.48 if signal_side == "bullish" else close_location <= 0.52
-        adverse_wick = upper_wick if signal_side == "bullish" else lower_wick
-        adverse_wick_share = adverse_wick / candle_range if candle_range > 0 else 1.0
-        candle_is_acceptable = (
-            body_share >= 0.30
-            and adverse_wick_share <= 0.60
+        candle_close_is_clean = close_location >= 0.50 if signal_side == "bullish" else close_location <= 0.50
+        price_in_middle = price_location == "mid_range"
+        low_volatility = volatility_ratio < 0.70
+        dead_range = price_in_middle and structure_state not in {"pullback", "continuation", "breakout", "reversal_risk"}
+        late_entry = breakout_extension and stretched_price
+
+        if candle_range <= 0 or body_share < 0.10:
+            candle_quality = "bad"
+        elif (
+            body_share >= 0.48
+            and adverse_wick_share <= 0.40
+            and candle_is_directional
+            and not stretched_by_candle
+        ):
+            candle_quality = "strong"
+        elif (
+            body_share >= 0.26
+            and adverse_wick_share <= 0.68
             and volatility_ratio >= 0.70
             and (candle_is_directional or candle_close_is_clean)
-        )
+        ):
+            candle_quality = "acceptable"
+        elif (
+            structure_state in {"pullback", "continuation", "breakout"}
+            and structure_quality >= 5.4
+            and body_share >= 0.20
+            and adverse_wick_share <= 0.75
+            and volatility_ratio >= 0.65
+        ):
+            candle_quality = "acceptable"
+        else:
+            candle_quality = "bad"
 
-        price_in_middle = price_location == "mid_range"
         recent_three = working_df.tail(min(3, len(working_df)))
         recent_closes = recent_three["close"].astype(float)
         close_deltas = recent_closes.diff().dropna()
         favorable_closes = int((close_deltas > 0).sum()) if signal_side == "bullish" else int((close_deltas < 0).sum())
-        recent_volume_ratio = last_row.get("volume_ratio", np.nan)
-        if pd.isna(recent_volume_ratio):
-            volume_mean = prior_df["volume"].tail(min(20, len(prior_df))).mean() if "volume" in prior_df.columns else np.nan
-            recent_volume_ratio = (float(last_row.get("volume", 0.0)) / float(volume_mean)) if volume_mean and not pd.isna(volume_mean) else 1.0
-        recent_volume_ratio = float(recent_volume_ratio or 0.0)
-
         prev_row = prior_df.iloc[-1] if not prior_df.empty else None
         bullish_engulfing = False
         bearish_engulfing = False
@@ -1467,11 +1565,78 @@ class TradingBot:
         ) or (
             signal_side == "bearish" and float(close_price) <= recent_low_reference
         )
+        macd_value = float(last_row.get("macd", 0.0) or 0.0)
+        macd_signal = float(last_row.get("macd_signal", 0.0) or 0.0)
+        macd_histogram = float(last_row.get("macd_histogram", macd_value - macd_signal) or 0.0)
+        recent_volume_ratio = last_row.get("volume_ratio", np.nan)
+        if pd.isna(recent_volume_ratio):
+            volume_mean = prior_df["volume"].tail(min(20, len(prior_df))).mean() if "volume" in prior_df.columns else np.nan
+            recent_volume_ratio = (
+                float(last_row.get("volume", 0.0)) / float(volume_mean)
+                if volume_mean and not pd.isna(volume_mean)
+                else 1.0
+            )
+        recent_volume_ratio = float(recent_volume_ratio or 0.0)
 
-        low_volatility = volatility_ratio < 0.70
-        dead_range = price_in_middle and structure_state not in {"pullback", "continuation", "breakout", "reversal_risk"}
-        reversal_confirmed = structure_state == "reversal_risk" and (engulfing_recent or favorable_closes >= 2 or micro_breakout_recent)
-        late_entry = breakout_extension and stretched_price and favorable_closes >= 2
+        if favorable_closes >= 2 and (engulfing_recent or micro_breakout_recent or abs(macd_histogram) > 0):
+            momentum_state = "strong"
+        elif favorable_closes >= 1 or engulfing_recent or micro_breakout_recent:
+            momentum_state = "acceptable"
+        else:
+            momentum_state = "weak"
+
+        rsi_value = float(last_row.get("rsi", 50.0) or 50.0)
+        prev_rsi = float(prior_df.iloc[-1].get("rsi", rsi_value) or rsi_value) if not prior_df.empty else rsi_value
+        rsi_delta = rsi_value - prev_rsi
+        if signal_side == "bullish":
+            if rsi_value <= 40 and rsi_delta > 0:
+                rsi_state = "pullback_recovery"
+            elif 48 <= rsi_value <= 68:
+                rsi_state = "trend_supportive"
+            elif 68 < rsi_value <= 75 and momentum_state != "weak":
+                rsi_state = "momentum_supportive"
+            elif rsi_value > 75:
+                rsi_state = "extended"
+            elif rsi_value < 30:
+                rsi_state = "too_early"
+            else:
+                rsi_state = "neutral"
+        else:
+            if rsi_value >= 60 and rsi_delta < 0:
+                rsi_state = "pullback_recovery"
+            elif 32 <= rsi_value <= 52:
+                rsi_state = "trend_supportive"
+            elif 25 <= rsi_value < 32 and momentum_state != "weak":
+                rsi_state = "momentum_supportive"
+            elif rsi_value < 25:
+                rsi_state = "extended"
+            elif rsi_value > 70:
+                rsi_state = "too_early"
+            else:
+                rsi_state = "neutral"
+
+        reversal_confirmed = structure_state == "reversal_risk" and (
+            engulfing_recent or favorable_closes >= 2 or micro_breakout_recent
+        )
+        aligned_trend_regime = (
+            (signal_side == "bullish" and regime_name == "trend_bull")
+            or (signal_side == "bearish" and regime_name == "trend_bear")
+        )
+        strong_trend_regime = aligned_trend_regime and regime_score >= (6.5 if parabolic else 7.0)
+
+        setup_type = None
+        if aligned_trend_regime and structure_state == "pullback":
+            setup_type = "pullback_trend"
+        elif aligned_trend_regime and structure_state in {"continuation", "breakout"}:
+            setup_type = "continuation_breakout"
+        elif structure_state == "reversal_risk" and reversal_confirmed:
+            setup_type = "reversal_controlled"
+        elif regime_name == "range" and structure_state in {"pullback", "reversal_risk"} and price_location in {"support", "resistance"}:
+            setup_type = "reversal_controlled"
+        elif structure_state in {"continuation", "breakout"}:
+            setup_type = "continuation_breakout"
+        elif structure_state == "pullback":
+            setup_type = "pullback_trend"
 
         if signal_side == "bullish":
             candle_stop_pct = max((float(close_price) - float(low_price)) / float(close_price) * 100.0, 0.0)
@@ -1480,7 +1645,6 @@ class TradingBot:
                 if recent_swing_low is not None
                 else 0.0
             )
-            atr_stop_pct = atr_pct * 1.1 if atr_pct > 0 else 0.0
             structure_target_pct = (
                 max((float(recent_swing_high) - float(close_price)) / float(close_price) * 100.0, 0.0)
                 if recent_swing_high is not None
@@ -1493,179 +1657,302 @@ class TradingBot:
                 if recent_swing_high is not None
                 else 0.0
             )
-            atr_stop_pct = atr_pct * 1.1 if atr_pct > 0 else 0.0
             structure_target_pct = (
                 max((float(close_price) - float(recent_swing_low)) / float(close_price) * 100.0, 0.0)
                 if recent_swing_low is not None
                 else 0.0
             )
 
-        base_stop_pct = max(candle_stop_pct, atr_pct * 0.9)
+        base_stop_pct = max(candle_stop_pct, atr_pct * 0.85)
         if structure_stop_pct > 0:
-            if structure_state == "pullback":
-                structure_stop_cap = max(base_stop_pct, atr_pct * 1.3)
-            elif structure_state == "continuation":
-                structure_stop_cap = max(base_stop_pct, atr_pct * 1.2)
-            elif structure_state == "breakout":
-                structure_stop_cap = max(base_stop_pct, atr_pct * 1.5)
-            else:
-                structure_stop_cap = max(base_stop_pct, atr_pct * 1.1)
+            structure_stop_cap = max(base_stop_pct, atr_pct * (1.15 if structure_state == "continuation" else 1.35))
             stop_distance_pct = max(base_stop_pct, min(structure_stop_pct, structure_stop_cap))
         else:
             stop_distance_pct = base_stop_pct
-
-        target_distance_pct = max(structure_target_pct, atr_pct * (1.6 if structure_state == "breakout" else 1.0))
+        target_distance_pct = max(structure_target_pct, atr_pct * (1.45 if structure_state == "breakout" else 1.05))
         if structure_state == "pullback":
-            target_distance_pct = max(target_distance_pct, range_projection_pct * 0.65, stop_distance_pct * 1.35)
+            target_distance_pct = max(target_distance_pct, stop_distance_pct * 1.35)
         elif structure_state == "continuation":
-            target_distance_pct = max(target_distance_pct, range_projection_pct * 0.45, atr_pct * 1.05)
-        elif structure_state == "breakout":
-            target_distance_pct = max(target_distance_pct, range_projection_pct * 0.55, stop_distance_pct * 1.2)
-        elif not price_in_middle:
-            target_distance_pct = max(target_distance_pct, range_projection_pct * 0.4)
-
+            target_distance_pct = max(target_distance_pct, stop_distance_pct * 1.20)
+        elif setup_type == "reversal_controlled":
+            target_distance_pct = max(target_distance_pct, stop_distance_pct * 1.10)
         rr_estimate = (target_distance_pct / stop_distance_pct) if stop_distance_pct > 0 else 0.0
 
-        conflicts = []
         notes = []
-        quality_score = 0.0
+        conflicts = []
+        score_breakdown = {"regime": 0.0, "structure": 0.0, "candle": 0.0, "momentum": 0.0, "rsi_timing": 0.0}
+        rejection_reason = None
 
-        zone_score = 0.0
-        if low_volatility:
-            conflicts.append("volatilidade muito baixa para entrada")
-        elif dead_range:
-            conflicts.append("entrada no meio de range sem direção")
-        elif structure_state == "pullback":
-            zone_score = 3.0
-            notes.append("pullback em zona favoravel")
-        elif structure_state == "continuation":
-            zone_score = 2.6 if not price_in_middle else 1.4
-            notes.append("continuidade apos micro pausa")
-        elif structure_state == "breakout":
-            zone_score = 2.4
-            notes.append("continuidade por micro breakout")
-        elif reversal_confirmed:
-            zone_score = 2.1
-            notes.append("reversao inicial com confirmacao recente")
-        else:
-            zone_score = 0.8 if not price_in_middle else 0.0
-        quality_score += zone_score
-
-        candle_score = 0.0
-        if candle_is_acceptable:
-            if body_share >= 0.45 and adverse_wick_share <= 0.40 and candle_is_directional:
-                candle_score = 2.0
+        if setup_type in {"pullback_trend", "continuation_breakout"}:
+            if aligned_trend_regime:
+                score_breakdown["regime"] = min(3.0, 2.1 + (regime_score / 10.0))
+                notes.append(f"regime compativel com {setup_type}")
+            elif regime_name == "range":
+                score_breakdown["regime"] = 0.7
+                conflicts.append("regime lateral reduz setup direcional")
             else:
-                candle_score = 1.4
+                score_breakdown["regime"] = 0.2
+                conflicts.append("setup contra o regime dominante")
+        elif setup_type == "reversal_controlled":
+            if regime_name == "range":
+                score_breakdown["regime"] = 2.5
+                notes.append("reversao controlada em regime lateral")
+            elif strong_trend_regime:
+                score_breakdown["regime"] = 0.2
+                conflicts.append("reversao simples contra trend forte")
+            else:
+                score_breakdown["regime"] = 1.0
+                conflicts.append("reversao exige confirmacao adicional")
+
+        if setup_type == "pullback_trend":
+            score_breakdown["structure"] = min(2.0, 1.2 + (structure_quality / 10.0))
+            if price_location == "trend_zone":
+                score_breakdown["structure"] = min(2.0, score_breakdown["structure"] + 0.2)
+            notes.append("pullback dentro da tendencia")
+        elif setup_type == "continuation_breakout":
+            score_breakdown["structure"] = min(2.0, 1.0 + (structure_quality / 10.0))
+            if structure_state == "breakout" or micro_breakout_recent:
+                score_breakdown["structure"] = min(2.0, score_breakdown["structure"] + 0.2)
+            notes.append("continuidade apos compressao local")
+        elif setup_type == "reversal_controlled":
+            score_breakdown["structure"] = min(2.0, 0.9 + (structure_quality / 12.0))
+            if price_location in {"support", "resistance"}:
+                score_breakdown["structure"] = min(2.0, score_breakdown["structure"] + 0.3)
+            notes.append("reversao controlada com estrutura local")
+        else:
+            conflicts.append("estrutura nao definiu setup valido")
+
+        if candle_quality == "strong":
+            score_breakdown["candle"] = 2.0
+            notes.append("candle de entrada forte")
+        elif candle_quality == "acceptable":
+            score_breakdown["candle"] = 1.3
             notes.append("candle de entrada aceitavel")
-        elif body_share >= 0.22 and adverse_wick_share <= 0.72 and volatility_ratio >= 0.70:
-            candle_score = 0.8
-            notes.append("candle imperfeito mas operavel")
+        elif body_share >= 0.18 and adverse_wick_share <= 0.82 and not price_in_middle:
+            score_breakdown["candle"] = 0.4
+            conflicts.append("candle atual oferece baixa qualidade")
         else:
             conflicts.append("candle atual oferece baixa qualidade")
-        quality_score += candle_score
 
-        momentum_score = 0.0
-        if favorable_closes >= 2:
-            momentum_score += 0.9
-            notes.append("sequencia recente de closes favoraveis")
-        if engulfing_recent:
-            momentum_score += 0.7
-            notes.append("engolfo recente confirma o lado")
-        if micro_breakout_recent:
-            momentum_score += 0.6
-            notes.append("micro breakout recente")
-        momentum_score = min(momentum_score, 2.0)
-        if momentum_score == 0.0:
+        if momentum_state == "strong":
+            score_breakdown["momentum"] = 1.0
+            notes.append("momentum recente confirma a direcao")
+        elif momentum_state == "acceptable":
+            score_breakdown["momentum"] = 0.6
+            notes.append("momento recente suficiente")
+        else:
             conflicts.append("momentum recente ainda fraco")
-        quality_score += momentum_score
 
-        volume_score = 0.0
-        if recent_volume_ratio >= 1.15:
-            volume_score = 2.0
-            notes.append("volume relativo forte")
-        elif recent_volume_ratio >= 1.0:
-            volume_score = 1.4
-            notes.append("volume relativo suficiente")
-        elif recent_volume_ratio >= 0.85:
-            volume_score = 0.7
-            notes.append("volume moderado")
-        else:
-            conflicts.append("volume fraco para sustentar a entrada")
-        quality_score += volume_score
+        if setup_type == "pullback_trend":
+            if rsi_state == "pullback_recovery":
+                score_breakdown["rsi_timing"] = 2.0
+                notes.append("RSI confirma timing de retomada")
+            elif rsi_state == "trend_supportive":
+                score_breakdown["rsi_timing"] = 1.5
+                notes.append("RSI apoia a tendencia")
+            elif rsi_state == "momentum_supportive":
+                score_breakdown["rsi_timing"] = 1.1
+                notes.append("RSI apoia a retomada")
+            elif rsi_state == "extended":
+                score_breakdown["rsi_timing"] = 0.2
+                conflicts.append("RSI mostra entrada ja esticada")
+            else:
+                score_breakdown["rsi_timing"] = 0.6
+        elif setup_type == "continuation_breakout":
+            if rsi_state in {"trend_supportive", "momentum_supportive"}:
+                score_breakdown["rsi_timing"] = 1.6
+                notes.append("RSI apoia a continuidade")
+            elif rsi_state == "pullback_recovery":
+                score_breakdown["rsi_timing"] = 1.2
+                notes.append("RSI saiu do alivio local")
+            elif rsi_state == "extended":
+                score_breakdown["rsi_timing"] = 0.3
+                conflicts.append("RSI mostra continuidade ja cansada")
+            else:
+                score_breakdown["rsi_timing"] = 0.7
+        elif setup_type == "reversal_controlled":
+            if rsi_state == "pullback_recovery":
+                score_breakdown["rsi_timing"] = 1.7
+                notes.append("RSI apoia a reversao controlada")
+            elif rsi_state in {"trend_supportive", "momentum_supportive"}:
+                score_breakdown["rsi_timing"] = 1.1
+            else:
+                score_breakdown["rsi_timing"] = 0.4
+                conflicts.append("RSI ainda nao oferece timing limpo")
 
-        alignment_score = 0.0
-        if structure_state in {"pullback", "continuation", "breakout"} and not dead_range:
-            alignment_score = 1.0
-        elif reversal_confirmed:
-            alignment_score = 0.7
-        else:
-            conflicts.append("alinhamento estrutural fraco")
-        quality_score += alignment_score
-
-        if rr_estimate >= 1.8:
-            quality_score += 0.4
-            notes.append("risco retorno forte")
-        elif rr_estimate >= 1.2:
-            quality_score += 0.2
-            notes.append("risco retorno suficiente")
-        elif rr_estimate < 0.9:
-            quality_score -= 1.0
-            conflicts.append("risco retorno insuficiente")
-
-        if not stretched_price:
-            notes.append("preco nao esta esticado")
-        else:
+        if price_in_middle:
+            conflicts.append("entrada no meio de range sem direcao")
+        if low_volatility:
+            conflicts.append("volatilidade muito baixa para entrada")
+        if stretched_price:
             conflicts.append("preco esta esticado em relacao a ema 21")
+        if late_entry:
+            conflicts.append("entrada tardia apos impulso")
+        if volatility_state == "high_volatility" and setup_type == "reversal_controlled":
+            conflicts.append("alta volatilidade exige evitar reversao simples")
+        if (
+            regime_name == "range"
+            and setup_type == "continuation_breakout"
+            and (price_in_middle or volatility_state == "low_volatility")
+        ):
+            conflicts.append("continuacao com pouco edge dentro de range")
+        if (
+            signal_side == "bearish"
+            and regime_name == "trend_bull"
+            and regime_score >= (6.5 if parabolic else 7.0)
+            and not reversal_confirmed
+        ) or (
+            signal_side == "bullish"
+            and regime_name == "trend_bear"
+            and regime_score >= (6.5 if parabolic else 7.0)
+            and not reversal_confirmed
+        ):
+            rejection_reason = rejection_reason or "reversao simples contra trend forte"
 
-        if stop_distance_pct > 0 and atr_pct > 0:
-            stop_distance_atr = stop_distance_pct / atr_pct
-            if stop_distance_atr < 0.7:
-                quality_score -= 0.8
-                conflicts.append("stop muito curto para a volatilidade atual")
-            elif stop_distance_atr > 3.2:
-                quality_score -= 0.4
-                conflicts.append("stop muito largo para a volatilidade atual")
+        if signal_side == "bullish" and price_location == "resistance" and structure_state != "breakout":
+            if resistance_zone_distance <= 0.018:
+                rejection_reason = "Compra perto da resistencia sem rompimento."
+            elif resistance_zone_distance <= 0.05:
+                conflicts.append("compra perto da resistencia sem rompimento")
+                notes.append("resistencia proxima penaliza a entrada")
+        elif signal_side == "bearish" and price_location == "support" and structure_state != "breakout":
+            if support_zone_distance <= 0.018:
+                rejection_reason = "Venda perto do suporte sem rompimento."
+            elif support_zone_distance <= 0.05:
+                conflicts.append("venda perto do suporte sem rompimento")
+                notes.append("suporte proximo penaliza a entrada")
 
-        entry_score = max(0.0, min(10.0, quality_score))
+        if rr_estimate < 0.85:
+            rejection_reason = rejection_reason or "risco retorno insuficiente"
+        elif rr_estimate < 1.0:
+            conflicts.append("risco retorno insuficiente")
+        elif rr_estimate >= 1.5:
+            notes.append("risco retorno forte")
+
+        if setup_type == "reversal_controlled" and (strong_trend_regime or parabolic):
+            rejection_reason = rejection_reason or "reversao simples contra trend forte"
+        if setup_type == "continuation_breakout" and candle_quality == "bad":
+            rejection_reason = rejection_reason or "continuacao sem candle minimamente aceitavel"
+        if setup_type in {"pullback_trend", "continuation_breakout"} and regime_name == "range" and low_volatility:
+            rejection_reason = rejection_reason or "mercado lateral sem edge suficiente"
+        if setup_type == "continuation_breakout" and regime_name == "range" and price_in_middle:
+            rejection_reason = rejection_reason or "continuacao fraca em mercado lateral"
+        if stretched_price and distance_from_ema_pct >= (stretched_threshold_pct + 0.8):
+            rejection_reason = rejection_reason or "entrada muito esticada da ema 21"
+        if candle_quality == "bad" and (
+            body_share < 0.16
+            or adverse_wick_share > 0.82
+            or (candle_range >= max(avg_range * 2.4, 0.0) and not breakout_extension)
+        ):
+            rejection_reason = rejection_reason or "candle atual oferece baixa qualidade"
+
+        entry_score = sum(score_breakdown.values())
+        if low_volatility:
+            entry_score -= 1.0
+        if dead_range:
+            entry_score -= 1.4
+        if stretched_price:
+            entry_score -= 1.0
+        if late_entry:
+            entry_score -= 0.6
+        if rr_estimate < 1.0:
+            entry_score -= 0.7
+        if parabolic and setup_type == "reversal_controlled":
+            entry_score -= 1.2
+        if regime_name == "range" and setup_type == "continuation_breakout":
+            entry_score -= 1.3 if price_in_middle else 0.8
+
+        entry_score = round(float(max(0.0, min(10.0, entry_score))), 2)
         entry_quality = self._classify_entry_quality(
             rr_estimate=rr_estimate,
             quality_score=entry_score,
             late_entry=late_entry,
             stretched_price=stretched_price,
             price_in_middle=price_in_middle,
-            candle_is_acceptable=candle_is_acceptable,
+            candle_is_acceptable=candle_quality != "bad",
             structure_state=structure_state,
             low_volatility=low_volatility,
             dead_range=dead_range,
         )
+        if rejection_reason:
+            entry_quality = "bad"
+        elif entry_score >= 7.0:
+            entry_quality = "strong"
+        elif entry_score >= 4.0:
+            entry_quality = "acceptable"
+        else:
+            entry_quality = "bad"
+            rejection_reason = rejection_reason or "score de entrada insuficiente"
+
+        entry_reason = None
+        if entry_quality != "bad" and setup_type:
+            entry_reason = (
+                f"{setup_type} | candle {candle_quality} | momentum {momentum_state} | "
+                f"RSI {rsi_state} | score {entry_score:.2f}"
+            )
 
         notes = list(dict.fromkeys(str(note) for note in notes if note))
         conflicts = list(dict.fromkeys(str(conflict) for conflict in conflicts if conflict))
+        reason = rejection_reason or entry_reason or " | ".join((notes + conflicts)[:3]) or "Entrada sem contexto suficiente."
 
         evaluation = {
             "timeframe": current_timeframe,
+            "entry_signal": (
+                "long_candidate"
+                if entry_quality != "bad" and signal_side == "bullish"
+                else "short_candidate"
+                if entry_quality != "bad" and signal_side == "bearish"
+                else "wait"
+            ),
             "entry_quality": entry_quality,
             "rr_estimate": round(float(rr_estimate), 2),
             "entry_score": round(float(entry_score), 2),
+            "quality_score": round(float(entry_score), 2),
+            "setup_type": setup_type,
+            "entry_reason": entry_reason,
+            "rejection_reason": rejection_reason,
+            "rsi_state": rsi_state,
+            "structure_state": structure_state,
+            "candle_quality": candle_quality,
+            "momentum_state": momentum_state,
             "late_entry": bool(late_entry),
             "stretched_price": bool(stretched_price),
             "entry_in_middle": bool(price_in_middle),
-            "is_tradeable": entry_score >= 5.0 and entry_quality != "bad",
+            "is_tradeable": entry_quality != "bad",
             "has_minimum_history": True,
             "timestamp": pd.Timestamp(working_df.index[-1]).isoformat(),
             "stop_distance_pct": round(float(stop_distance_pct), 2),
             "target_distance_pct": round(float(target_distance_pct), 2),
-            "reason": " | ".join(notes[:3] + conflicts[:3]),
+            "reason": reason,
             "notes": notes,
             "conflicts": conflicts,
             "price_location": price_location,
-            "structure_state": structure_state,
-            "quality_score": round(float(entry_score), 2),
-            "candle_is_acceptable": bool(candle_is_acceptable or candle_score >= 0.8),
+            "candle_is_acceptable": candle_quality != "bad",
         }
         self._last_entry_quality_evaluation = evaluation
         return evaluation
+
+    def validate_entry_quality(
+        self,
+        df: Optional[pd.DataFrame],
+        market_bias: Optional[str] = None,
+        structure_state: Optional[str] = None,
+        regime_evaluation: Optional[Dict[str, object]] = None,
+        structure_evaluation: Optional[Dict[str, object]] = None,
+        signal_hypothesis: Optional[str] = None,
+        timeframe: Optional[str] = None,
+    ) -> Dict[str, object]:
+        # Compatibility wrapper kept for older call sites.
+        return self.evaluate_contextual_entry(
+            df,
+            market_bias=market_bias,
+            structure_state=structure_state,
+            regime_evaluation=regime_evaluation,
+            structure_evaluation=structure_evaluation,
+            signal_hypothesis=signal_hypothesis,
+            timeframe=timeframe,
+        )
+
 
     @staticmethod
     def _classify_entry_quality(
@@ -1682,20 +1969,19 @@ class TradingBot:
         structure_state = structure_state or "weak_structure"
         if dead_range or low_volatility:
             return "bad"
-        if late_entry and stretched_price and rr_estimate < 1.35:
+        if late_entry and stretched_price and rr_estimate < 1.20:
             return "bad"
         if (
-            quality_score >= 7.2
-            and rr_estimate >= 1.35
+            quality_score >= 7.0
+            and rr_estimate >= 1.10
             and not late_entry
-            and not stretched_price
             and candle_is_acceptable
-            and not price_in_middle
+            and not (stretched_price and rr_estimate < 1.35)
         ):
             return "strong"
         if (
-            quality_score >= 5.0
-            and rr_estimate >= 0.95
+            quality_score >= 4.0
+            and rr_estimate >= 0.90
             and structure_state in {"pullback", "continuation", "breakout", "reversal_risk"}
             and not (price_in_middle and structure_state not in {"breakout", "reversal_risk"})
         ):
@@ -1716,18 +2002,13 @@ class TradingBot:
         df: Optional[pd.DataFrame],
         signal_hypothesis: Optional[str] = None,
         timeframe: Optional[str] = None,
+        regime_evaluation: Optional[Dict[str, object]] = None,
         structure_evaluation: Optional[Dict[str, object]] = None,
         stop_loss_pct: Optional[float] = None,
         take_profit_pct: Optional[float] = None,
     ) -> Dict[str, object]:
-        working_df = df
+        working_df = self._prefer_closed_candles(df)
         if working_df is not None and not working_df.empty:
-            if "is_closed" in working_df.columns:
-                closed_df = working_df[working_df["is_closed"].fillna(False)]
-                if not closed_df.empty:
-                    working_df = closed_df
-                elif len(working_df) > 1:
-                    working_df = working_df.iloc[:-1]
             last_row = working_df.iloc[-1] if not working_df.empty else None
         else:
             last_row = None
@@ -1736,10 +2017,14 @@ class TradingBot:
             signal_hypothesis=signal_hypothesis,
             last_row=last_row,
         )
-        evaluation = self.validate_entry_quality(
+        evaluation = self.evaluate_contextual_entry(
             df,
             market_bias=market_bias,
+            regime_evaluation=regime_evaluation,
             structure_state=(structure_evaluation or {}).get("structure_state"),
+            structure_evaluation=structure_evaluation,
+            signal_hypothesis=signal_hypothesis,
+            timeframe=timeframe,
         )
         evaluation["timeframe"] = timeframe or self.timeframe
 
@@ -1771,6 +2056,12 @@ class TradingBot:
                 dead_range=bool(any("range sem direção" in str(item) for item in evaluation.get("conflicts", []))),
             )
             evaluation["is_tradeable"] = evaluation["entry_quality"] != "bad"
+            if evaluation["entry_quality"] == "bad":
+                evaluation["entry_signal"] = "wait"
+                evaluation["rejection_reason"] = evaluation.get("rejection_reason") or evaluation.get("reason")
+                evaluation["entry_reason"] = None
+            else:
+                evaluation["entry_signal"] = "long_candidate" if market_bias == "bullish" else "short_candidate"
 
         self._last_entry_quality_evaluation = evaluation
         return evaluation
@@ -1781,6 +2072,7 @@ class TradingBot:
         structure_result: Optional[Dict[str, object]],
         confirmation_result: Optional[Dict[str, object]],
         entry_result: Optional[Dict[str, object]],
+        regime_result: Optional[Dict[str, object]] = None,
     ) -> Dict[str, object]:
         def _clip_score(value: Optional[float]) -> float:
             return round(float(max(0.0, min(10.0, float(value or 0.0)))), 2)
@@ -1866,6 +2158,18 @@ class TradingBot:
                 "penalizado por componente fraco: " + ", ".join(weak_components)
             )
 
+        scenario_side = "neutral"
+        if context_result:
+            scenario_side = str(
+                context_result.get("market_bias")
+                or context_result.get("bias")
+                or scenario_side
+            )
+        if scenario_side not in {"bullish", "bearish"} and confirmation_result:
+            scenario_side = str(confirmation_result.get("hypothesis_side") or scenario_side)
+        if scenario_side not in {"bullish", "bearish"}:
+            scenario_side = "neutral"
+
         if (
             context_result
             and not context_result.get("is_tradeable", True)
@@ -1873,6 +2177,37 @@ class TradingBot:
         ):
             scenario_score -= 0.5
             notes.append("contexto nao operavel reduz a nota final")
+
+        if structure_result and structure_result.get("has_minimum_history", True):
+            price_location = str(structure_result.get("price_location") or "mid_range")
+            structure_state = str(structure_result.get("structure_state") or "weak_structure")
+            resistance_zone_distance = float(structure_result.get("resistance_zone_distance", 1.0) or 1.0)
+            support_zone_distance = float(structure_result.get("support_zone_distance", 1.0) or 1.0)
+            if scenario_side == "bullish" and price_location == "resistance" and structure_state != "breakout" and resistance_zone_distance > 0.06:
+                scenario_score -= 0.45
+                notes.append("resistencia proxima penaliza o cenario")
+            elif scenario_side == "bearish" and price_location == "support" and structure_state != "breakout" and support_zone_distance > 0.06:
+                scenario_score -= 0.45
+                notes.append("suporte proximo penaliza o cenario")
+
+        if regime_result and regime_result.get("has_minimum_history", True):
+            regime = str(regime_result.get("regime") or "range")
+            regime_score = float(regime_result.get("regime_score", 0.0) or 0.0)
+            volatility_state = str(regime_result.get("volatility_state") or "normal_volatility")
+            structure_state = str((structure_result or {}).get("structure_state") or "weak_structure")
+            confirmation_state = str((confirmation_result or {}).get("confirmation_state") or "weak")
+            if regime == "range" and structure_state in {"continuation", "pullback"}:
+                scenario_score -= 0.8
+                notes.append("regime lateral reduz confianca do setup")
+            if volatility_state == "low_volatility":
+                scenario_score -= 0.6
+                notes.append("volatilidade baixa reduz o edge do cenario")
+            elif volatility_state == "high_volatility" and structure_state not in {"breakout", "pullback"}:
+                scenario_score -= 0.35
+                notes.append("volatilidade alta exige estrutura mais limpa")
+            if regime_result.get("parabolic") and regime_score >= 7.0 and confirmation_state != "confirmed":
+                scenario_score -= 0.6
+                notes.append("regime parabolico penaliza reversao simples")
 
         scenario_score = _clip_score(scenario_score)
         if scenario_score >= 8.0:
@@ -1888,6 +2223,7 @@ class TradingBot:
             "scenario_score": scenario_score,
             "scenario_grade": scenario_grade,
             "score_breakdown": score_breakdown,
+            "regime": (regime_result or {}).get("regime"),
             "notes": list(dict.fromkeys(str(note) for note in notes if note)),
             "has_minimum_history": bool(available_components),
         }
@@ -1918,6 +2254,9 @@ class TradingBot:
 
         structure_state = str((structure_result or {}).get("structure_state") or "weak_structure")
         price_location = str((structure_result or {}).get("price_location") or "mid_range")
+        structure_quality = float((structure_result or {}).get("structure_quality", 0.0) or 0.0)
+        resistance_zone_distance = float((structure_result or {}).get("resistance_zone_distance", 1.0) or 1.0)
+        support_zone_distance = float((structure_result or {}).get("support_zone_distance", 1.0) or 1.0)
         confirmation_state = str((confirmation_result or {}).get("confirmation_state") or "weak")
         entry_quality = self._normalize_entry_quality_label((entry_result or {}).get("entry_quality"))
         structure_available = bool(structure_result) and bool((structure_result or {}).get("has_minimum_history", True))
@@ -1928,19 +2267,19 @@ class TradingBot:
         scenario_grade = str((scenario_score_result or {}).get("scenario_grade", "D") or "D").upper()
         against_market_bias = bool((structure_result or {}).get("against_market_bias", False))
 
-        setup_type = (
-            structure_state
-            if structure_available and structure_state in {"continuation", "pullback", "breakout"}
-            else None
-        )
+        setup_type = (entry_result or {}).get("setup_type")
+        if not setup_type:
+            setup_type = (
+                structure_state
+                if structure_available and structure_state in {"continuation", "pullback", "breakout"}
+                else None
+            )
         block_reason = None
 
         if hard_block_result and hard_block_result.get("hard_block"):
             block_reason = hard_block_result.get("block_reason") or "Hard block ativo."
         elif risk_result and not risk_result.get("allowed", True):
             block_reason = risk_result.get("reason") or "Risco operacional bloqueado."
-        elif context_result and not context_result.get("is_tradeable", True):
-            block_reason = context_result.get("reason") or "Contexto nao operavel."
         elif market_bias == "neutral":
             block_reason = "Vies de mercado neutro."
         elif structure_available and structure_state == "weak_structure":
@@ -1949,14 +2288,44 @@ class TradingBot:
             block_reason = (structure_result or {}).get("reason") or "Risco de reversao contra o vies."
         elif structure_available and structure_state not in {"continuation", "pullback", "breakout"}:
             block_reason = "Estrutura nao valida para entrada."
-        elif structure_available and market_bias == "bullish" and price_location == "resistance" and structure_state != "breakout":
+        elif (
+            structure_available
+            and market_bias == "bullish"
+            and price_location == "resistance"
+            and structure_state != "breakout"
+            and not (
+                structure_state in {"continuation", "pullback"}
+                and structure_quality >= 5.4
+                and resistance_zone_distance > 0.04
+                and scenario_score >= 5.8
+                and confirmation_state in {"confirmed", "mixed"}
+                and entry_quality in {"strong", "acceptable"}
+            )
+        ):
             block_reason = "Compra perto da resistencia sem rompimento."
-        elif structure_available and market_bias == "bearish" and price_location == "support" and structure_state != "breakout":
+        elif (
+            structure_available
+            and market_bias == "bearish"
+            and price_location == "support"
+            and structure_state != "breakout"
+            and not (
+                structure_state in {"continuation", "pullback"}
+                and structure_quality >= 5.4
+                and support_zone_distance > 0.04
+                and scenario_score >= 5.8
+                and confirmation_state in {"confirmed", "mixed"}
+                and entry_quality in {"strong", "acceptable"}
+            )
+        ):
             block_reason = "Venda perto do suporte sem rompimento."
         elif confirmation_available and confirmation_state == "weak":
             block_reason = (confirmation_result or {}).get("reason") or "Confirmacao tecnica fraca."
         elif entry_available and entry_quality == "bad":
-            block_reason = (entry_result or {}).get("reason") or "Qualidade de entrada ruim."
+            block_reason = (
+                (entry_result or {}).get("rejection_reason")
+                or (entry_result or {}).get("reason")
+                or "Qualidade de entrada ruim."
+            )
         elif scenario_available and (scenario_grade == "D" or scenario_score < 5.0):
             block_reason = "Score do cenario abaixo do minimo."
 
@@ -1993,13 +2362,16 @@ class TradingBot:
 
         action = "buy" if market_bias == "bullish" else "sell"
         entry_reason = (
-            f"{market_bias} {structure_state} | "
-            f"confirmacao {confirmation_state} | "
-            f"entrada {entry_quality} | "
-            f"score {scenario_score:.2f}"
+            (entry_result or {}).get("entry_reason")
+            or (
+                f"{setup_type or structure_state} | {market_bias} | "
+                f"confirmacao {confirmation_state} | "
+                f"entrada {entry_quality} | "
+                f"score {scenario_score:.2f}"
+            )
         )
         invalid_if = (
-            f"perder vies {market_bias} ou invalidar a estrutura {structure_state}"
+            f"perder vies {market_bias} ou invalidar o setup {setup_type or structure_state}"
         )
         decision = {
             "action": action,
@@ -2017,6 +2389,7 @@ class TradingBot:
         self,
         signal: str,
         context_evaluation: Optional[Dict[str, object]] = None,
+        regime_evaluation: Optional[Dict[str, object]] = None,
         structure_evaluation: Optional[Dict[str, object]] = None,
         confirmation_evaluation: Optional[Dict[str, object]] = None,
         entry_quality_evaluation: Optional[Dict[str, object]] = None,
@@ -2074,21 +2447,71 @@ class TradingBot:
             self._last_hard_block_evaluation = evaluation
             return evaluation
 
+        structure_state = None
+        structure_quality = 0.0
+        price_location = "mid_range"
+        if structure_evaluation and structure_evaluation.get("has_minimum_history"):
+            structure_state = structure_evaluation.get("structure_state", "weak_structure")
+            structure_quality = float(structure_evaluation.get("structure_quality", 0.0) or 0.0)
+            price_location = str(structure_evaluation.get("price_location", "mid_range") or "mid_range")
+
         if context_evaluation:
-            bias = context_evaluation.get("market_bias") or context_evaluation.get("bias")
-            if not context_evaluation.get("is_tradeable", True):
+            bias = context_evaluation.get("market_bias") or context_evaluation.get("bias") or "neutral"
+            context_strength = float(
+                context_evaluation.get("context_strength", context_evaluation.get("strength", 0.0) or 0.0) or 0.0
+            )
+            if not context_evaluation.get("is_tradeable", True) and bias in {"bullish", "bearish"} and context_strength < 3.5:
                 return block(
                     context_evaluation.get("reason") or "Contexto superior nao esta operavel.",
                     "higher_timeframe_context",
                     [context_evaluation.get("reason") or "contexto superior sem operabilidade"],
                 )
-            elif signal.startswith("COMPRA") and bias not in {"bullish"}:
+            elif signal.startswith("COMPRA") and bias == "bearish":
                 return block("Entrada contra o timeframe maior.", "higher_timeframe_conflict", ["contexto superior contra compra"])
-            elif signal.startswith("VENDA") and bias not in {"bearish"}:
+            elif signal.startswith("VENDA") and bias == "bullish":
                 return block("Entrada contra o timeframe maior.", "higher_timeframe_conflict", ["contexto superior contra venda"])
 
+        if regime_evaluation and regime_evaluation.get("has_minimum_history", True):
+            regime = str(regime_evaluation.get("regime") or "range")
+            regime_score = float(regime_evaluation.get("regime_score", 0.0) or 0.0)
+            volatility_state = str(regime_evaluation.get("volatility_state") or "normal_volatility")
+            parabolic = bool(regime_evaluation.get("parabolic", False))
+            confirmation_state = str((confirmation_evaluation or {}).get("confirmation_state") or "weak")
+            if (
+                signal.startswith("VENDA")
+                and regime == "trend_bull"
+                and regime_score >= (6.5 if parabolic else 7.2)
+                and structure_state != "reversal_risk"
+                and confirmation_state != "confirmed"
+            ):
+                return block(
+                    "Reversao simples contra regime bull.",
+                    "market_regime",
+                    list(regime_evaluation.get("notes", []) or []),
+                )
+            if (
+                signal.startswith("COMPRA")
+                and regime == "trend_bear"
+                and regime_score >= (6.5 if parabolic else 7.2)
+                and structure_state != "reversal_risk"
+                and confirmation_state != "confirmed"
+            ):
+                return block(
+                    "Reversao simples contra regime bear.",
+                    "market_regime",
+                    list(regime_evaluation.get("notes", []) or []),
+                )
+            if regime == "range" and volatility_state == "low_volatility":
+                if structure_state not in {"breakout"}:
+                    return block(
+                        "Mercado lateral sem edge suficiente.",
+                        "market_regime",
+                        list(regime_evaluation.get("notes", []) or []),
+                    )
+
         if market_regime == "ranging":
-            return block("Mercado lateral demais para operar.", "market_regime", ["regime lateral"])
+            if structure_state not in {"pullback", "continuation", "breakout"} or price_location == "mid_range":
+                return block("Mercado lateral demais para operar.", "market_regime", ["regime lateral"])
 
         if atr_pct is not None and not pd.isna(atr_pct):
             effective_min_atr_pct = min_atr_pct if min_atr_pct is not None else 0.12
@@ -2100,11 +2523,20 @@ class TradingBot:
                 )
 
         if require_trend and adx is not None and min_adx_threshold is not None and not pd.isna(adx):
-            if float(adx) < float(min_adx_threshold):
+            effective_min_adx = float(min_adx_threshold) * (
+                0.82 if structure_state in {"pullback", "continuation", "breakout"} and structure_quality >= 6.0 else 0.9
+            )
+            if float(adx) < effective_min_adx:
                 return block("ADX fraco; sem forca direcional suficiente.", "adx_floor", [f"adx {float(adx):.2f}"])
 
         if require_volume and volume_ratio is not None and min_volume_ratio is not None and not pd.isna(volume_ratio):
-            if float(volume_ratio) < float(min_volume_ratio):
+            effective_min_volume_ratio = max(
+                0.95,
+                float(min_volume_ratio) * (
+                    0.82 if structure_state in {"pullback", "continuation", "breakout"} and structure_quality >= 6.0 else 0.9
+                ),
+            )
+            if float(volume_ratio) < effective_min_volume_ratio:
                 return block(
                     "Volume muito fraco para validar a entrada.",
                     "volume_floor",
@@ -2112,8 +2544,6 @@ class TradingBot:
                 )
 
         if structure_evaluation and structure_evaluation.get("has_minimum_history"):
-            structure_state = structure_evaluation.get("structure_state", "weak_structure")
-            structure_quality = float(structure_evaluation.get("structure_quality", 0.0) or 0.0)
             reversal_risk = bool(structure_evaluation.get("reversal_risk", structure_state == "reversal_risk"))
             against_market_bias = bool(structure_evaluation.get("against_market_bias", reversal_risk))
             if structure_state == "weak_structure":
@@ -2128,7 +2558,7 @@ class TradingBot:
                     "price_structure",
                     structure_evaluation.get("notes", []),
                 )
-            elif structure_quality < 5.5:
+            elif structure_quality < (4.5 if structure_state in {"pullback", "continuation", "breakout"} and price_location == "trend_zone" else 4.8):
                 return block(
                     "Qualidade estrutural abaixo do minimo para operar.",
                     "price_structure_quality",
@@ -2149,10 +2579,11 @@ class TradingBot:
             entry_quality_label = self._normalize_entry_quality_label(entry_quality_evaluation.get("entry_quality"))
             if entry_quality_label == "bad":
                 conflicts = entry_quality_evaluation.get("conflicts", []) or []
+                rejection_reason = entry_quality_evaluation.get("rejection_reason")
                 return block(
-                    conflicts[0] if conflicts else (
+                    rejection_reason or (conflicts[0] if conflicts else (
                         entry_quality_evaluation.get("reason") or "Qualidade da entrada ruim."
-                    ),
+                    )),
                     "entry_quality",
                     list(conflicts) + list(entry_quality_evaluation.get("notes", []) or []),
                 )
@@ -2164,6 +2595,7 @@ class TradingBot:
         self,
         signal: str,
         context_evaluation: Optional[Dict[str, object]] = None,
+        regime_evaluation: Optional[Dict[str, object]] = None,
         structure_evaluation: Optional[Dict[str, object]] = None,
         confirmation_evaluation: Optional[Dict[str, object]] = None,
         entry_quality_evaluation: Optional[Dict[str, object]] = None,
@@ -2184,6 +2616,7 @@ class TradingBot:
         return self.check_hard_blocks(
             signal=signal,
             context_evaluation=context_evaluation,
+            regime_evaluation=regime_evaluation,
             structure_evaluation=structure_evaluation,
             confirmation_evaluation=confirmation_evaluation,
             entry_quality_evaluation=entry_quality_evaluation,
@@ -2213,13 +2646,10 @@ class TradingBot:
         if not context_evaluation:
             return signal
 
-        if not context_evaluation.get("is_tradeable", True):
+        bias = context_evaluation.get("market_bias") or context_evaluation.get("bias", "neutral")
+        if signal.startswith("COMPRA") and bias == "bearish":
             return "NEUTRO"
-
-        bias = context_evaluation.get("bias", "neutral")
-        if signal.startswith("COMPRA") and bias != "bullish":
-            return "NEUTRO"
-        if signal.startswith("VENDA") and bias != "bearish":
+        if signal.startswith("VENDA") and bias == "bullish":
             return "NEUTRO"
         return signal
 
@@ -2233,6 +2663,8 @@ class TradingBot:
         structure_state = structure_evaluation.get("structure_state", "weak_structure")
         price_location = structure_evaluation.get("price_location", "mid_range")
         structure_quality = float(structure_evaluation.get("structure_quality", 0.0) or 0.0)
+        resistance_zone_distance = float(structure_evaluation.get("resistance_zone_distance", 1.0) or 1.0)
+        support_zone_distance = float(structure_evaluation.get("support_zone_distance", 1.0) or 1.0)
         reversal_risk = bool(structure_evaluation.get("reversal_risk", structure_state == "reversal_risk"))
         against_market_bias = bool(structure_evaluation.get("against_market_bias", reversal_risk))
 
@@ -2240,11 +2672,18 @@ class TradingBot:
             return "NEUTRO"
         if reversal_risk and against_market_bias:
             return "NEUTRO"
-        if structure_quality < 5.5:
+        minimum_structure_quality = 4.8
+        if structure_state in {"pullback", "continuation", "breakout"} and price_location == "trend_zone":
+            minimum_structure_quality = 4.5
+        if structure_quality < minimum_structure_quality:
             return "NEUTRO"
         if signal.startswith("COMPRA") and price_location == "resistance" and structure_state != "breakout":
+            if structure_state in {"pullback", "continuation"} and structure_quality >= 5.4 and resistance_zone_distance > 0.04:
+                return "COMPRA_FRACA"
             return "NEUTRO"
         if signal.startswith("VENDA") and price_location == "support" and structure_state != "breakout":
+            if structure_state in {"pullback", "continuation"} and structure_quality >= 5.4 and support_zone_distance > 0.04:
+                return "VENDA_FRACA"
             return "NEUTRO"
         return signal
 
@@ -2377,6 +2816,7 @@ class TradingBot:
         self,
         signal: str,
         context_evaluation: Optional[Dict[str, object]] = None,
+        regime_evaluation: Optional[Dict[str, object]] = None,
         structure_evaluation: Optional[Dict[str, object]] = None,
         confirmation_evaluation: Optional[Dict[str, object]] = None,
         entry_quality_evaluation: Optional[Dict[str, object]] = None,
@@ -2394,6 +2834,7 @@ class TradingBot:
         hard_block_evaluation = self.check_hard_blocks(
             signal=signal,
             context_evaluation=context_evaluation,
+            regime_evaluation=regime_evaluation,
             structure_evaluation=structure_evaluation,
             confirmation_evaluation=confirmation_evaluation,
             entry_quality_evaluation=entry_quality_evaluation,
@@ -2512,6 +2953,9 @@ class TradingBot:
         df['sma_50'] = smas['sma_50']
         df['sma_200'] = smas['sma_200']
         df['sma_20'] = df['close'].rolling(window=20).mean()
+        df['ema_21'] = df['close'].ewm(span=21, adjust=False).mean()
+        df['ema_50'] = df['close'].ewm(span=50, adjust=False).mean()
+        df['ema_200'] = df['close'].ewm(span=200, adjust=False).mean()
 
         # MACD
         macd_data = self.indicators.calculate_macd(df['close'])
@@ -2846,6 +3290,41 @@ class TradingBot:
 
         return self.indicators.calculate_signal_confidence(indicators_dict)
 
+    def _get_effective_min_confidence(self, min_confidence: float, timeframe: Optional[str]) -> float:
+        current_timeframe = timeframe or self.timeframe or "5m"
+        if current_timeframe == "5m":
+            return float(max(68, min_confidence - 1))
+        if current_timeframe == "15m":
+            return float(max(66, min_confidence - 1))
+        if current_timeframe == "30m":
+            return float(max(60, min_confidence - 8))
+        if current_timeframe == "1h":
+            return float(max(60, min_confidence - 10))
+        return float(max(62, min_confidence - 1))
+
+    @staticmethod
+    def _relax_low_confidence_signal(
+        signal: str,
+        confidence: float,
+        effective_min_confidence: float,
+        timeframe: Optional[str],
+    ) -> Optional[str]:
+        current_timeframe = timeframe or "5m"
+        actionable_signals = {"COMPRA", "COMPRA_FRACA", "VENDA", "VENDA_FRACA"}
+        if signal not in actionable_signals:
+            return None
+        if current_timeframe not in {"30m", "1h"}:
+            return None
+        if confidence >= effective_min_confidence:
+            return signal
+        if signal == "COMPRA" and confidence >= effective_min_confidence - 4.0:
+            return "COMPRA_FRACA"
+        if signal == "VENDA" and confidence >= effective_min_confidence - 4.0:
+            return "VENDA_FRACA"
+        if signal in {"COMPRA_FRACA", "VENDA_FRACA"} and confidence >= effective_min_confidence - 3.0:
+            return signal
+        return None
+
     def _generate_basic_signal(self, row):
         """Basic signal generation for when SMAs are not available"""
         # RSI signals
@@ -2868,7 +3347,13 @@ class TradingBot:
         else:
             return "NEUTRO"
 
-    def _passes_signal_structure_guardrail(self, row, signal: str, timeframe: str) -> bool:
+    def _passes_signal_structure_guardrail(
+        self,
+        row,
+        signal: str,
+        timeframe: str,
+        structure_evaluation: Optional[Dict[str, object]] = None,
+    ) -> bool:
         """Reject weak entries when the closed candle structure conflicts with the signal side."""
         actionable_signals = {"COMPRA", "COMPRA_FRACA", "VENDA", "VENDA_FRACA"}
         if signal not in actionable_signals or row is None:
@@ -2891,39 +3376,68 @@ class TradingBot:
         close_location = (float(close_price) - float(low_price)) / candle_range
         is_short_term = timeframe in {"5m", "15m"}
         is_weak_signal = signal.endswith("_FRACA")
-        body_share_floor = 0.25 if is_short_term else 0.18
+        structure_state = str((structure_evaluation or {}).get("structure_state") or "")
+        structure_quality = float((structure_evaluation or {}).get("structure_quality", 0.0) or 0.0)
+        price_location = str((structure_evaluation or {}).get("price_location") or "mid_range")
+        supportive_structure = (
+            structure_state in {"continuation", "pullback", "breakout"}
+            and structure_quality >= 5.0
+        )
+        body_share_floor = 0.25 if is_short_term else 0.12
+        if supportive_structure and not is_short_term:
+            body_share_floor = 0.09
         if is_weak_signal:
-            body_share_floor += 0.05
+            body_share_floor += 0.05 if is_short_term else 0.02
         if body_share < body_share_floor:
             return False
 
         atr_value = row.get("atr", np.nan)
         if not pd.isna(atr_value) and float(atr_value) > 0:
-            min_body_vs_atr = 0.18 if is_short_term else 0.12
+            min_body_vs_atr = 0.18 if is_short_term else 0.06
+            if supportive_structure and not is_short_term:
+                min_body_vs_atr = 0.04
             if is_weak_signal:
-                min_body_vs_atr += 0.05
+                min_body_vs_atr += 0.05 if is_short_term else 0.02
             if body_size / float(atr_value) < min_body_vs_atr:
                 return False
 
         sma_21 = row.get("sma_21", np.nan)
-        macd_hist = row.get("macd_histogram", row.get("macd", 0) - row.get("macd_signal", 0))
-        di_plus = row.get("di_plus", np.nan)
-        di_minus = row.get("di_minus", np.nan)
-        di_gap_floor = 4.0 if is_short_term else 3.0
-        if is_weak_signal:
-            di_gap_floor += 1.0
-        max_distance_from_sma_atr = 2.4 if is_short_term else 2.8
+        max_distance_from_sma_atr = 2.4 if is_short_term else 3.6
+        if supportive_structure and not is_short_term:
+            max_distance_from_sma_atr = 4.2
+        range_vs_atr = (
+            candle_range / float(atr_value)
+            if not pd.isna(atr_value) and float(atr_value) > 0
+            else 1.0
+        )
+        adverse_wick = (
+            float(high_price) - max(float(open_price), float(close_price))
+            if signal.startswith("COMPRA")
+            else min(float(open_price), float(close_price)) - float(low_price)
+        )
+        adverse_wick_share = adverse_wick / candle_range if candle_range > 0 else 1.0
 
         if signal.startswith("COMPRA"):
-            if float(close_price) <= float(open_price):
+            allow_soft_close = (
+                not is_short_term
+                and supportive_structure
+                and price_location in {"trend_zone", "support", "resistance"}
+                and close_location >= 0.34
+                and body_share >= max(body_share_floor, 0.10)
+            )
+            if float(close_price) <= float(open_price) and not allow_soft_close and not (
+                not is_short_term and is_weak_signal and close_location >= 0.60 and body_share >= 0.18
+            ):
                 return False
-            if close_location < (0.58 if is_short_term else 0.55):
+            min_close_location = 0.58 if is_short_term else 0.40
+            if supportive_structure and not is_short_term:
+                min_close_location = 0.34
+            if close_location < min_close_location:
                 return False
-            if not pd.isna(macd_hist) and float(macd_hist) <= 0:
-                return False
-            if not pd.isna(sma_21) and float(close_price) < float(sma_21):
-                return False
-            if not pd.isna(di_plus) and not pd.isna(di_minus) and float(di_plus) < float(di_minus) + di_gap_floor:
+            max_adverse_wick = 0.82 if is_short_term else 0.78
+            if supportive_structure and not is_short_term:
+                max_adverse_wick = 0.84
+            if adverse_wick_share > max_adverse_wick:
                 return False
             if (
                 not pd.isna(sma_21)
@@ -2932,17 +3446,33 @@ class TradingBot:
                 and (float(close_price) - float(sma_21)) / float(atr_value) > max_distance_from_sma_atr
             ):
                 return False
+            max_range_vs_atr = 4.2 if is_short_term else 4.8
+            if supportive_structure and not is_short_term:
+                max_range_vs_atr = 5.4
+            if range_vs_atr > max_range_vs_atr and body_share < (0.42 if is_short_term else 0.28):
+                return False
             return True
 
-        if float(close_price) >= float(open_price):
+        allow_soft_close = (
+            not is_short_term
+            and supportive_structure
+            and price_location in {"trend_zone", "support", "resistance"}
+            and close_location <= 0.66
+            and body_share >= max(body_share_floor, 0.10)
+        )
+        if float(close_price) >= float(open_price) and not allow_soft_close and not (
+            not is_short_term and is_weak_signal and close_location <= 0.40 and body_share >= 0.18
+        ):
             return False
-        if close_location > (0.42 if is_short_term else 0.45):
+        max_close_location = 0.42 if is_short_term else 0.60
+        if supportive_structure and not is_short_term:
+            max_close_location = 0.66
+        if close_location > max_close_location:
             return False
-        if not pd.isna(macd_hist) and float(macd_hist) >= 0:
-            return False
-        if not pd.isna(sma_21) and float(close_price) > float(sma_21):
-            return False
-        if not pd.isna(di_plus) and not pd.isna(di_minus) and float(di_minus) < float(di_plus) + di_gap_floor:
+        max_adverse_wick = 0.82 if is_short_term else 0.78
+        if supportive_structure and not is_short_term:
+            max_adverse_wick = 0.84
+        if adverse_wick_share > max_adverse_wick:
             return False
         if (
             not pd.isna(sma_21)
@@ -2950,6 +3480,11 @@ class TradingBot:
             and float(atr_value) > 0
             and (float(sma_21) - float(close_price)) / float(atr_value) > max_distance_from_sma_atr
         ):
+            return False
+        max_range_vs_atr = 4.2 if is_short_term else 4.8
+        if supportive_structure and not is_short_term:
+            max_range_vs_atr = 5.4
+        if range_vs_atr > max_range_vs_atr and body_share < (0.42 if is_short_term else 0.28):
             return False
         return True
 
@@ -2972,12 +3507,7 @@ class TradingBot:
         self._last_signal_pipeline = None
         self._clear_hard_block()
 
-        if "is_closed" in df.columns:
-            closed_df = df[df["is_closed"].fillna(False)]
-            if not closed_df.empty:
-                df = closed_df
-            elif len(df) > 1:
-                df = df.iloc[:-1]
+        df = self._prefer_closed_candles(df)
 
         if df.empty:
             return self._set_hard_block("Sem candles fechados suficientes para operar.", "market_data")
@@ -2999,6 +3529,8 @@ class TradingBot:
         min_atr_floor_pct = 0.18 if current_timeframe in {"5m", "15m"} else 0.12 if current_timeframe in {"30m", "1h"} else 0.08
         market_regime = last_row.get('market_regime', 'trending')
         context_evaluation = None
+        regime_evaluation = self.evaluate_market_regime(df, timeframe=current_timeframe)
+        market_regime = regime_evaluation.get("legacy_regime", market_regime)
         structure_evaluation = None
         confirmation_evaluation = None
         entry_quality_evaluation = None
@@ -3029,16 +3561,20 @@ class TradingBot:
                 )
 
         structure_kwargs = {"timeframe": current_timeframe}
-        if context_evaluation:
+        if context_evaluation or regime_evaluation:
             try:
                 structure_signature = inspect.signature(self.get_price_structure_evaluation)
                 if "market_bias" in structure_signature.parameters:
-                    structure_kwargs["market_bias"] = context_evaluation.get("market_bias") or context_evaluation.get("bias")
+                    structure_kwargs["market_bias"] = (
+                        (context_evaluation or {}).get("market_bias")
+                        or (context_evaluation or {}).get("bias")
+                        or regime_evaluation.get("market_bias")
+                    )
             except (TypeError, ValueError):
                 pass
         structure_evaluation = self.get_price_structure_evaluation(df, **structure_kwargs)
 
-        if market_regime == 'ranging' and (avoid_ranging or current_timeframe in {"5m", "15m"}):
+        if market_regime == 'ranging' and current_timeframe in {"5m", "15m"}:
             return self._set_hard_block("Mercado lateral demais para operar.", "market_regime")
 
         if market_regime == 'volatile' and current_timeframe in {"5m", "15m"}:
@@ -3093,6 +3629,9 @@ class TradingBot:
                 min_confidence = max(min_confidence, 66)
                 min_volume_ratio = max(min_volume_ratio, 1.4)
                 min_adx_threshold = max(min_adx_threshold, 25)
+            elif current_timeframe in {"30m", "1h"}:
+                min_volume_ratio = max(1.0, min_volume_ratio * 0.85)
+                min_adx_threshold = max(20, min_adx_threshold * 0.85)
 
             logger.debug(
                 "Crypto otimizado - RSI: %s-%s, Conf: %s%%",
@@ -3118,6 +3657,10 @@ class TradingBot:
             volatility_threshold = 0.08
             min_adx_threshold = 18
 
+            if current_timeframe in {"30m", "1h"}:
+                min_volume_ratio = max(0.95, min_volume_ratio * 0.9)
+                min_adx_threshold = max(16, min_adx_threshold * 0.9)
+
             logger.debug(
                 "Configuracao padrao otimizada - RSI: %s-%s",
                 actual_rsi_min,
@@ -3132,9 +3675,9 @@ class TradingBot:
                 return self._set_hard_block("Volume muito fraco para validar a entrada.", "volume_floor")
 
         if require_trend and AppConfig.SIMPLE_TREND_SIGNAL_MODE:
-            if market_regime != "trending":
+            if current_timeframe in {"5m", "15m"} and market_regime != "trending":
                 return self._set_hard_block("Mercado sem tendencia suficiente para o setup.", "market_regime")
-            if avoid_ranging and market_regime == "ranging":
+            if avoid_ranging and current_timeframe in {"5m", "15m"} and market_regime == "ranging":
                 return self._set_hard_block("Mercado lateral demais para operar.", "market_regime")
             if last_row.get('adx', 0) < min_adx_threshold:
                 return self._set_hard_block("ADX fraco; sem forca direcional suficiente.", "adx_floor")
@@ -3146,24 +3689,23 @@ class TradingBot:
             if signal == "NEUTRO":
                 return self._set_hard_block("Indicadores base nao confirmam hipotese de entrada.", "signal_hypothesis")
 
-            effective_min_confidence = max(62, min_confidence - 1)
-            if current_timeframe == "5m" or self.timeframe == "5m":
-                effective_min_confidence = max(effective_min_confidence, 68)
-            elif current_timeframe == "15m":
-                effective_min_confidence = max(effective_min_confidence, 66)
-            elif current_timeframe in {"30m", "1h"}:
-                effective_min_confidence = max(effective_min_confidence, 63)
+            effective_min_confidence = self._get_effective_min_confidence(min_confidence, current_timeframe)
 
             confidence = self._calculate_signal_confidence(last_row)
             if confidence < effective_min_confidence:
-                return self._set_hard_block("Confianca insuficiente para validar a entrada.", "signal_confidence")
+                relaxed_signal = self._relax_low_confidence_signal(
+                    signal,
+                    confidence,
+                    effective_min_confidence,
+                    current_timeframe,
+                )
+                if relaxed_signal is None:
+                    return self._set_hard_block("Confianca insuficiente para validar a entrada.", "signal_confidence")
+                signal = relaxed_signal
 
             max_volatility = (volatility_threshold * 100) * 1.5
             if current_atr_pct > max_volatility:
                 return self._set_hard_block("ATR excessivo; mercado desordenado para entrada.", "atr_extreme")
-
-            if not self._passes_signal_structure_guardrail(last_row, signal, current_timeframe):
-                return self._set_hard_block("Candle atual nao e aceitavel para entrada.", "candle_quality")
 
             confirmation_evaluation = self.get_confirmation_evaluation(
                 df,
@@ -3176,6 +3718,7 @@ class TradingBot:
                 df,
                 signal_hypothesis=signal,
                 timeframe=current_timeframe,
+                regime_evaluation=regime_evaluation,
                 structure_evaluation=structure_evaluation,
                 stop_loss_pct=stop_loss_pct,
                 take_profit_pct=take_profit_pct,
@@ -3185,10 +3728,12 @@ class TradingBot:
                 structure_evaluation,
                 confirmation_evaluation,
                 entry_quality_evaluation,
+                regime_result=regime_evaluation,
             )
             return self._apply_signal_guardrails(
                 signal,
                 context_evaluation,
+                regime_evaluation,
                 structure_evaluation,
                 confirmation_evaluation,
                 entry_quality_evaluation,
@@ -3220,20 +3765,22 @@ class TradingBot:
             rsi_atual = last_row.get('rsi', 50)
             logger.info("Sinal %s: RSI %.1f | Confianca %.0f%%", signal, rsi_atual, confidence)
 
-        effective_min_confidence = max(62, min_confidence - 1)
-        if current_timeframe == "5m" or self.timeframe == "5m":
-            effective_min_confidence = max(effective_min_confidence, 68)
-        elif current_timeframe == "15m":
-            effective_min_confidence = max(effective_min_confidence, 66)
-        elif current_timeframe in {"30m", "1h"}:
-            effective_min_confidence = max(effective_min_confidence, 63)
+        effective_min_confidence = self._get_effective_min_confidence(min_confidence, current_timeframe)
         if confidence < effective_min_confidence:
-            logger.debug(
-                "Rejeitado por confianca baixa: %.1f%% < %s%%",
+            relaxed_signal = self._relax_low_confidence_signal(
+                signal,
                 confidence,
-                effective_min_confidence
+                effective_min_confidence,
+                current_timeframe,
             )
-            return self._set_hard_block("Confianca insuficiente para validar a entrada.", "signal_confidence")
+            if relaxed_signal is None:
+                logger.debug(
+                    "Rejeitado por confianca baixa: %.1f%% < %s%%",
+                    confidence,
+                    effective_min_confidence
+                )
+                return self._set_hard_block("Confianca insuficiente para validar a entrada.", "signal_confidence")
+            signal = relaxed_signal
 
         # Relaxed volatility check - crypto markets need volatility
         max_volatility = (volatility_threshold * 100) * 1.5
@@ -3282,10 +3829,6 @@ class TradingBot:
 
         self._last_candidate_signal = signal
 
-        if not self._passes_signal_structure_guardrail(last_row, signal, current_timeframe):
-            logger.debug("Guardrail estrutural bloqueou o sinal %s", signal)
-            return self._set_hard_block("Candle atual nao e aceitavel para entrada.", "candle_quality")
-
         confirmation_evaluation = self.get_confirmation_evaluation(
             df,
             signal_hypothesis=signal,
@@ -3297,6 +3840,7 @@ class TradingBot:
             df,
             signal_hypothesis=signal,
             timeframe=current_timeframe,
+            regime_evaluation=regime_evaluation,
             structure_evaluation=structure_evaluation,
             stop_loss_pct=stop_loss_pct,
             take_profit_pct=take_profit_pct,
@@ -3306,6 +3850,7 @@ class TradingBot:
             structure_evaluation,
             confirmation_evaluation,
             entry_quality_evaluation,
+            regime_result=regime_evaluation,
         )
 
         # Combine rule-based signal with advanced score for robust decision
@@ -3336,6 +3881,7 @@ class TradingBot:
                 return self._apply_signal_guardrails(
                     "COMPRA",
                     context_evaluation,
+                    regime_evaluation,
                     structure_evaluation,
                     confirmation_evaluation,
                     entry_quality_evaluation,
@@ -3354,6 +3900,7 @@ class TradingBot:
                 return self._apply_signal_guardrails(
                     "VENDA",
                     context_evaluation,
+                    regime_evaluation,
                     structure_evaluation,
                     confirmation_evaluation,
                     entry_quality_evaluation,
@@ -3373,6 +3920,7 @@ class TradingBot:
             return self._apply_signal_guardrails(
                 signal,
                 context_evaluation,
+                regime_evaluation,
                 structure_evaluation,
                 confirmation_evaluation,
                 entry_quality_evaluation,
@@ -3393,6 +3941,7 @@ class TradingBot:
             return self._apply_signal_guardrails(
                 'COMPRA_FRACA',
                 context_evaluation,
+                regime_evaluation,
                 structure_evaluation,
                 confirmation_evaluation,
                 entry_quality_evaluation,
@@ -3411,6 +3960,7 @@ class TradingBot:
             return self._apply_signal_guardrails(
                 'VENDA_FRACA',
                 context_evaluation,
+                regime_evaluation,
                 structure_evaluation,
                 confirmation_evaluation,
                 entry_quality_evaluation,
@@ -3447,6 +3997,7 @@ class TradingBot:
         return self._apply_signal_guardrails(
             signal,
             context_evaluation,
+            regime_evaluation,
             structure_evaluation,
             confirmation_evaluation,
             entry_quality_evaluation,
@@ -3616,12 +4167,7 @@ class TradingBot:
         if df is None or df.empty:
             return None
 
-        if "is_closed" in df.columns:
-            closed_df = df[df["is_closed"].fillna(False)]
-            if not closed_df.empty:
-                df = closed_df
-            elif len(df) > 1:
-                df = df.iloc[:-1]
+        df = self._prefer_closed_candles(df)
 
         if df.empty:
             return None

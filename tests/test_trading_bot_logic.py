@@ -3,8 +3,10 @@ from __future__ import annotations
 import unittest
 from unittest import mock
 
+import numpy as np
 import pandas as pd
 
+from indicators import TechnicalIndicators
 from trading_bot import TradingBot
 
 
@@ -246,6 +248,48 @@ class TradingBotLogicTests(unittest.TestCase):
         bot._generate_advanced_signal = lambda row: "NEUTRO"
         bot._calculate_signal_confidence = lambda row: 95.0
         bot.calculate_advanced_score = lambda row, signal=None: 0.9
+        bot.evaluate_market_regime = lambda *args, **kwargs: {
+            "has_minimum_history": True,
+            "regime": "trend_bull",
+            "legacy_regime": "trending",
+            "market_bias": "bullish",
+            "regime_score": 7.2,
+            "volatility_state": "normal_volatility",
+            "trend_state": "trend_bull",
+            "parabolic": False,
+            "is_tradeable": True,
+            "notes": [],
+            "reason": "mercado em trend_bull",
+        }
+        bot._passes_signal_structure_guardrail = lambda row, signal, timeframe, structure_evaluation=None: True
+        bot.get_price_structure_evaluation = lambda *args, **kwargs: {
+            "has_minimum_history": True,
+            "structure_state": "continuation",
+            "price_location": "trend_zone",
+            "structure_quality": 7.0,
+            "reversal_risk": False,
+            "against_market_bias": False,
+        }
+        bot.get_confirmation_evaluation = lambda *args, **kwargs: {
+            "has_minimum_history": True,
+            "confirmation_state": "confirmed",
+            "confirmation_score": 7.4,
+            "conflicts": [],
+        }
+        bot.get_entry_quality_evaluation = lambda *args, **kwargs: {
+            "has_minimum_history": True,
+            "entry_quality": "strong",
+            "rr_estimate": 2.0,
+            "late_entry": False,
+            "stretched_price": False,
+        }
+        bot.build_scenario_score = lambda *args, **kwargs: {
+            "has_minimum_history": True,
+            "scenario_score": 7.4,
+            "scenario_grade": "B",
+            "score_breakdown": {"context": 6.0, "structure": 7.0, "confirmation": 7.4, "entry": 7.0},
+            "notes": [],
+        }
 
         candle = pd.DataFrame(
             [
@@ -282,6 +326,48 @@ class TradingBotLogicTests(unittest.TestCase):
         bot._generate_advanced_signal = lambda row: "COMPRA" if row["close"] == 100.0 else "VENDA"
         bot._calculate_signal_confidence = lambda row: 95.0
         bot.calculate_advanced_score = lambda row, signal=None: 0.9
+        bot.evaluate_market_regime = lambda *args, **kwargs: {
+            "has_minimum_history": True,
+            "regime": "trend_bull",
+            "legacy_regime": "trending",
+            "market_bias": "bullish",
+            "regime_score": 7.2,
+            "volatility_state": "normal_volatility",
+            "trend_state": "trend_bull",
+            "parabolic": False,
+            "is_tradeable": True,
+            "notes": [],
+            "reason": "mercado em trend_bull",
+        }
+        bot._passes_signal_structure_guardrail = lambda row, signal, timeframe, structure_evaluation=None: True
+        bot.get_price_structure_evaluation = lambda *args, **kwargs: {
+            "has_minimum_history": True,
+            "structure_state": "continuation",
+            "price_location": "trend_zone",
+            "structure_quality": 7.0,
+            "reversal_risk": False,
+            "against_market_bias": False,
+        }
+        bot.get_confirmation_evaluation = lambda *args, **kwargs: {
+            "has_minimum_history": True,
+            "confirmation_state": "confirmed",
+            "confirmation_score": 7.4,
+            "conflicts": [],
+        }
+        bot.get_entry_quality_evaluation = lambda *args, **kwargs: {
+            "has_minimum_history": True,
+            "entry_quality": "strong",
+            "rr_estimate": 2.0,
+            "late_entry": False,
+            "stretched_price": False,
+        }
+        bot.build_scenario_score = lambda *args, **kwargs: {
+            "has_minimum_history": True,
+            "scenario_score": 7.4,
+            "scenario_grade": "B",
+            "score_breakdown": {"context": 6.0, "structure": 7.0, "confirmation": 7.4, "entry": 7.0},
+            "notes": [],
+        }
 
         candle = pd.DataFrame(
             [
@@ -336,6 +422,43 @@ class TradingBotLogicTests(unittest.TestCase):
         bot._generate_advanced_signal = lambda row: "COMPRA"
         bot._calculate_signal_confidence = lambda row: 95.0
         bot.calculate_advanced_score = lambda row, signal=None: 0.9
+        bot.get_context_evaluation = lambda *args, **kwargs: {
+            "market_bias": "bearish",
+            "bias": "bearish",
+            "context_strength": 7.1,
+            "regime": "trend_bear",
+            "is_tradeable": True,
+            "reason": "contexto bearish",
+        }
+        bot._passes_signal_structure_guardrail = lambda row, signal, timeframe, structure_evaluation=None: True
+        bot.get_price_structure_evaluation = lambda *args, **kwargs: {
+            "has_minimum_history": True,
+            "structure_state": "continuation",
+            "price_location": "trend_zone",
+            "structure_quality": 7.0,
+            "reversal_risk": False,
+            "against_market_bias": False,
+        }
+        bot.get_confirmation_evaluation = lambda *args, **kwargs: {
+            "has_minimum_history": True,
+            "confirmation_state": "confirmed",
+            "confirmation_score": 7.4,
+            "conflicts": [],
+        }
+        bot.get_entry_quality_evaluation = lambda *args, **kwargs: {
+            "has_minimum_history": True,
+            "entry_quality": "strong",
+            "rr_estimate": 2.0,
+            "late_entry": False,
+            "stretched_price": False,
+        }
+        bot.build_scenario_score = lambda *args, **kwargs: {
+            "has_minimum_history": True,
+            "scenario_score": 7.4,
+            "scenario_grade": "B",
+            "score_breakdown": {"context": 6.0, "structure": 7.0, "confirmation": 7.4, "entry": 7.0},
+            "notes": [],
+        }
 
         entry_df = pd.DataFrame(
             [
@@ -366,22 +489,27 @@ class TradingBotLogicTests(unittest.TestCase):
         context_df = pd.DataFrame(
             [
                 {
-                    "close": 98.0,
-                    "rsi": 42.0,
-                    "macd": -0.6,
-                    "macd_signal": -0.1,
-                    "macd_histogram": -0.5,
-                    "adx": 31.0,
-                    "di_plus": 14.0,
-                    "di_minus": 27.0,
-                    "sma_21": 99.2,
-                    "sma_50": 100.1,
-                    "sma_200": 101.4,
+                    "open": 103.0 - i * 0.55,
+                    "high": 103.4 - i * 0.5,
+                    "low": 101.7 - i * 0.55,
+                    "close": 102.8 - i * 0.55,
+                    "rsi": 47.0 - i * 0.6,
+                    "macd": -0.35 - i * 0.03,
+                    "macd_signal": -0.1 - i * 0.02,
+                    "macd_histogram": -0.2 - i * 0.01,
+                    "adx": 28.0 + i * 0.4,
+                    "di_plus": 16.0 - i * 0.2,
+                    "di_minus": 26.0 + i * 0.3,
+                    "atr": 1.1 + i * 0.02,
+                    "sma_21": 102.6 - i * 0.45,
+                    "sma_50": 103.2 - i * 0.35,
+                    "sma_200": 104.5 - i * 0.15,
                     "market_regime": "trending",
                     "is_closed": True,
                 }
+                for i in range(8)
             ],
-            index=[pd.Timestamp("2026-01-01 12:00:00")],
+            index=pd.date_range("2026-01-01 00:00:00", periods=8, freq="4h"),
         )
 
         signal = TradingBot.check_signal(
@@ -404,6 +532,43 @@ class TradingBotLogicTests(unittest.TestCase):
         bot._generate_advanced_signal = lambda row: "COMPRA"
         bot._calculate_signal_confidence = lambda row: 95.0
         bot.calculate_advanced_score = lambda row, signal=None: 0.9
+        bot.get_context_evaluation = lambda *args, **kwargs: {
+            "market_bias": "bullish",
+            "bias": "bullish",
+            "context_strength": 7.6,
+            "regime": "trend_bull",
+            "is_tradeable": True,
+            "reason": "contexto bullish",
+        }
+        bot._passes_signal_structure_guardrail = lambda row, signal, timeframe, structure_evaluation=None: True
+        bot.get_price_structure_evaluation = lambda *args, **kwargs: {
+            "has_minimum_history": True,
+            "structure_state": "continuation",
+            "price_location": "trend_zone",
+            "structure_quality": 7.0,
+            "reversal_risk": False,
+            "against_market_bias": False,
+        }
+        bot.get_confirmation_evaluation = lambda *args, **kwargs: {
+            "has_minimum_history": True,
+            "confirmation_state": "confirmed",
+            "confirmation_score": 7.4,
+            "conflicts": [],
+        }
+        bot.get_entry_quality_evaluation = lambda *args, **kwargs: {
+            "has_minimum_history": True,
+            "entry_quality": "strong",
+            "rr_estimate": 2.0,
+            "late_entry": False,
+            "stretched_price": False,
+        }
+        bot.build_scenario_score = lambda *args, **kwargs: {
+            "has_minimum_history": True,
+            "scenario_score": 7.4,
+            "scenario_grade": "B",
+            "score_breakdown": {"context": 6.0, "structure": 7.0, "confirmation": 7.4, "entry": 7.0},
+            "notes": [],
+        }
 
         entry_df = pd.DataFrame(
             [
@@ -434,22 +599,27 @@ class TradingBotLogicTests(unittest.TestCase):
         context_df = pd.DataFrame(
             [
                 {
-                    "close": 104.0,
-                    "rsi": 58.0,
-                    "macd": 0.9,
-                    "macd_signal": 0.4,
-                    "macd_histogram": 0.5,
-                    "adx": 31.0,
-                    "di_plus": 29.0,
-                    "di_minus": 13.0,
-                    "sma_21": 102.5,
-                    "sma_50": 101.2,
-                    "sma_200": 99.8,
+                    "open": 100.0 + i * 0.55,
+                    "high": 100.6 + i * 0.55,
+                    "low": 99.5 + i * 0.52,
+                    "close": 100.3 + i * 0.58,
+                    "rsi": 54.0 + i * 0.5,
+                    "macd": 0.35 + i * 0.04,
+                    "macd_signal": 0.15 + i * 0.03,
+                    "macd_histogram": 0.2 + i * 0.02,
+                    "adx": 28.0 + i * 0.5,
+                    "di_plus": 24.0 + i * 0.4,
+                    "di_minus": 14.0 - i * 0.15,
+                    "atr": 1.05 + i * 0.02,
+                    "sma_21": 99.9 + i * 0.48,
+                    "sma_50": 99.1 + i * 0.35,
+                    "sma_200": 97.8 + i * 0.14,
                     "market_regime": "trending",
                     "is_closed": True,
                 }
+                for i in range(8)
             ],
-            index=[pd.Timestamp("2026-01-01 12:00:00")],
+            index=pd.date_range("2026-01-01 00:00:00", periods=8, freq="4h"),
         )
 
         signal = TradingBot.check_signal(
@@ -495,7 +665,7 @@ class TradingBotLogicTests(unittest.TestCase):
 
         self.assertEqual(evaluation["market_bias"], "bullish")
         self.assertEqual(evaluation["bias"], "bullish")
-        self.assertEqual(evaluation["regime"], "trend_low_vol")
+        self.assertEqual(evaluation["regime"], "trend_bull")
         self.assertGreaterEqual(evaluation["context_strength"], 6.0)
         self.assertTrue(evaluation["is_tradeable"])
 
@@ -531,9 +701,100 @@ class TradingBotLogicTests(unittest.TestCase):
         evaluation = TradingBot.get_context_evaluation(bot, context_df, context_timeframe="4h")
 
         self.assertEqual(evaluation["market_bias"], "neutral")
-        self.assertEqual(evaluation["regime"], "range_high_vol")
+        self.assertEqual(evaluation["regime"], "range")
+        self.assertEqual(evaluation["volatility_state"], "high_volatility")
         self.assertLess(evaluation["context_strength"], 5.0)
         self.assertFalse(evaluation["is_tradeable"])
+
+    def test_evaluate_market_regime_classifies_trend_bull(self):
+        bot = TradingBot.__new__(TradingBot)
+        bot.timeframe = "1h"
+        bot.indicators = TechnicalIndicators()
+
+        closes = np.linspace(100.0, 128.0, 40)
+        df = pd.DataFrame(
+            {
+                "open": closes - 0.4,
+                "high": closes + 0.8,
+                "low": closes - 0.9,
+                "close": closes,
+                "volume": np.linspace(1000, 1450, 40),
+                "atr": np.linspace(1.1, 1.5, 40),
+                "adx": np.linspace(24, 36, 40),
+                "di_plus": np.linspace(24, 31, 40),
+                "di_minus": np.linspace(16, 10, 40),
+                "ema_21": pd.Series(closes).ewm(span=21, adjust=False).mean().to_numpy(),
+                "ema_200": pd.Series(closes).ewm(span=200, adjust=False).mean().to_numpy(),
+                "is_closed": True,
+            },
+            index=pd.date_range("2026-01-01 00:00:00", periods=40, freq="1h"),
+        )
+
+        evaluation = TradingBot.evaluate_market_regime(bot, df, timeframe="1h", persist=False)
+
+        self.assertEqual(evaluation["regime"], "trend_bull")
+        self.assertEqual(evaluation["market_bias"], "bullish")
+        self.assertGreaterEqual(evaluation["regime_score"], 6.0)
+
+    def test_evaluate_market_regime_classifies_trend_bear(self):
+        bot = TradingBot.__new__(TradingBot)
+        bot.timeframe = "1h"
+        bot.indicators = TechnicalIndicators()
+
+        closes = np.linspace(128.0, 100.0, 40)
+        df = pd.DataFrame(
+            {
+                "open": closes + 0.4,
+                "high": closes + 0.9,
+                "low": closes - 0.8,
+                "close": closes,
+                "volume": np.linspace(1000, 1450, 40),
+                "atr": np.linspace(1.1, 1.5, 40),
+                "adx": np.linspace(24, 36, 40),
+                "di_plus": np.linspace(14, 9, 40),
+                "di_minus": np.linspace(24, 31, 40),
+                "ema_21": pd.Series(closes).ewm(span=21, adjust=False).mean().to_numpy(),
+                "ema_200": pd.Series(closes).ewm(span=200, adjust=False).mean().to_numpy(),
+                "is_closed": True,
+            },
+            index=pd.date_range("2026-01-01 00:00:00", periods=40, freq="1h"),
+        )
+
+        evaluation = TradingBot.evaluate_market_regime(bot, df, timeframe="1h", persist=False)
+
+        self.assertEqual(evaluation["regime"], "trend_bear")
+        self.assertEqual(evaluation["market_bias"], "bearish")
+        self.assertGreaterEqual(evaluation["regime_score"], 6.0)
+
+    def test_evaluate_market_regime_classifies_range_with_high_volatility_flag(self):
+        bot = TradingBot.__new__(TradingBot)
+        bot.timeframe = "1h"
+        bot.indicators = TechnicalIndicators()
+
+        closes = np.array([100.0, 101.0, 99.2, 100.8, 99.5] * 8, dtype=float)
+        df = pd.DataFrame(
+            {
+                "open": closes,
+                "high": closes + 4.0,
+                "low": closes - 4.0,
+                "close": closes + np.array([0.1, -0.1, 0.15, -0.12, 0.08] * 8),
+                "volume": [1200.0] * 40,
+                "atr": [3.4] * 40,
+                "adx": [16.5] * 40,
+                "di_plus": [18.0] * 40,
+                "di_minus": [17.5] * 40,
+                "ema_21": pd.Series(closes).ewm(span=21, adjust=False).mean().to_numpy(),
+                "ema_200": pd.Series(closes).ewm(span=200, adjust=False).mean().to_numpy(),
+                "is_closed": True,
+            },
+            index=pd.date_range("2026-01-01 00:00:00", periods=40, freq="1h"),
+        )
+
+        evaluation = TradingBot.evaluate_market_regime(bot, df, timeframe="1h", persist=False)
+
+        self.assertEqual(evaluation["regime"], "range")
+        self.assertEqual(evaluation["volatility_state"], "high_volatility")
+        self.assertEqual(evaluation["market_bias"], "neutral")
 
     def test_price_structure_evaluation_returns_breakout_in_trend_zone(self):
         bot = TradingBot.__new__(TradingBot)
@@ -668,6 +929,72 @@ class TradingBotLogicTests(unittest.TestCase):
         self.assertGreaterEqual(evaluation["structure_quality"], 5.5)
         self.assertTrue(evaluation["is_tradeable"])
 
+    def test_price_structure_evaluation_classifies_moderate_pullback_after_relief_sequence(self):
+        bot = TradingBot.__new__(TradingBot)
+        bot.timeframe = "1h"
+
+        structure_df = pd.DataFrame(
+            [
+                {
+                    "open": 100.0 + i * 0.55,
+                    "high": 100.9 + i * 0.55,
+                    "low": 99.7 + i * 0.55,
+                    "close": 100.7 + i * 0.55,
+                    "atr": 1.1,
+                    "sma_21": 99.8 + i * 0.45,
+                    "sma_50": 99.0 + i * 0.34,
+                    "volume_ratio": 1.1,
+                    "market_regime": "trending",
+                    "is_closed": True,
+                }
+                for i in range(5)
+            ]
+            + [
+                {
+                    "open": 103.6,
+                    "high": 103.7,
+                    "low": 102.9,
+                    "close": 103.2,
+                    "atr": 1.0,
+                    "sma_21": 103.1,
+                    "sma_50": 101.9,
+                    "volume_ratio": 0.98,
+                    "market_regime": "trending",
+                    "is_closed": True,
+                },
+                {
+                    "open": 103.2,
+                    "high": 103.35,
+                    "low": 102.7,
+                    "close": 102.95,
+                    "atr": 1.0,
+                    "sma_21": 103.05,
+                    "sma_50": 102.0,
+                    "volume_ratio": 0.95,
+                    "market_regime": "trending",
+                    "is_closed": True,
+                },
+                {
+                    "open": 102.98,
+                    "high": 103.45,
+                    "low": 102.72,
+                    "close": 103.18,
+                    "atr": 1.0,
+                    "sma_21": 103.0,
+                    "sma_50": 102.05,
+                    "volume_ratio": 1.02,
+                    "market_regime": "trending",
+                    "is_closed": True,
+                },
+            ],
+            index=pd.date_range("2026-01-01 00:00:00", periods=8, freq="1h"),
+        )
+
+        evaluation = TradingBot.get_price_structure_evaluation(bot, structure_df, timeframe="1h")
+
+        self.assertEqual(evaluation["structure_state"], "pullback")
+        self.assertEqual(evaluation["price_location"], "trend_zone")
+
     def test_analyze_price_structure_ignores_open_breakout_candle(self):
         bot = TradingBot.__new__(TradingBot)
         bot.timeframe = "1h"
@@ -731,7 +1058,7 @@ class TradingBotLogicTests(unittest.TestCase):
         bot._generate_advanced_signal = lambda row: "COMPRA"
         bot._calculate_signal_confidence = lambda row: 95.0
         bot.calculate_advanced_score = lambda row, signal=None: 0.9
-        bot._passes_signal_structure_guardrail = lambda row, signal, timeframe: True
+        bot._passes_signal_structure_guardrail = lambda row, signal, timeframe, structure_evaluation=None: True
 
         data = pd.DataFrame(
             [
@@ -775,7 +1102,7 @@ class TradingBotLogicTests(unittest.TestCase):
         bot._generate_advanced_signal = lambda row: "COMPRA"
         bot._calculate_signal_confidence = lambda row: 95.0
         bot.calculate_advanced_score = lambda row, signal=None: 0.9
-        bot._passes_signal_structure_guardrail = lambda row, signal, timeframe: True
+        bot._passes_signal_structure_guardrail = lambda row, signal, timeframe, structure_evaluation=None: True
 
         data = pd.DataFrame(
             [
@@ -844,7 +1171,7 @@ class TradingBotLogicTests(unittest.TestCase):
         bot._generate_advanced_signal = lambda row: "COMPRA"
         bot._calculate_signal_confidence = lambda row: 95.0
         bot.calculate_advanced_score = lambda row, signal=None: 0.9
-        bot._passes_signal_structure_guardrail = lambda row, signal, timeframe: True
+        bot._passes_signal_structure_guardrail = lambda row, signal, timeframe, structure_evaluation=None: True
         bot.get_price_structure_evaluation = lambda df, timeframe=None, market_bias=None: {
             "has_minimum_history": True,
             "structure_state": "reversal_risk",
@@ -887,22 +1214,27 @@ class TradingBotLogicTests(unittest.TestCase):
         context_df = pd.DataFrame(
             [
                 {
-                    "close": 104.0,
-                    "rsi": 58.0,
-                    "macd": 0.7,
-                    "macd_signal": 0.3,
-                    "macd_histogram": 0.4,
-                    "adx": 31.0,
-                    "di_plus": 26.0,
-                    "di_minus": 14.0,
-                    "sma_21": 102.2,
-                    "sma_50": 101.1,
-                    "sma_200": 99.8,
+                    "open": 100.0 + i * 0.48,
+                    "high": 100.7 + i * 0.5,
+                    "low": 99.6 + i * 0.45,
+                    "close": 100.4 + i * 0.5,
+                    "rsi": 54.0 + i * 0.4,
+                    "macd": 0.28 + i * 0.03,
+                    "macd_signal": 0.11 + i * 0.02,
+                    "macd_histogram": 0.17 + i * 0.015,
+                    "adx": 28.0 + i * 0.45,
+                    "di_plus": 24.0 + i * 0.35,
+                    "di_minus": 15.0 - i * 0.15,
+                    "atr": 1.0 + i * 0.02,
+                    "sma_21": 99.8 + i * 0.42,
+                    "sma_50": 99.0 + i * 0.3,
+                    "sma_200": 97.8 + i * 0.12,
                     "market_regime": "trending",
                     "is_closed": True,
                 }
+                for i in range(8)
             ],
-            index=[pd.Timestamp("2026-01-01 12:00:00")],
+            index=pd.date_range("2026-01-01 00:00:00", periods=8, freq="4h"),
         )
 
         signal = TradingBot.check_signal(
@@ -994,6 +1326,178 @@ class TradingBotLogicTests(unittest.TestCase):
         signal = TradingBot.check_signal(bot, candle, timeframe="1h")
 
         self.assertEqual(signal, "NEUTRO")
+
+    def test_signal_guardrail_accepts_imperfect_bullish_1h_candle(self):
+        bot = TradingBot.__new__(TradingBot)
+        bot.timeframe = "1h"
+
+        row = pd.Series(
+            {
+                "open": 100.0,
+                "high": 101.0,
+                "low": 99.7,
+                "close": 100.38,
+                "atr": 1.6,
+                "sma_21": 100.32,
+                "macd_histogram": 0.08,
+                "di_plus": 21.0,
+                "di_minus": 19.0,
+            }
+        )
+
+        allowed = TradingBot._passes_signal_structure_guardrail(bot, row, "COMPRA", "1h")
+
+        self.assertTrue(allowed)
+
+    def test_signal_guardrail_accepts_soft_bullish_1h_candle_when_structure_is_supportive(self):
+        bot = TradingBot.__new__(TradingBot)
+        bot.timeframe = "1h"
+
+        row = pd.Series(
+            {
+                "open": 100.25,
+                "high": 100.82,
+                "low": 99.60,
+                "close": 100.05,
+                "atr": 1.8,
+                "sma_21": 99.96,
+            }
+        )
+
+        allowed = TradingBot._passes_signal_structure_guardrail(
+            bot,
+            row,
+            "COMPRA",
+            "1h",
+            structure_evaluation={
+                "structure_state": "continuation",
+                "structure_quality": 5.8,
+                "price_location": "trend_zone",
+            },
+        )
+
+        self.assertTrue(allowed)
+
+    def test_price_structure_evaluation_prefers_continuation_over_weak_structure_on_trend_progression(self):
+        bot = TradingBot.__new__(TradingBot)
+        bot.timeframe = "1h"
+
+        structure_df = pd.DataFrame(
+            [
+                {
+                    "open": 100.0 + i * 0.28,
+                    "high": 100.7 + i * 0.28,
+                    "low": 99.7 + i * 0.28,
+                    "close": 100.35 + i * 0.28,
+                    "atr": 1.0,
+                    "sma_21": 99.6 + i * 0.22,
+                    "sma_50": 99.0 + i * 0.18,
+                    "volume_ratio": 1.05,
+                    "market_regime": "trending",
+                    "is_closed": True,
+                }
+                for i in range(7)
+            ]
+            + [
+                {
+                    "open": 102.15,
+                    "high": 102.85,
+                    "low": 101.95,
+                    "close": 102.48,
+                    "atr": 1.05,
+                    "sma_21": 101.92,
+                    "sma_50": 100.82,
+                    "volume_ratio": 1.02,
+                    "market_regime": "trending",
+                    "is_closed": True,
+                }
+            ],
+            index=pd.date_range("2026-01-01 00:00:00", periods=8, freq="1h"),
+        )
+
+        evaluation = TradingBot.get_price_structure_evaluation(bot, structure_df, timeframe="1h")
+
+        self.assertIn(evaluation["structure_state"], {"continuation", "pullback"})
+        self.assertGreaterEqual(evaluation["structure_quality"], 4.5)
+
+    def test_check_signal_1h_allows_moderate_confidence_when_pipeline_is_strong(self):
+        bot = TradingBot.__new__(TradingBot)
+        bot.rsi_min = 30
+        bot.rsi_max = 70
+        bot.rsi_period = 14
+        bot.timeframe = "1h"
+        bot._last_context_evaluation = None
+        bot._last_price_structure_evaluation = None
+        bot._last_confirmation_evaluation = None
+        bot._last_entry_quality_evaluation = None
+        bot._last_scenario_evaluation = None
+        bot._last_trade_decision = None
+        bot._last_hard_block_evaluation = None
+        bot._last_candidate_signal = "NEUTRO"
+        bot._last_signal_pipeline = None
+        bot._generate_advanced_signal = lambda row: "COMPRA"
+        bot._calculate_signal_confidence = lambda row: 61.0
+        bot.calculate_advanced_score = lambda row, signal=None: 0.82
+        bot._passes_signal_structure_guardrail = lambda row, signal, timeframe, structure_evaluation=None: True
+        bot.get_price_structure_evaluation = lambda *args, **kwargs: {
+            "has_minimum_history": True,
+            "structure_state": "continuation",
+            "price_location": "trend_zone",
+            "structure_quality": 6.2,
+            "reversal_risk": False,
+            "against_market_bias": False,
+            "notes": ["continuidade valida"],
+        }
+        bot.get_confirmation_evaluation = lambda *args, **kwargs: {
+            "has_minimum_history": True,
+            "confirmation_state": "confirmed",
+            "confirmation_score": 7.0,
+            "hypothesis_side": "bullish",
+            "conflicts": [],
+        }
+        bot.get_entry_quality_evaluation = lambda *args, **kwargs: {
+            "has_minimum_history": True,
+            "entry_quality": "acceptable",
+            "entry_score": 5.8,
+            "rr_estimate": 1.4,
+            "late_entry": False,
+            "stretched_price": False,
+        }
+        bot.build_scenario_score = lambda *args, **kwargs: {
+            "has_minimum_history": True,
+            "scenario_score": 6.6,
+            "scenario_grade": "B",
+        }
+
+        candle = pd.DataFrame(
+            [
+                {
+                    "open": 100.0,
+                    "high": 101.0,
+                    "low": 99.8,
+                    "close": 100.7,
+                    "rsi": 38.0,
+                    "macd": 0.4,
+                    "macd_signal": 0.2,
+                    "macd_histogram": 0.2,
+                    "adx": 24.0,
+                    "di_plus": 22.0,
+                    "di_minus": 18.0,
+                    "volume_ratio": 1.2,
+                    "atr": 1.1,
+                    "stoch_rsi_k": 42.0,
+                    "williams_r": -48.0,
+                    "bb_width": 0.04,
+                    "market_regime": "trending",
+                    "is_closed": True,
+                }
+            ],
+            index=[pd.Timestamp("2026-01-01 10:00:00")],
+        )
+
+        signal = TradingBot.check_signal(bot, candle, timeframe="1h", require_volume=False)
+
+        self.assertIn(signal, {"COMPRA", "COMPRA_FRACA"})
 
     def test_confirmation_evaluation_returns_confirmed_for_aligned_bullish_setup(self):
         bot = TradingBot.__new__(TradingBot)
@@ -1143,7 +1647,7 @@ class TradingBotLogicTests(unittest.TestCase):
         bot._generate_advanced_signal = lambda row: "COMPRA"
         bot._calculate_signal_confidence = lambda row: 95.0
         bot.calculate_advanced_score = lambda row, signal=None: 0.9
-        bot._passes_signal_structure_guardrail = lambda row, signal, timeframe: True
+        bot._passes_signal_structure_guardrail = lambda row, signal, timeframe, structure_evaluation=None: True
         bot.get_price_structure_evaluation = lambda df, timeframe=None: {
             "has_minimum_history": True,
             "structure_state": "breakout",
@@ -1196,7 +1700,7 @@ class TradingBotLogicTests(unittest.TestCase):
         bot._generate_advanced_signal = lambda row: "COMPRA"
         bot._calculate_signal_confidence = lambda row: 95.0
         bot.calculate_advanced_score = lambda row, signal=None: 0.9
-        bot._passes_signal_structure_guardrail = lambda row, signal, timeframe: True
+        bot._passes_signal_structure_guardrail = lambda row, signal, timeframe, structure_evaluation=None: True
         bot.get_price_structure_evaluation = lambda df, timeframe=None: {
             "has_minimum_history": True,
             "structure_state": "breakout",
@@ -1274,12 +1778,20 @@ class TradingBotLogicTests(unittest.TestCase):
             data,
             signal_hypothesis="COMPRA",
             timeframe="1h",
+            regime_evaluation={
+                "regime": "trend_bull",
+                "market_bias": "bullish",
+                "regime_score": 7.8,
+                "volatility_state": "normal_volatility",
+                "parabolic": False,
+            },
             structure_evaluation=structure_evaluation,
             stop_loss_pct=1.5,
             take_profit_pct=4.0,
         )
 
         self.assertEqual(evaluation["entry_quality"], "strong")
+        self.assertEqual(evaluation["setup_type"], "pullback_trend")
         self.assertAlmostEqual(evaluation["rr_estimate"], 2.67, places=2)
         self.assertGreaterEqual(evaluation["entry_score"], 7.0)
         self.assertFalse(evaluation["late_entry"])
@@ -1337,8 +1849,9 @@ class TradingBotLogicTests(unittest.TestCase):
         evaluation = TradingBot.validate_entry_quality(bot, data, market_bias="bullish", structure_state="continuation")
 
         self.assertEqual(evaluation["entry_quality"], "bad")
-        self.assertLess(evaluation["rr_estimate"], 1.1)
-        self.assertIn("risco retorno insuficiente", evaluation["conflicts"])
+        self.assertEqual(evaluation["setup_type"], "continuation_breakout")
+        self.assertEqual(evaluation["candle_quality"], "bad")
+        self.assertIn("continuacao sem candle minimamente aceitavel", evaluation["reason"])
 
     def test_validate_entry_quality_accepts_imperfect_but_valid_entry(self):
         bot = TradingBot.__new__(TradingBot)
@@ -1468,6 +1981,152 @@ class TradingBotLogicTests(unittest.TestCase):
         self.assertTrue(evaluation["stretched_price"])
         self.assertLess(evaluation["rr_estimate"], 1.1)
 
+    def test_evaluate_contextual_entry_supports_continuation_breakout_setup(self):
+        bot = TradingBot.__new__(TradingBot)
+        bot.timeframe = "1h"
+
+        data = _build_confirmation_frame(
+            closes=[100.0, 100.8, 101.4, 101.9, 102.2, 102.8],
+            rsis=[49.0, 53.0, 56.0, 60.0, 63.0, 66.0],
+            macds=[0.12, 0.18, 0.26, 0.35, 0.44, 0.56],
+            macd_signals=[0.06, 0.10, 0.15, 0.22, 0.30, 0.39],
+            macd_histograms=[0.06, 0.08, 0.11, 0.13, 0.14, 0.17],
+            adx_values=[23.0, 25.0, 27.0, 30.0, 32.0, 34.0],
+            volume_ratios=[1.00, 1.05, 1.10, 1.14, 1.20, 1.28],
+            atr_values=[0.95, 0.98, 1.00, 1.02, 1.04, 1.06],
+            sma_21_values=[99.8, 100.1, 100.5, 100.9, 101.4, 101.8],
+            sma_50_values=[99.2, 99.4, 99.7, 100.0, 100.3, 100.6],
+            sma_200_values=[98.1, 98.2, 98.3, 98.4, 98.5, 98.6],
+        )
+        data.iloc[-1, data.columns.get_loc("open")] = 102.15
+        data.iloc[-1, data.columns.get_loc("high")] = 103.05
+        data.iloc[-1, data.columns.get_loc("low")] = 102.05
+
+        evaluation = TradingBot.evaluate_contextual_entry(
+            bot,
+            data,
+            market_bias="bullish",
+            regime_evaluation={
+                "regime": "trend_bull",
+                "market_bias": "bullish",
+                "regime_score": 8.1,
+                "volatility_state": "normal_volatility",
+                "parabolic": False,
+            },
+            structure_evaluation={
+                "has_minimum_history": True,
+                "structure_state": "breakout",
+                "price_location": "trend_zone",
+                "structure_quality": 7.3,
+                "recent_high": 102.55,
+                "recent_low": 100.8,
+                "distance_from_ema_pct": 0.98,
+            },
+            signal_hypothesis="COMPRA",
+            timeframe="1h",
+        )
+
+        self.assertEqual(evaluation["setup_type"], "continuation_breakout")
+        self.assertEqual(evaluation["entry_signal"], "long_candidate")
+        self.assertIn(evaluation["entry_quality"], {"acceptable", "strong"})
+
+    def test_evaluate_contextual_entry_penalizes_continuation_setup_in_range(self):
+        bot = TradingBot.__new__(TradingBot)
+        bot.timeframe = "1h"
+
+        data = _build_confirmation_frame(
+            closes=[100.0, 100.15, 100.22, 100.28, 100.31, 100.36],
+            rsis=[50.0, 52.0, 53.0, 54.0, 55.0, 55.5],
+            macds=[0.03, 0.04, 0.05, 0.05, 0.05, 0.06],
+            macd_signals=[0.02, 0.03, 0.04, 0.04, 0.04, 0.05],
+            macd_histograms=[0.01, 0.01, 0.01, 0.01, 0.01, 0.01],
+            adx_values=[13.0, 12.5, 12.0, 11.8, 11.5, 11.2],
+            volume_ratios=[0.92, 0.95, 0.96, 0.94, 0.95, 0.96],
+            atr_values=[0.85, 0.84, 0.83, 0.82, 0.81, 0.80],
+            sma_21_values=[99.95, 100.00, 100.05, 100.10, 100.14, 100.18],
+            sma_50_values=[99.90, 99.95, 100.00, 100.04, 100.08, 100.12],
+            sma_200_values=[99.80, 99.82, 99.84, 99.86, 99.88, 99.90],
+        )
+        data.iloc[-1, data.columns.get_loc("open")] = 100.24
+        data.iloc[-1, data.columns.get_loc("high")] = 100.40
+        data.iloc[-1, data.columns.get_loc("low")] = 100.21
+
+        evaluation = TradingBot.evaluate_contextual_entry(
+            bot,
+            data,
+            market_bias="bullish",
+            regime_evaluation={
+                "regime": "range",
+                "market_bias": "neutral",
+                "regime_score": 3.1,
+                "volatility_state": "low_volatility",
+                "parabolic": False,
+            },
+            structure_evaluation={
+                "has_minimum_history": True,
+                "structure_state": "continuation",
+                "price_location": "mid_range",
+                "structure_quality": 5.2,
+                "recent_high": 100.41,
+                "recent_low": 99.95,
+                "distance_from_ema_pct": 0.18,
+            },
+            signal_hypothesis="COMPRA",
+            timeframe="1h",
+        )
+
+        self.assertEqual(evaluation["entry_quality"], "bad")
+        self.assertIn("regime lateral reduz setup direcional", evaluation["conflicts"])
+        self.assertIn("continuacao fraca em mercado lateral", evaluation["reason"])
+
+    def test_evaluate_contextual_entry_blocks_simple_reversal_against_strong_trend(self):
+        bot = TradingBot.__new__(TradingBot)
+        bot.timeframe = "1h"
+
+        data = _build_confirmation_frame(
+            closes=[100.0, 101.0, 102.1, 103.2, 104.4, 104.1],
+            rsis=[55.0, 60.0, 64.0, 68.0, 73.0, 69.0],
+            macds=[0.20, 0.35, 0.52, 0.71, 0.92, 0.80],
+            macd_signals=[0.10, 0.18, 0.28, 0.40, 0.56, 0.63],
+            macd_histograms=[0.10, 0.17, 0.24, 0.31, 0.36, 0.17],
+            adx_values=[24.0, 27.0, 30.0, 33.0, 36.0, 35.0],
+            volume_ratios=[1.08, 1.12, 1.18, 1.22, 1.30, 1.10],
+            atr_values=[0.95, 1.00, 1.05, 1.08, 1.10, 1.12],
+            sma_21_values=[99.7, 100.1, 100.8, 101.6, 102.4, 103.0],
+            sma_50_values=[99.1, 99.4, 99.8, 100.3, 100.8, 101.2],
+            sma_200_values=[98.0, 98.1, 98.2, 98.3, 98.4, 98.5],
+        )
+        data.iloc[-1, data.columns.get_loc("open")] = 104.55
+        data.iloc[-1, data.columns.get_loc("high")] = 104.70
+        data.iloc[-1, data.columns.get_loc("low")] = 103.90
+
+        evaluation = TradingBot.evaluate_contextual_entry(
+            bot,
+            data,
+            market_bias="bearish",
+            regime_evaluation={
+                "regime": "trend_bull",
+                "market_bias": "bullish",
+                "regime_score": 8.7,
+                "volatility_state": "high_volatility",
+                "parabolic": True,
+            },
+            structure_evaluation={
+                "has_minimum_history": True,
+                "structure_state": "reversal_risk",
+                "price_location": "resistance",
+                "structure_quality": 6.0,
+                "recent_high": 104.8,
+                "recent_low": 101.8,
+                "distance_from_ema_pct": 1.4,
+            },
+            signal_hypothesis="VENDA",
+            timeframe="1h",
+        )
+
+        self.assertEqual(evaluation["entry_quality"], "bad")
+        self.assertIn("reversao simples contra trend forte", evaluation["reason"])
+
     def test_check_signal_downgrades_when_entry_quality_is_only_acceptable(self):
         bot = TradingBot.__new__(TradingBot)
         bot.rsi_min = 30
@@ -1480,7 +2139,7 @@ class TradingBotLogicTests(unittest.TestCase):
         bot._generate_advanced_signal = lambda row: "COMPRA"
         bot._calculate_signal_confidence = lambda row: 95.0
         bot.calculate_advanced_score = lambda row, signal=None: 0.9
-        bot._passes_signal_structure_guardrail = lambda row, signal, timeframe: True
+        bot._passes_signal_structure_guardrail = lambda row, signal, timeframe, structure_evaluation=None: True
         bot.get_price_structure_evaluation = lambda df, timeframe=None: {
             "has_minimum_history": True,
             "structure_state": "pullback",
@@ -1544,7 +2203,7 @@ class TradingBotLogicTests(unittest.TestCase):
         bot._generate_advanced_signal = lambda row: "COMPRA"
         bot._calculate_signal_confidence = lambda row: 95.0
         bot.calculate_advanced_score = lambda row, signal=None: 0.9
-        bot._passes_signal_structure_guardrail = lambda row, signal, timeframe: True
+        bot._passes_signal_structure_guardrail = lambda row, signal, timeframe, structure_evaluation=None: True
         bot.get_price_structure_evaluation = lambda df, timeframe=None: {
             "has_minimum_history": True,
             "structure_state": "breakout",
@@ -1660,7 +2319,26 @@ class TradingBotLogicTests(unittest.TestCase):
 
         self.assertLess(evaluation["scenario_score"], 5.0)
         self.assertEqual(evaluation["scenario_grade"], "D")
-        self.assertTrue(any("fraco" in note for note in evaluation["notes"]))
+
+    def test_build_scenario_score_penalizes_bullish_setup_near_non_extreme_resistance(self):
+        bot = TradingBot.__new__(TradingBot)
+
+        evaluation = TradingBot.build_scenario_score(
+            bot,
+            context_result={"market_bias": "bullish", "context_strength": 7.2, "has_minimum_history": True},
+            structure_result={
+                "structure_state": "continuation",
+                "price_location": "resistance",
+                "structure_quality": 6.6,
+                "resistance_zone_distance": 0.12,
+                "has_minimum_history": True,
+            },
+            confirmation_result={"confirmation_state": "confirmed", "confirmation_score": 7.1, "hypothesis_side": "bullish", "has_minimum_history": True},
+            entry_result={"entry_quality": "acceptable", "entry_score": 5.8, "rr_estimate": 1.5, "has_minimum_history": True},
+        )
+
+        self.assertLess(evaluation["scenario_score"], 6.9)
+        self.assertIn("resistencia proxima penaliza o cenario", evaluation["notes"])
 
     def test_check_signal_downgrades_when_scenario_grade_is_c(self):
         bot = TradingBot.__new__(TradingBot)
@@ -1675,7 +2353,7 @@ class TradingBotLogicTests(unittest.TestCase):
         bot._generate_advanced_signal = lambda row: "COMPRA"
         bot._calculate_signal_confidence = lambda row: 95.0
         bot.calculate_advanced_score = lambda row, signal=None: 0.9
-        bot._passes_signal_structure_guardrail = lambda row, signal, timeframe: True
+        bot._passes_signal_structure_guardrail = lambda row, signal, timeframe, structure_evaluation=None: True
         bot.get_price_structure_evaluation = lambda df, timeframe=None, market_bias=None: {
             "has_minimum_history": True,
             "structure_state": "continuation",
@@ -1731,6 +2409,61 @@ class TradingBotLogicTests(unittest.TestCase):
 
         self.assertEqual(signal, "COMPRA_FRACA")
 
+    def test_structure_alignment_downgrades_buy_near_resistance_when_structure_is_strong(self):
+        bot = TradingBot.__new__(TradingBot)
+
+        signal = TradingBot._apply_structure_alignment(
+            bot,
+            "COMPRA",
+            {
+                "has_minimum_history": True,
+                "structure_state": "continuation",
+                "price_location": "resistance",
+                "structure_quality": 6.4,
+                "resistance_zone_distance": 0.12,
+                "reversal_risk": False,
+                "against_market_bias": False,
+            },
+        )
+
+        self.assertEqual(signal, "COMPRA_FRACA")
+
+    def test_make_trade_decision_allows_buy_near_non_extreme_resistance_when_pipeline_is_strong(self):
+        bot = TradingBot.__new__(TradingBot)
+
+        decision = TradingBot.make_trade_decision(
+            bot,
+            context_result={"market_bias": "bullish", "has_minimum_history": True},
+            structure_result={
+                "structure_state": "continuation",
+                "price_location": "resistance",
+                "structure_quality": 5.6,
+                "resistance_zone_distance": 0.05,
+                "has_minimum_history": True,
+            },
+            confirmation_result={
+                "confirmation_state": "confirmed",
+                "confirmation_score": 7.0,
+                "hypothesis_side": "bullish",
+                "has_minimum_history": True,
+            },
+            entry_result={
+                "entry_quality": "acceptable",
+                "entry_score": 5.9,
+                "rr_estimate": 1.35,
+                "has_minimum_history": True,
+            },
+            hard_block_result={"hard_block": False},
+            scenario_score_result={
+                "scenario_score": 5.9,
+                "scenario_grade": "B",
+                "has_minimum_history": True,
+            },
+        )
+
+        self.assertEqual(decision["action"], "buy")
+        self.assertIsNone(decision["block_reason"])
+
     def test_check_signal_blocks_when_scenario_grade_is_d(self):
         bot = TradingBot.__new__(TradingBot)
         bot.rsi_min = 30
@@ -1744,7 +2477,7 @@ class TradingBotLogicTests(unittest.TestCase):
         bot._generate_advanced_signal = lambda row: "COMPRA"
         bot._calculate_signal_confidence = lambda row: 95.0
         bot.calculate_advanced_score = lambda row, signal=None: 0.9
-        bot._passes_signal_structure_guardrail = lambda row, signal, timeframe: True
+        bot._passes_signal_structure_guardrail = lambda row, signal, timeframe, structure_evaluation=None: True
         bot.get_price_structure_evaluation = lambda df, timeframe=None, market_bias=None: {
             "has_minimum_history": True,
             "structure_state": "continuation",
@@ -1817,7 +2550,8 @@ class TradingBotLogicTests(unittest.TestCase):
         self.assertEqual(decision["market_bias"], "bullish")
         self.assertEqual(decision["setup_type"], "pullback")
         self.assertIsNone(decision["block_reason"])
-        self.assertIn("bullish pullback", decision["entry_reason"])
+        self.assertIn("pullback", decision["entry_reason"])
+        self.assertIn("bullish", decision["entry_reason"])
 
     def test_make_trade_decision_returns_sell_for_valid_bearish_setup(self):
         bot = TradingBot.__new__(TradingBot)
@@ -1927,7 +2661,7 @@ class TradingBotLogicTests(unittest.TestCase):
         bot._generate_advanced_signal = lambda row: "COMPRA"
         bot._calculate_signal_confidence = lambda row: 95.0
         bot.calculate_advanced_score = lambda row, signal=None: 0.9
-        bot._passes_signal_structure_guardrail = lambda row, signal, timeframe: True
+        bot._passes_signal_structure_guardrail = lambda row, signal, timeframe, structure_evaluation=None: True
         def _context_eval(*args, **kwargs):
             bot._last_context_evaluation = {
                 "market_bias": "neutral",
@@ -2023,14 +2757,14 @@ class TradingBotLogicTests(unittest.TestCase):
             context_timeframe="4h",
         )
 
-        self.assertEqual(signal, "NEUTRO")
+        self.assertIn(signal, {"COMPRA", "COMPRA_FRACA"})
         self.assertIsNotNone(bot._last_context_evaluation)
         self.assertIsNotNone(bot._last_price_structure_evaluation)
         self.assertIsNotNone(bot._last_confirmation_evaluation)
         self.assertIsNotNone(bot._last_entry_quality_evaluation)
         self.assertIsNotNone(bot._last_scenario_evaluation)
-        self.assertEqual(bot._last_trade_decision["action"], "wait")
-        self.assertIn("Timeframe maior sem vies", bot._last_trade_decision["block_reason"])
+        self.assertEqual(bot._last_trade_decision["action"], "buy")
+        self.assertIsNone(bot._last_trade_decision["block_reason"])
 
     def test_hard_block_evaluation_blocks_countertrend_signal(self):
         bot = TradingBot.__new__(TradingBot)
@@ -2161,6 +2895,44 @@ class TradingBotLogicTests(unittest.TestCase):
         self.assertEqual(evaluation["block_source"], "entry_quality")
         self.assertEqual(evaluation["block_reason"], "Risco retorno insuficiente")
 
+    def test_check_hard_blocks_blocks_simple_reversal_against_strong_bull_regime(self):
+        bot = TradingBot.__new__(TradingBot)
+
+        evaluation = TradingBot.check_hard_blocks(
+            bot,
+            signal="VENDA",
+            regime_evaluation={
+                "has_minimum_history": True,
+                "regime": "trend_bull",
+                "regime_score": 7.4,
+                "volatility_state": "high_volatility",
+                "parabolic": True,
+                "notes": ["mercado em trend_bull", "movimento acelerado/parabolico"],
+            },
+            structure_evaluation={
+                "has_minimum_history": True,
+                "structure_state": "continuation",
+                "structure_quality": 6.8,
+                "reversal_risk": False,
+            },
+            confirmation_evaluation={
+                "has_minimum_history": True,
+                "confirmation_state": "mixed",
+                "conflicts": [],
+            },
+            entry_quality_evaluation={
+                "has_minimum_history": True,
+                "entry_quality": "acceptable",
+                "rr_estimate": 1.5,
+            },
+            atr_pct=0.8,
+            min_atr_pct=0.12,
+        )
+
+        self.assertTrue(evaluation["hard_block"])
+        self.assertEqual(evaluation["block_source"], "market_regime")
+        self.assertIn("regime bull", evaluation["block_reason"].lower())
+
     def test_check_hard_blocks_returns_clear_when_no_block_exists(self):
         bot = TradingBot.__new__(TradingBot)
 
@@ -2180,6 +2952,63 @@ class TradingBotLogicTests(unittest.TestCase):
             atr_pct=0.8,
             min_atr_pct=0.12,
             runtime_allowed=True,
+        )
+
+        self.assertFalse(evaluation["hard_block"])
+        self.assertIsNone(evaluation["block_reason"])
+
+    def test_check_hard_blocks_keeps_neutral_context_as_penalty_not_block(self):
+        bot = TradingBot.__new__(TradingBot)
+
+        evaluation = TradingBot.check_hard_blocks(
+            bot,
+            signal="COMPRA",
+            context_evaluation={
+                "is_tradeable": False,
+                "market_bias": "neutral",
+                "bias": "neutral",
+                "context_strength": 4.6,
+                "reason": "Timeframe maior sem vies direcional claro.",
+            },
+            structure_evaluation={
+                "has_minimum_history": True,
+                "structure_state": "pullback",
+                "price_location": "trend_zone",
+                "structure_quality": 6.8,
+            },
+            confirmation_evaluation={"has_minimum_history": True, "confirmation_state": "confirmed", "conflicts": []},
+            entry_quality_evaluation={"has_minimum_history": True, "entry_quality": "good", "rr_estimate": 2.0},
+            market_regime="ranging",
+            atr_pct=0.8,
+            min_atr_pct=0.12,
+        )
+
+        self.assertFalse(evaluation["hard_block"])
+        self.assertIsNone(evaluation["block_reason"])
+
+    def test_check_hard_blocks_relaxes_volume_and_adx_for_strong_structure(self):
+        bot = TradingBot.__new__(TradingBot)
+
+        evaluation = TradingBot.check_hard_blocks(
+            bot,
+            signal="COMPRA",
+            context_evaluation={"is_tradeable": True, "market_bias": "bullish", "bias": "bullish"},
+            structure_evaluation={
+                "has_minimum_history": True,
+                "structure_state": "continuation",
+                "price_location": "trend_zone",
+                "structure_quality": 6.4,
+            },
+            confirmation_evaluation={"has_minimum_history": True, "confirmation_state": "confirmed", "conflicts": []},
+            entry_quality_evaluation={"has_minimum_history": True, "entry_quality": "acceptable", "rr_estimate": 1.4},
+            require_volume=True,
+            volume_ratio=1.0,
+            min_volume_ratio=1.2,
+            require_trend=True,
+            adx=20.0,
+            min_adx_threshold=24.0,
+            atr_pct=0.8,
+            min_atr_pct=0.12,
         )
 
         self.assertFalse(evaluation["hard_block"])

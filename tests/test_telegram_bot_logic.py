@@ -126,6 +126,46 @@ class TelegramTradingBotLogicTests(unittest.TestCase):
         self.assertIn("dist EMA 1.37%", note)
         self.assertIn("rompimento confirmado", note)
 
+    def test_build_regime_note_uses_standardized_regime_fields(self):
+        note = TelegramTradingBot._build_regime_note(
+            {
+                "regime": "trend_bull",
+                "volatility_state": "high_volatility",
+                "regime_score": 8.2,
+                "adx": 31.4,
+                "atr_pct": 1.86,
+                "trend_state": "trend_bull",
+                "parabolic": True,
+                "notes": ["mercado em trend_bull", "movimento acelerado/parabolico"],
+            }
+        )
+
+        self.assertIn("Regime: trend_bull", note)
+        self.assertIn("high_volatility", note)
+        self.assertIn("forca 8.20/10", note)
+        self.assertIn("ADX 31.40", note)
+        self.assertIn("Parabolic".lower(), note.lower())
+
+    def test_build_governance_note_uses_adaptive_fields(self):
+        note = TelegramTradingBot._build_governance_note(
+            {
+                "governance_status": "reduced",
+                "governance_mode": "reduced",
+                "alignment_status": "warning",
+                "current_regime": "trend_bull",
+                "current_regime_status": "approved",
+                "allowed_regimes": ["trend_bull"],
+                "blocked_regimes": ["range"],
+                "action_reason": "paper_alignment_warning",
+            }
+        )
+
+        self.assertIn("Governanca: reduced", note)
+        self.assertIn("alignment warning", note)
+        self.assertIn("trend_bull", note)
+        self.assertIn("range", note)
+        self.assertIn("paper_alignment_warning", note)
+
     def test_build_structure_note_supports_english(self):
         note = TelegramTradingBot._build_structure_note(
             {
@@ -163,17 +203,58 @@ class TelegramTradingBotLogicTests(unittest.TestCase):
         note = TelegramTradingBot._build_entry_quality_note(
             {
                 "entry_quality": "acceptable",
+                "entry_score": 6.8,
+                "setup_type": "pullback_trend",
+                "rsi_state": "pullback_recovery",
+                "candle_quality": "acceptable",
+                "momentum_state": "acceptable",
                 "rr_estimate": 1.34,
-                "late_entry": False,
-                "stretched_price": True,
+                "rejection_reason": None,
                 "notes": ["risco retorno aceitavel", "preco esta esticado em relacao a ema 21"],
             }
         )
 
         self.assertIn("acceptable", note)
+        self.assertIn("6.80/10", note)
+        self.assertIn("pullback_trend", note)
         self.assertIn("RR 1.34", note)
-        self.assertIn("stretched True", note)
+        self.assertIn("pullback_recovery", note)
         self.assertIn("risco retorno aceitavel", note)
+
+    def test_build_position_management_note_uses_preview_rules(self):
+        note = TelegramTradingBot._build_position_management_note(
+            {
+                "stop_loss_pct": 2.0,
+                "take_profit_pct": 4.0,
+            },
+            {
+                "volatility_state": "high_volatility",
+                "parabolic": True,
+            },
+        )
+
+        self.assertIn("stop 2.00%", note)
+        self.assertIn("take 4.00%", note)
+        self.assertIn("BE 1.00R", note)
+        self.assertIn("modo aggressive", note)
+
+    def test_build_risk_plan_note_uses_risk_mode_and_quantity(self):
+        note = TelegramTradingBot._build_risk_plan_note(
+            {
+                "allowed": True,
+                "risk_mode": "reduced",
+                "risk_per_trade_pct": 0.25,
+                "risk_amount": 25.0,
+                "position_notional": 1250.0,
+                "quantity": 12.5,
+                "risk_reason": "Losing streak de 3 trades.",
+            }
+        )
+
+        self.assertIn("Modo de risco: reduced", note)
+        self.assertIn("Risco/trade: 0.25%", note)
+        self.assertIn("Qtd 12.500000", note)
+        self.assertIn("Losing streak de 3 trades.", note)
 
     def test_build_scenario_note_uses_standardized_score_fields(self):
         note = TelegramTradingBot._build_scenario_note(
@@ -276,6 +357,16 @@ class TelegramTradingBotLogicTests(unittest.TestCase):
                 "context_strength": 7.8,
                 "is_tradeable": True,
             },
+            "regime_evaluation": {
+                "regime": "trend_bull",
+                "volatility_state": "high_volatility",
+                "regime_score": 8.2,
+                "adx": 31.4,
+                "atr_pct": 1.86,
+                "trend_state": "trend_bull",
+                "parabolic": True,
+                "notes": ["mercado em trend_bull"],
+            },
             "structure_evaluation": {
                 "structure_state": "pullback",
                 "price_location": "trend_zone",
@@ -293,10 +384,16 @@ class TelegramTradingBotLogicTests(unittest.TestCase):
                 "notes": ["RSI favoravel", "MACD acima do sinal"],
             },
             "entry_quality_evaluation": {
-                "entry_quality": "good",
+                "entry_quality": "strong",
+                "entry_score": 7.4,
+                "setup_type": "pullback_trend",
+                "rsi_state": "pullback_recovery",
+                "candle_quality": "acceptable",
+                "momentum_state": "strong",
                 "rr_estimate": 2.15,
                 "late_entry": False,
                 "stretched_price": False,
+                "rejection_reason": None,
                 "notes": ["entrada proxima da EMA 21", "RR minimo atendido"],
             },
             "scenario_evaluation": {
@@ -359,9 +456,11 @@ class TelegramTradingBotLogicTests(unittest.TestCase):
         self.assertIn("Sinal (regras): COMPRA", message)
         self.assertIn("Sinal (operacional): NEUTRO", message)
         self.assertIn("Contexto superior: bullish | trend_low_vol | forca 7.80/10", message)
+        self.assertIn("Regime: trend_bull | high_volatility | forca 8.20/10", message)
         self.assertIn("Estrutura: pullback", message)
         self.assertIn("Confirmacao: confirmed", message)
-        self.assertIn("Entrada: good", message)
+        self.assertIn("Entrada: strong", message)
+        self.assertIn("setup pullback_trend", message)
         self.assertIn("Cenario: score 7.45/10", message)
         self.assertIn("Decisao analitica: buy", message)
         self.assertIn("Status operacional: blocked", message)

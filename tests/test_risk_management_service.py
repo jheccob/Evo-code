@@ -41,6 +41,7 @@ class RiskManagementServiceTests(unittest.TestCase):
             )
 
         self.assertTrue(plan["allowed"])
+        self.assertEqual(plan["risk_mode"], "normal")
         self.assertEqual(plan["risk_amount"], 50.0)
         self.assertEqual(plan["position_notional"], 2500.0)
         self.assertEqual(plan["quantity"], 25.0)
@@ -82,6 +83,9 @@ class RiskManagementServiceTests(unittest.TestCase):
             "position_notional": 2500.0,
             "quantity": 25.0,
             "account_reference_balance": 10000.0,
+            "risk_mode": "reduced",
+            "size_reduced": True,
+            "risk_reason": "Losing streak de 3 trades.",
         }
 
         trade_id = self.paper_trade_service.register_signal(
@@ -103,6 +107,9 @@ class RiskManagementServiceTests(unittest.TestCase):
         self.assertEqual(open_trades[0]["planned_risk_amount"], 50.0)
         self.assertEqual(open_trades[0]["planned_position_notional"], 2500.0)
         self.assertEqual(open_trades[0]["planned_quantity"], 25.0)
+        self.assertEqual(open_trades[0]["risk_mode"], "reduced")
+        self.assertEqual(open_trades[0]["size_reduced"], 1)
+        self.assertEqual(open_trades[0]["risk_reason"], "Losing streak de 3 trades.")
 
     def test_build_trade_plan_blocks_when_daily_loss_breaker_is_hit(self):
         self.database.create_paper_trade(
@@ -173,6 +180,45 @@ class RiskManagementServiceTests(unittest.TestCase):
 
         self.assertFalse(plan["allowed"])
         self.assertIn("losses consecutivos", plan["reason"])
+
+    def test_evaluate_risk_engine_blocks_when_drawdown_limit_is_hit(self):
+        with mock.patch.object(ProductionConfig, "RISK_DRAWDOWN_BLOCK_PCT", 10.0):
+            plan = self.risk_service.evaluate_risk_engine(
+                entry_price=100.0,
+                stop_loss_pct=2.0,
+                account_balance=10000.0,
+                portfolio_summary={"open_trades": 0, "total_open_risk_pct": 0.0},
+                symbol_portfolio_summary={"open_trades": 0, "total_open_risk_pct": 0.0},
+                circuit_breaker={"allowed": True, "daily_realized_pnl_pct": 0.0, "consecutive_losses": 0},
+                drawdown_summary={"current_drawdown_pct": 12.5, "max_drawdown_pct": 12.5},
+            )
+
+        self.assertFalse(plan["allowed"])
+        self.assertEqual(plan["risk_mode"], "blocked")
+        self.assertEqual(plan["drawdown_guard"]["status"], "blocked")
+        self.assertIn("Drawdown corrente", plan["reason"])
+
+    def test_evaluate_risk_engine_reduces_position_size_in_warning_mode(self):
+        with mock.patch.object(ProductionConfig, "RISK_PER_TRADE_PCT", 0.5), \
+             mock.patch.object(ProductionConfig, "RISK_DRAWDOWN_WARNING_PCT", 5.0), \
+             mock.patch.object(ProductionConfig, "RISK_DRAWDOWN_BLOCK_PCT", 10.0), \
+             mock.patch.object(ProductionConfig, "RISK_REDUCED_MODE_MULTIPLIER", 0.5):
+            plan = self.risk_service.evaluate_risk_engine(
+                entry_price=100.0,
+                stop_loss_pct=2.0,
+                account_balance=10000.0,
+                portfolio_summary={"open_trades": 0, "total_open_risk_pct": 0.0},
+                symbol_portfolio_summary={"open_trades": 0, "total_open_risk_pct": 0.0},
+                circuit_breaker={"allowed": True, "daily_realized_pnl_pct": 0.0, "consecutive_losses": 0},
+                drawdown_summary={"current_drawdown_pct": 6.0, "max_drawdown_pct": 6.0},
+            )
+
+        self.assertTrue(plan["allowed"])
+        self.assertEqual(plan["risk_mode"], "reduced")
+        self.assertTrue(plan["size_reduced"])
+        self.assertAlmostEqual(plan["risk_per_trade_pct"], 0.25, places=4)
+        self.assertEqual(plan["risk_amount"], 25.0)
+        self.assertEqual(plan["position_notional"], 1250.0)
 
 
 if __name__ == "__main__":

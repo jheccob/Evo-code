@@ -190,6 +190,49 @@ class PaperTradeServiceTests(unittest.TestCase):
         self.assertLess(closed[0]["result_pct"], 4.0)
         self.assertGreater(closed[0]["result_pct"], 3.0)
 
+    def test_evaluate_open_trades_persists_break_even_management_state(self):
+        service = PaperTradeService(
+            database=self.database,
+            max_hold_candles=5,
+            fee_rate=0.0,
+            slippage=0.0,
+        )
+        service.register_signal(
+            symbol="BTC/USDT",
+            timeframe="5m",
+            signal="COMPRA",
+            entry_price=100.0,
+            entry_timestamp=datetime(2026, 1, 1, 10, 0),
+            source="test",
+            stop_loss_pct=2.0,
+            take_profit_pct=6.0,
+        )
+
+        market_data = pd.DataFrame(
+            {
+                "open": [100.0],
+                "high": [102.4],
+                "low": [100.2],
+                "close": [102.1],
+                "volume": [1_000.0],
+                "atr": [1.0],
+                "ema_21": [101.0],
+                "market_regime": ["trend_bull"],
+                "volatility_state": ["normal_volatility"],
+                "regime_score": [8.0],
+                "parabolic": [False],
+            },
+            index=[pd.Timestamp("2026-01-01 10:05:00")],
+        )
+
+        closed = service.evaluate_open_trades("BTC/USDT", "5m", market_data)
+        open_trades = self.database.get_open_paper_trades(symbol="BTC/USDT", timeframe="5m")
+
+        self.assertEqual(len(closed), 0)
+        self.assertEqual(len(open_trades), 1)
+        self.assertEqual(open_trades[0]["break_even_active"], 1)
+        self.assertGreaterEqual(float(open_trades[0]["stop_loss_price"]), float(open_trades[0]["entry_price"]))
+
     def test_register_signal_flips_existing_trade(self):
         first_id = self.service.register_signal(
             symbol="BTC/USDT",
@@ -817,7 +860,9 @@ class PaperTradeServiceTests(unittest.TestCase):
                 }
             )
 
-        with mock.patch.object(ProductionConfig, "MIN_PAPER_TRADES_FOR_EDGE_VALIDATION", 5):
+        with mock.patch.object(ProductionConfig, "MIN_PAPER_TRADES_FOR_EDGE_VALIDATION", 5), \
+             mock.patch.object(ProductionConfig, "GOVERNANCE_MIN_ALIGNMENT_TRADES", 5), \
+             mock.patch.object(ProductionConfig, "MIN_LIVE_QUALITY_SCORE", 10.0):
             self.database.promote_backtest_run(active_run, notes="Ativo no teste")
             governance = self.database.get_strategy_governance_summary(limit=10)
 
@@ -826,7 +871,7 @@ class PaperTradeServiceTests(unittest.TestCase):
             for row in governance["profiles"]
         }
 
-        self.assertEqual(governance_by_version[strategy_ready], "ready_for_paper")
+        self.assertEqual(governance_by_version[strategy_ready], "candidate")
         self.assertEqual(governance_by_version[strategy_active], "approved")
 
     def test_live_execution_readiness_is_blocked_when_live_is_disabled(self):
@@ -892,6 +937,7 @@ class PaperTradeServiceTests(unittest.TestCase):
 
         with mock.patch.object(ProductionConfig, "ENABLE_LIVE_EXECUTION", True), \
              mock.patch.object(ProductionConfig, "MIN_PAPER_TRADES_FOR_EDGE_VALIDATION", 5), \
+             mock.patch.object(ProductionConfig, "GOVERNANCE_MIN_ALIGNMENT_TRADES", 5), \
              mock.patch.object(ProductionConfig, "MIN_LIVE_QUALITY_SCORE", 40.0):
             self.database.promote_backtest_run(active_run, notes="Aprovado para teste")
             readiness = self.database.get_live_execution_readiness(symbol="ETH/USDT", timeframe="15m")
@@ -909,14 +955,18 @@ class PaperTradeIntegrationSourceTests(unittest.TestCase):
         with open("telegram_bot.py", "r", encoding="utf-8") as bot_file:
             bot_source = bot_file.read()
 
-        self.assertIn("paper_trade_service.evaluate_open_trades", app_source)
-        self.assertIn("paper_trade_service.register_signal", app_source)
-        self.assertIn("paper_trade_service.get_summary", app_source)
+        self.assertIn("get_paper_trade_service().evaluate_open_trades", app_source)
+        self.assertIn("get_paper_trade_service().register_signal", app_source)
+        self.assertIn("get_paper_trade_service().get_summary", app_source)
         self.assertIn("get_edge_monitor_summary", app_source)
         self.assertIn("apply_edge_guardrail", app_source)
-        self.assertIn("RiskManagementService", app_source)
+        self.assertIn("get_risk_management_service().evaluate_risk_engine", app_source)
         self.assertIn("promote_backtest_run", app_source)
         self.assertIn("get_strategy_governance_summary", app_source)
+        self.assertIn("evaluate_strategy_governance", app_source)
+        self.assertIn("get_setup_regime_baselines", app_source)
+        self.assertIn("get_alignment_metrics", app_source)
+        self.assertIn("get_governance_history", app_source)
         self.assertIn("get_strategy_evaluation_overview", app_source)
         self.assertIn("build_strategy_evaluation_display_df", app_source)
         self.assertIn("strategy_version", app_source)
@@ -926,6 +976,8 @@ class PaperTradeIntegrationSourceTests(unittest.TestCase):
         self.assertIn("RiskManagementService", bot_source)
         self.assertIn("get_edge_monitor_summary", bot_source)
         self.assertIn("get_strategy_governance_summary", bot_source)
+        self.assertIn("evaluate_strategy_governance", bot_source)
+        self.assertIn("_build_governance_note", bot_source)
         self.assertIn("get_strategy_evaluation_overview", bot_source)
         self.assertIn("_apply_edge_guardrail", bot_source)
         self.assertIn("_apply_risk_guardrail", bot_source)

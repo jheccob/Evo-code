@@ -38,6 +38,7 @@ from trading_bot import TradingBot
 from ai_model import AIModel
 from config import AppConfig, TelegramBotConfig, ProductionConfig
 from database.database import build_strategy_version, db as runtime_db
+from position_management import build_position_management_preview
 from services.paper_trade_service import PaperTradeService
 from services.risk_management_service import RiskManagementService
 
@@ -242,6 +243,43 @@ class TelegramTradingBot:
         )
 
     @staticmethod
+    def _build_regime_note(regime_evaluation: Optional[dict], locale: str = "pt") -> str:
+        if not regime_evaluation:
+            return "Regime: unavailable" if locale == "en" else "Regime: indisponivel"
+
+        notes_preview = ", ".join((regime_evaluation.get("notes") or [])[:2]) or (
+            "no relevant notes" if locale == "en" else "sem notas relevantes"
+        )
+        return (
+            f"{'Regime' if locale == 'en' else 'Regime'}: {regime_evaluation.get('regime', 'range')} | "
+            f"{regime_evaluation.get('volatility_state', 'normal_volatility')} | "
+            f"{'strength' if locale == 'en' else 'forca'} {float(regime_evaluation.get('regime_score', 0) or 0):.2f}/10 | "
+            f"ADX {float(regime_evaluation.get('adx', 0) or 0):.2f} | "
+            f"ATR% {float(regime_evaluation.get('atr_pct', 0) or 0):.2f} | "
+            f"trend {regime_evaluation.get('trend_state', 'range')} | "
+            f"parabolic {bool(regime_evaluation.get('parabolic', False))} | "
+            f"{'notes' if locale == 'en' else 'notas'}: {notes_preview}"
+        )
+
+    @staticmethod
+    def _build_governance_note(governance_summary: Optional[dict], locale: str = "pt") -> str:
+        if not governance_summary:
+            return "Governance: unavailable" if locale == "en" else "Governanca: indisponivel"
+
+        allowed_regimes = ", ".join(governance_summary.get("allowed_regimes", [])[:3]) or "-"
+        blocked_regimes = ", ".join(governance_summary.get("blocked_regimes", [])[:3]) or "-"
+        return (
+            f"{'Governance' if locale == 'en' else 'Governanca'}: {governance_summary.get('governance_status', 'research')} | "
+            f"{'mode' if locale == 'en' else 'modo'} {governance_summary.get('governance_mode', 'blocked')} | "
+            f"alignment {governance_summary.get('alignment_status', 'insufficient')} | "
+            f"{'current regime' if locale == 'en' else 'regime atual'} {governance_summary.get('current_regime') or '-'} "
+            f"({governance_summary.get('current_regime_status', 'unknown')}) | "
+            f"{'allowed' if locale == 'en' else 'aprovados'} {allowed_regimes} | "
+            f"{'blocked' if locale == 'en' else 'bloqueados'} {blocked_regimes} | "
+            f"{'reason' if locale == 'en' else 'motivo'}: {governance_summary.get('action_reason') or '-'}"
+        )
+
+    @staticmethod
     def _build_structure_note(structure_evaluation: Optional[dict], locale: str = "pt") -> str:
         if not structure_evaluation:
             return "Structure: unavailable" if locale == "en" else "Estrutura: indisponivel"
@@ -294,12 +332,68 @@ class TelegramTradingBot:
         notes_preview = ", ".join(entry_quality_evaluation.get("notes", [])[:2]) or (
             "no relevant notes" if locale == "en" else "sem notas relevantes"
         )
+        rejection_reason = entry_quality_evaluation.get("rejection_reason") or (
+            "none" if locale == "en" else "nenhum"
+        )
         return (
             f"{'Entry' if locale == 'en' else 'Entrada'}: {entry_quality_evaluation.get('entry_quality', 'bad')} | "
+            f"score {float(entry_quality_evaluation.get('entry_score', 0) or 0):.2f}/10 | "
+            f"setup {entry_quality_evaluation.get('setup_type') or '-'} | "
+            f"RSI {entry_quality_evaluation.get('rsi_state', 'neutral')} | "
+            f"candle {entry_quality_evaluation.get('candle_quality', 'bad')} | "
+            f"momentum {entry_quality_evaluation.get('momentum_state', 'weak')} | "
             f"RR {entry_quality_evaluation.get('rr_estimate', 0):.2f} | "
-            f"late {entry_quality_evaluation.get('late_entry', False)} | "
-            f"stretched {entry_quality_evaluation.get('stretched_price', False)} | "
+            f"reject {rejection_reason} | "
             f"{'notes' if locale == 'en' else 'notas'}: {notes_preview}"
+        )
+
+    @staticmethod
+    def _build_position_management_note(
+        strategy_settings: Optional[dict],
+        regime_evaluation: Optional[dict],
+        locale: str = "pt",
+    ) -> str:
+        if not strategy_settings:
+            return "Position management: unavailable" if locale == "en" else "Gestao da posicao: indisponivel"
+
+        preview = build_position_management_preview(
+            stop_loss_pct=float(strategy_settings.get("stop_loss_pct", 0.0) or 0.0),
+            take_profit_pct=float(strategy_settings.get("take_profit_pct", 0.0) or 0.0),
+            regime_evaluation=regime_evaluation,
+        )
+        return (
+            f"{'Position management' if locale == 'en' else 'Gestao da posicao'}: "
+            f"{'stop' if locale == 'en' else 'stop'} {preview.get('initial_stop_pct', 0.0):.2f}% | "
+            f"{'take' if locale == 'en' else 'take'} {preview.get('initial_take_pct', 0.0):.2f}% | "
+            f"BE {preview.get('break_even_trigger_r', 1.0):.2f}R | "
+            f"trail {preview.get('trailing_trigger_r', 2.0):.2f}R/{preview.get('trailing_atr_multiplier', 1.8):.2f} ATR | "
+            f"{'mode' if locale == 'en' else 'modo'} {preview.get('protection_mode', 'normal')}"
+        )
+
+    @staticmethod
+    def _build_risk_plan_note(risk_plan: Optional[dict], locale: str = "pt") -> str:
+        if not risk_plan:
+            return ""
+        if risk_plan.get("allowed"):
+            label = "Risk mode" if locale == "en" else "Modo de risco"
+            risk_label = "Risk/trade" if locale == "en" else "Risco/trade"
+            position_label = "Position" if locale == "en" else "Posicao"
+            quantity_label = "Qty" if locale == "en" else "Qtd"
+            reason_note = risk_plan.get("risk_reason") or ""
+            suffix = f" | reason {reason_note}" if locale == "en" and reason_note else f" | motivo {reason_note}" if reason_note else ""
+            return (
+                f"\n{label}: {risk_plan.get('risk_mode', 'normal')} | "
+                f"{risk_label}: {risk_plan.get('risk_per_trade_pct', 0):.2f}% "
+                f"(${risk_plan.get('risk_amount', 0):.2f}) | "
+                f"{position_label} ${risk_plan.get('position_notional', 0):.2f} | "
+                f"{quantity_label} {risk_plan.get('quantity', 0):.6f}{suffix}"
+            )
+        reason = risk_plan.get("risk_reason") or risk_plan.get("reason")
+        return (
+            f"\nRisk guardrail: {reason}"
+            if locale == "en"
+            else
+            f"\nGuardrail de risco: {reason}"
         )
 
     @staticmethod
@@ -485,16 +579,29 @@ class TelegramTradingBot:
             final_signal = "VENDA_FRACA"
         return final_signal
 
-    def _apply_risk_guardrail(self, signal: str, entry_price: float, strategy_settings: dict):
+    def _apply_risk_guardrail(
+        self,
+        signal: str,
+        entry_price: float,
+        strategy_settings: dict,
+        runtime_allowed: bool = True,
+        runtime_block_reason: str = None,
+        system_health_ok: bool = True,
+        system_health_reason: str = None,
+    ):
         if signal not in {"COMPRA", "VENDA", "COMPRA_FRACA", "VENDA_FRACA"}:
             return signal, None
 
-        risk_plan = self.risk_management_service.build_trade_plan(
+        risk_plan = self.risk_management_service.evaluate_risk_engine(
             entry_price=float(entry_price),
             stop_loss_pct=strategy_settings.get("stop_loss_pct", 0.0) or 0.0,
             symbol=strategy_settings.get("symbol"),
             timeframe=strategy_settings.get("timeframe"),
             strategy_version=strategy_settings.get("strategy_version"),
+            runtime_allowed=runtime_allowed,
+            runtime_block_reason=runtime_block_reason,
+            system_health_ok=system_health_ok,
+            system_health_reason=system_health_reason,
         )
         if not risk_plan.get("allowed"):
             return "NEUTRO", risk_plan
@@ -707,12 +814,14 @@ class TelegramTradingBot:
             timeframe = strategy_settings["timeframe"]
             runtime_block_reason = strategy_settings.get("runtime_block_reason", "")
             context_evaluation = None
+            regime_evaluation = None
             structure_evaluation = None
             confirmation_evaluation = None
             entry_quality_evaluation = None
             scenario_evaluation = None
             trade_decision = None
             hard_block_evaluation = None
+            governance_summary = None
             signal_pipeline = self.trading_bot.evaluate_signal_pipeline(
                 data,
                 timeframe=timeframe,
@@ -725,12 +834,26 @@ class TelegramTradingBot:
             )
             signal = signal_pipeline["analytical_signal"]
             context_evaluation = signal_pipeline.get("context_evaluation")
+            regime_evaluation = signal_pipeline.get("regime_evaluation")
             structure_evaluation = signal_pipeline.get("structure_evaluation")
             confirmation_evaluation = signal_pipeline.get("confirmation_evaluation")
             entry_quality_evaluation = signal_pipeline.get("entry_quality_evaluation")
             scenario_evaluation = signal_pipeline.get("scenario_evaluation")
             trade_decision = signal_pipeline.get("trade_decision")
             hard_block_evaluation = signal_pipeline.get("hard_block_evaluation")
+            current_governance_regime = (regime_evaluation or {}).get("regime")
+            if (regime_evaluation or {}).get("parabolic"):
+                current_governance_regime = "parabolic"
+            try:
+                governance_summary = runtime_db.evaluate_strategy_governance(
+                    symbol=symbol,
+                    timeframe=timeframe,
+                    strategy_version=strategy_settings.get("strategy_version"),
+                    current_regime=current_governance_regime,
+                    persist=False,
+                )
+            except Exception as governance_exc:
+                self.logger.warning("Falha na governanca adaptativa: %s", governance_exc)
             emoji = TelegramBotConfig.get_signal_emoji(signal)
 
             ai_signal = "NEUTRO"
@@ -750,32 +873,62 @@ class TelegramTradingBot:
             operational_runtime_allowed = bool(strategy_settings.get("runtime_allowed", True))
             operational_block_reason = None
             operational_block_source = None
+            edge_allowed = True
+            edge_block_reason = None
             if operational_runtime_allowed:
                 final_signal = self._merge_rule_and_ai_signal(signal, ai_signal)
-                final_signal, edge_summary = self._apply_edge_guardrail(
+                edge_signal, edge_summary = self._apply_edge_guardrail(
                     final_signal,
                     symbol,
                     timeframe,
                     strategy_version=runtime_strategy_version,
                 )
+                edge_allowed = edge_signal in {"COMPRA", "VENDA", "COMPRA_FRACA", "VENDA_FRACA"} or final_signal == "NEUTRO"
+                if edge_summary and edge_signal == "NEUTRO" and final_signal != "NEUTRO":
+                    edge_block_reason = edge_summary.get("status_message") or "Edge monitor bloqueou o setup."
                 final_signal, risk_plan = self._apply_risk_guardrail(
                     final_signal,
                     float(last_candle["close"]),
                     strategy_settings,
+                    runtime_allowed=True,
+                    system_health_ok=edge_allowed,
+                    system_health_reason=edge_block_reason,
                 )
-                if edge_summary and final_signal == "NEUTRO":
-                    operational_block_reason = edge_summary.get("status_message") or "Edge monitor bloqueou o setup."
+                if edge_summary and not edge_allowed:
+                    operational_block_reason = edge_block_reason
                     operational_block_source = "edge_guardrail"
                     operational_runtime_allowed = False
                 elif risk_plan and not risk_plan.get("allowed"):
-                    operational_block_reason = risk_plan.get("reason") or "Risco operacional bloqueou a entrada."
+                    operational_block_reason = (
+                        risk_plan.get("risk_reason") or risk_plan.get("reason") or "Risco operacional bloqueou a entrada."
+                    )
                     operational_block_source = "risk_guardrail"
                     operational_runtime_allowed = False
+                elif governance_summary and not operational_block_reason and governance_summary.get("governance_mode") == "blocked":
+                    final_signal = "NEUTRO"
+                    operational_block_reason = governance_summary.get("action_reason") or "Governanca adaptativa bloqueou o setup."
+                    operational_block_source = "adaptive_governance"
+                    operational_runtime_allowed = False
+                elif governance_summary and governance_summary.get("governance_mode") == "reduced" and risk_plan and risk_plan.get("allowed"):
+                    risk_plan["governance_mode"] = "reduced"
+                    risk_plan["governance_reduction_multiplier"] = governance_summary.get("governance_reduction_multiplier", 1.0)
+                    risk_plan["risk_reason"] = risk_plan.get("risk_reason") or governance_summary.get("action_reason")
                 emoji = TelegramBotConfig.get_signal_emoji(final_signal)
             else:
                 final_signal = "NEUTRO"
-                risk_plan = {"allowed": False, "reason": runtime_block_reason}
-                operational_block_reason = runtime_block_reason
+                runtime_block_reason = strategy_settings.get("runtime_block_reason", "Runtime bloqueado")
+                _, risk_plan = self._apply_risk_guardrail(
+                    signal,
+                    float(last_candle["close"]),
+                    strategy_settings,
+                    runtime_allowed=False,
+                    runtime_block_reason=runtime_block_reason,
+                )
+                operational_block_reason = (
+                    (risk_plan or {}).get("risk_reason")
+                    or (risk_plan or {}).get("reason")
+                    or runtime_block_reason
+                )
                 operational_block_source = "runtime_governance"
                 emoji = TelegramBotConfig.get_signal_emoji(final_signal)
             edge_guardrail_note = ""
@@ -791,19 +944,11 @@ class TelegramTradingBot:
             risk_guardrail_note = ""
             risk_plan_note = ""
             if risk_plan:
+                rendered_risk_note = self._build_risk_plan_note(risk_plan, locale=locale)
                 if risk_plan.get("allowed"):
-                    risk_plan_note = (
-                        f"\nRisk plan: {risk_plan.get('risk_per_trade_pct', 0):.2f}% "
-                        f"(${risk_plan.get('risk_amount', 0):.2f}) | "
-                        f"Position ${risk_plan.get('position_notional', 0):.2f}"
-                        if locale == "en"
-                        else
-                        f"\nPlano de risco: {risk_plan.get('risk_per_trade_pct', 0):.2f}% "
-                        f"(${risk_plan.get('risk_amount', 0):.2f}) | "
-                        f"Posicao ${risk_plan.get('position_notional', 0):.2f}"
-                    )
-                elif operational_block_source == "risk_guardrail":
-                    risk_guardrail_note = f"\nRisk guardrail: {risk_plan.get('reason')}"
+                    risk_plan_note = rendered_risk_note
+                else:
+                    risk_guardrail_note = rendered_risk_note
             ai_mode_note = "comparative" if locale == "en" and not ProductionConfig.ENABLE_AI_SIGNAL_INFLUENCE else "comparativo" if not ProductionConfig.ENABLE_AI_SIGNAL_INFLUENCE else "influence" if locale == "en" else "influencia"
             context_note = "Higher timeframe: no filter" if locale == "en" else "Contexto superior: sem filtro"
             if context_evaluation:
@@ -817,6 +962,8 @@ class TelegramTradingBot:
                     f"{context_evaluation.get('regime', '-')} | "
                     f"forca {context_evaluation.get('context_strength', 0):.2f}/10"
                 )
+            regime_note = self._build_regime_note(regime_evaluation, locale=locale)
+            governance_note = self._build_governance_note(governance_summary, locale=locale)
             structure_note = "Structure: unavailable" if locale == "en" else "Estrutura: indisponivel"
             if structure_evaluation:
                 structure_note = self._build_structure_note(structure_evaluation, locale=locale)
@@ -826,6 +973,11 @@ class TelegramTradingBot:
             entry_quality_note = "Entry: unavailable" if locale == "en" else "Entrada: indisponivel"
             if entry_quality_evaluation:
                 entry_quality_note = self._build_entry_quality_note(entry_quality_evaluation, locale=locale)
+            management_note = self._build_position_management_note(
+                strategy_settings,
+                regime_evaluation,
+                locale=locale,
+            )
             scenario_note = "Scenario: unavailable" if locale == "en" else "Cenario: indisponivel"
             if scenario_evaluation:
                 scenario_note = self._build_scenario_note(scenario_evaluation, locale=locale)
@@ -852,6 +1004,10 @@ class TelegramTradingBot:
                     reason_parts.append(
                         f"ctx:{context_evaluation.get('market_bias', 'neutral')}/{context_evaluation.get('regime', '-')}"
                     )
+                if regime_evaluation:
+                    reason_parts.append(
+                        f"regime:{regime_evaluation.get('regime', '-')}/{regime_evaluation.get('volatility_state', '-')}"
+                    )
                 if structure_evaluation:
                     reason_parts.append(
                         f"struct:{structure_evaluation.get('structure_state', '-')}/{structure_evaluation.get('price_location', '-')}"
@@ -862,7 +1018,9 @@ class TelegramTradingBot:
                     )
                 if entry_quality_evaluation:
                     reason_parts.append(
-                        f"entry:{entry_quality_evaluation.get('entry_quality', '-')}/rr{entry_quality_evaluation.get('rr_estimate', 0):.2f}"
+                        f"entry:{entry_quality_evaluation.get('setup_type') or '-'}"
+                        f"/{entry_quality_evaluation.get('entry_quality', '-')}"
+                        f"/s{float(entry_quality_evaluation.get('entry_score', 0) or 0):.1f}"
                     )
                 entry_reason = " | ".join(reason_parts)
 
@@ -874,9 +1032,12 @@ class TelegramTradingBot:
                 f"{self._build_strategy_runtime_note(strategy_settings, locale=locale)}\n"
                 f"{'Context' if locale == 'en' else 'Contexto'}: {strategy_settings.get('context_timeframe') or ('no higher filter' if locale == 'en' else 'sem filtro superior')}\n"
                 f"{context_note}\n"
+                f"{regime_note}\n"
+                f"{governance_note}\n"
                 f"{structure_note}\n"
                 f"{confirmation_note}\n"
                 f"{entry_quality_note}\n"
+                f"{management_note}\n"
                 f"{scenario_note}\n"
                 f"{decision_note}\n"
                 f"{operational_note}\n"
@@ -904,6 +1065,7 @@ class TelegramTradingBot:
                         "timeframe": timeframe,
                         "context_timeframe": strategy_settings.get("context_timeframe"),
                         "strategy_version": runtime_strategy_version,
+                        "regime": (regime_evaluation or {}).get("regime"),
                         "signal": final_signal,
                         "price": last_candle["close"],
                         "rsi": last_candle["rsi"],
@@ -925,14 +1087,16 @@ class TelegramTradingBot:
                         strategy_version=runtime_strategy_version,
                         stop_loss_pct=strategy_settings.get("stop_loss_pct"),
                         take_profit_pct=strategy_settings.get("take_profit_pct"),
-                        risk_plan=risk_plan,
-                        setup_name=runtime_strategy_version,
-                        regime=last_candle.get("market_regime"),
-                        signal_score=last_candle.get("signal_confidence", 0.0),
-                        atr=last_candle.get("atr", 0.0),
-                        entry_reason=entry_reason,
-                        sample_type="paper",
-                    )
+                          risk_plan=risk_plan,
+                          setup_name=(entry_quality_evaluation or {}).get("setup_type") or runtime_strategy_version,
+                          regime=(regime_evaluation or {}).get("regime") or last_candle.get("market_regime"),
+                          signal_score=(entry_quality_evaluation or {}).get("entry_score", last_candle.get("signal_confidence", 0.0)),
+                          atr=last_candle.get("atr", 0.0),
+                          entry_reason=entry_reason,
+                          entry_quality=(entry_quality_evaluation or {}).get("entry_quality"),
+                          rejection_reason=(entry_quality_evaluation or {}).get("rejection_reason"),
+                          sample_type="paper",
+                      )
             except Exception as e:
                 self.logger.warning("Falha ao registrar outcome de paper trade: %s", e)
 

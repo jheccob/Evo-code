@@ -1,14 +1,11 @@
 import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
-import plotly.express as px
 from plotly.subplots import make_subplots
 import time
-import json
 import os
 from datetime import datetime, timedelta, date
 import asyncio
-import threading
 import logging
 
 # Importar funções de fuso horário brasileiro
@@ -17,7 +14,6 @@ from utils.timezone_utils import now_brazil, format_brazil_time, get_brazil_date
 # Importar banco de dados
 from database.database import build_strategy_version, db
 from trading_bot import TradingBot
-from indicators import TechnicalIndicators
 from config import AppConfig, ExchangeConfig, ProductionConfig
 
 # Importar serviço seguro do Telegram
@@ -67,9 +63,59 @@ from services.paper_trade_service import PaperTradeService
 from services.risk_management_service import RiskManagementService
 
 logger = logging.getLogger(__name__)
-paper_trade_service = PaperTradeService()
-risk_management_service = RiskManagementService()
 ACTIONABLE_SIGNALS = {"COMPRA", "VENDA", "COMPRA_FRACA", "VENDA_FRACA"}
+
+
+@st.cache_resource
+def get_paper_trade_service():
+    return PaperTradeService()
+
+
+@st.cache_resource
+def get_risk_management_service():
+    return RiskManagementService()
+
+
+@st.cache_resource
+def get_user_manager():
+    try:
+        from user_manager import UserManager
+        return UserManager()
+    except ImportError:
+        class _FallbackUserManager:
+            def get_user_stats(self):
+                return {'total_users': 0, 'free_users': 0, 'premium_users': 0, 'active_today': 0}
+
+            def list_users(self, limit):
+                return []
+
+            def upgrade_to_premium(self, user_id):
+                return False
+
+            def add_admin(self, user_id):
+                return False
+
+            def is_admin(self, user_id):
+                return False
+
+            def get_user(self, user_id):
+                return None
+
+        return _FallbackUserManager()
+
+
+def get_or_init_admin_telegram_bot():
+    if 'telegram_trading_bot' not in st.session_state:
+        try:
+            from telegram_bot import TelegramTradingBot
+            st.session_state.telegram_trading_bot = TelegramTradingBot(
+                allow_simulated_data=False,
+                auto_configure_from_env=False,
+            )
+        except Exception as exc:
+            logger.warning("Erro ao inicializar telegram_trading_bot do admin: %s", exc)
+            st.session_state.telegram_trading_bot = None
+    return st.session_state.get("telegram_trading_bot")
 
 
 def apply_edge_guardrail(signal: str, symbol: str, timeframe: str, strategy_version: str = None):
@@ -96,63 +142,129 @@ def apply_edge_guardrail(signal: str, symbol: str, timeframe: str, strategy_vers
     return signal, edge_summary
 
 
-def apply_risk_guardrail(signal: str, entry_price: float, strategy_settings: dict):
+def apply_risk_guardrail(
+    signal: str,
+    entry_price: float,
+    strategy_settings: dict,
+    runtime_allowed: bool = True,
+    runtime_block_reason: str = None,
+    system_health_ok: bool = True,
+    system_health_reason: str = None,
+):
     if signal not in ACTIONABLE_SIGNALS:
         return signal, None
 
-    risk_plan = risk_management_service.build_trade_plan(
+    risk_plan = get_risk_management_service().evaluate_risk_engine(
         entry_price=float(entry_price),
         stop_loss_pct=strategy_settings.get("stop_loss_pct", 0.0) or 0.0,
         symbol=strategy_settings.get("symbol"),
         timeframe=strategy_settings.get("timeframe"),
         strategy_version=strategy_settings.get("strategy_version"),
+        runtime_allowed=runtime_allowed,
+        runtime_block_reason=runtime_block_reason,
+        system_health_ok=system_health_ok,
+        system_health_reason=system_health_reason,
     )
     if not risk_plan.get("allowed"):
         return "NEUTRO", risk_plan
     return signal, risk_plan
 
 
-def build_operational_signal_state(analytical_signal: str, entry_price: float, strategy_settings: dict):
+def build_operational_signal_state(
+    analytical_signal: str,
+    entry_price: float,
+    strategy_settings: dict,
+    regime_evaluation: dict | None = None,
+):
     final_signal = analytical_signal
     edge_summary = None
     risk_plan = None
+    governance_summary = None
     operational_runtime_allowed = bool(strategy_settings.get("runtime_allowed", True))
     operational_block_reason = None
     operational_block_source = None
+    edge_allowed = True
+    edge_block_reason = None
+    current_regime = (regime_evaluation or {}).get("regime")
+    if (regime_evaluation or {}).get("parabolic"):
+        current_regime = "parabolic"
 
     if operational_runtime_allowed:
-        final_signal, edge_summary = apply_edge_guardrail(
-            final_signal,
+        edge_signal, edge_summary = apply_edge_guardrail(
+            analytical_signal,
             strategy_settings.get("symbol"),
             strategy_settings.get("timeframe"),
             strategy_version=strategy_settings.get("strategy_version"),
         )
+        edge_allowed = edge_signal in ACTIONABLE_SIGNALS or analytical_signal not in ACTIONABLE_SIGNALS
+        if edge_summary and edge_signal == "NEUTRO":
+            edge_block_reason = edge_summary.get("status_message") or "Edge monitor bloqueou o setup."
         final_signal, risk_plan = apply_risk_guardrail(
-            final_signal,
+            analytical_signal,
             float(entry_price),
             strategy_settings,
+            runtime_allowed=True,
+            system_health_ok=edge_allowed,
+            system_health_reason=edge_block_reason,
         )
-        if edge_summary and final_signal == "NEUTRO":
-            operational_block_reason = edge_summary.get("status_message") or "Edge monitor bloqueou o setup."
+        if edge_summary and not edge_allowed:
+            operational_block_reason = edge_block_reason
             operational_block_source = "edge_guardrail"
             operational_runtime_allowed = False
         elif risk_plan and not risk_plan.get("allowed"):
-            operational_block_reason = risk_plan.get("reason") or "Risco operacional bloqueou a entrada."
+            operational_block_reason = (
+                risk_plan.get("risk_reason") or risk_plan.get("reason") or "Risco operacional bloqueou a entrada."
+            )
             operational_block_source = "risk_guardrail"
             operational_runtime_allowed = False
     else:
         final_signal = "NEUTRO"
-        risk_plan = {
-            "allowed": False,
-            "reason": strategy_settings.get("runtime_block_reason", "Runtime bloqueado"),
-        }
-        operational_block_reason = strategy_settings.get("runtime_block_reason", "Runtime bloqueado")
+        _, risk_plan = apply_risk_guardrail(
+            analytical_signal,
+            float(entry_price),
+            strategy_settings,
+            runtime_allowed=False,
+            runtime_block_reason=strategy_settings.get("runtime_block_reason", "Runtime bloqueado"),
+        )
+        operational_block_reason = (
+            (risk_plan or {}).get("risk_reason")
+            or (risk_plan or {}).get("reason")
+            or strategy_settings.get("runtime_block_reason", "Runtime bloqueado")
+        )
         operational_block_source = "runtime_governance"
+
+    try:
+        governance_summary = db.evaluate_strategy_governance(
+            symbol=strategy_settings.get("symbol"),
+            timeframe=strategy_settings.get("timeframe"),
+            strategy_version=strategy_settings.get("strategy_version"),
+            current_regime=current_regime,
+            persist=False,
+        )
+    except Exception as exc:
+        logger.warning("Falha ao avaliar governanca adaptativa: %s", exc)
+        governance_summary = None
+
+    if (
+        governance_summary
+        and analytical_signal in ACTIONABLE_SIGNALS
+        and not operational_block_reason
+        and governance_summary.get("governance_mode") == "blocked"
+    ):
+        final_signal = "NEUTRO"
+        operational_runtime_allowed = False
+        operational_block_reason = governance_summary.get("action_reason") or "Governanca adaptativa bloqueou o setup."
+        operational_block_source = "adaptive_governance"
+    elif governance_summary and risk_plan and risk_plan.get("allowed") and governance_summary.get("governance_mode") == "reduced":
+        risk_plan["governance_mode"] = "reduced"
+        risk_plan["governance_reduction_multiplier"] = governance_summary.get("governance_reduction_multiplier", 1.0)
+        risk_plan["risk_reason"] = risk_plan.get("risk_reason") or governance_summary.get("action_reason")
 
     return {
         "final_signal": final_signal,
         "edge_summary": edge_summary,
         "risk_plan": risk_plan,
+        "governance_summary": governance_summary,
         "runtime_allowed": operational_runtime_allowed,
         "block_reason": operational_block_reason,
         "block_source": operational_block_source,
@@ -775,42 +887,6 @@ st.title("📈 Trading Signals Dashboard")
 
 # Status do WebSocket Binance removido para interface mais limpa
 
-# Import user manager for admin features  
-try:
-    from user_manager import UserManager
-    USER_MANAGER_AVAILABLE = True
-except ImportError:
-    # Fallback para UserManager
-    class UserManager:
-        def get_user_stats(self):
-            return {'total_users': 0, 'free_users': 0, 'premium_users': 0, 'active_today': 0}
-        def list_users(self, limit):
-            return []
-        def upgrade_to_premium(self, user_id):
-            return False
-        def add_admin(self, user_id):
-            return False
-        def is_admin(self, user_id):
-            return False
-        def get_user(self, user_id):
-            return None
-    USER_MANAGER_AVAILABLE = False
-
-# Initialize user manager
-if 'user_manager' not in st.session_state:
-    st.session_state.user_manager = UserManager()
-
-if 'telegram_trading_bot' not in st.session_state:
-    try:
-        from telegram_bot import TelegramTradingBot
-        st.session_state.telegram_trading_bot = TelegramTradingBot(
-            allow_simulated_data=False,
-            auto_configure_from_env=False
-        )
-    except Exception as e:
-        logger.warning("Erro ao inicializar telegram_trading_bot do admin: %s", e)
-        st.session_state.telegram_trading_bot = None
-
 # Initialize session state for multi-symbol data
 if 'multi_symbol_data' not in st.session_state:
     st.session_state.multi_symbol_data = {}
@@ -822,12 +898,8 @@ try:
 except ImportError:
     WEBSOCKET_AVAILABLE = False
 
-# Import futures trading
-try:
-    from futures_trading import FuturesTrading
-    FUTURES_AVAILABLE = True
-except ImportError:
-    FUTURES_AVAILABLE = False
+# Futures trading nao e usado na dashboard atual.
+FUTURES_AVAILABLE = False
 
 # Initialize futures trading if available (with error handling)
 if 'futures_trading' not in st.session_state:
@@ -1152,6 +1224,7 @@ with tab2:
                                     analytical_signal,
                                     float(last_candle['close']),
                                     symbol_strategy_settings,
+                                    regime_evaluation=signal_pipeline.get("regime_evaluation"),
                                 )
 
                                 # Cache the data com timestamp
@@ -1497,6 +1570,7 @@ if st.session_state.current_data is not None:
     runtime_strategy_version = live_strategy_settings["strategy_version"]
     guardrail_edge_summary = None
     context_evaluation = None
+    regime_evaluation = None
     structure_evaluation = None
     confirmation_evaluation = None
     entry_quality_evaluation = None
@@ -1519,6 +1593,7 @@ if st.session_state.current_data is not None:
     blocked_signal = signal_pipeline.get("blocked_signal")
     analytical_block_reason = signal_pipeline.get("block_reason")
     context_evaluation = signal_pipeline.get("context_evaluation")
+    regime_evaluation = signal_pipeline.get("regime_evaluation")
     structure_evaluation = signal_pipeline.get("structure_evaluation")
     confirmation_evaluation = signal_pipeline.get("confirmation_evaluation")
     entry_quality_evaluation = signal_pipeline.get("entry_quality_evaluation")
@@ -1530,10 +1605,12 @@ if st.session_state.current_data is not None:
         analytical_signal,
         float(last_candle['close']),
         live_strategy_settings,
+        regime_evaluation=regime_evaluation,
     )
     signal = operational_state["final_signal"]
     guardrail_edge_summary = operational_state["edge_summary"]
     risk_plan = operational_state["risk_plan"]
+    governance_summary = operational_state.get("governance_summary")
     operational_block_reason = operational_state["block_reason"]
     operational_block_source = operational_state["block_source"]
     risk_guardrail_blocked = bool(risk_plan and not risk_plan.get("allowed"))
@@ -1543,6 +1620,10 @@ if st.session_state.current_data is not None:
         if context_evaluation:
             reason_parts.append(
                 f"ctx:{context_evaluation.get('market_bias', 'neutral')}/{context_evaluation.get('regime', '-')}"
+            )
+        if regime_evaluation:
+            reason_parts.append(
+                f"regime:{regime_evaluation.get('regime', '-')}/{regime_evaluation.get('volatility_state', '-')}"
             )
         if structure_evaluation:
             reason_parts.append(
@@ -1554,7 +1635,9 @@ if st.session_state.current_data is not None:
             )
         if entry_quality_evaluation:
             reason_parts.append(
-                f"entry:{entry_quality_evaluation.get('entry_quality', '-')}/rr{entry_quality_evaluation.get('rr_estimate', 0):.2f}"
+                f"entry:{entry_quality_evaluation.get('setup_type') or '-'}"
+                f"/{entry_quality_evaluation.get('entry_quality', '-')}"
+                f"/s{float(entry_quality_evaluation.get('entry_score', 0) or 0):.1f}"
             )
         if scenario_evaluation:
             reason_parts.append(
@@ -1563,7 +1646,7 @@ if st.session_state.current_data is not None:
         entry_reason = " | ".join(reason_parts)
 
     try:
-        paper_trade_service.evaluate_open_trades(symbol=symbol, timeframe=timeframe, market_data=data)
+        get_paper_trade_service().evaluate_open_trades(symbol=symbol, timeframe=timeframe, market_data=data)
     except Exception as e:
         logger.warning("Falha ao avaliar paper trades do dashboard: %s", e)
 
@@ -1575,9 +1658,11 @@ if st.session_state.current_data is not None:
         'last_update': st.session_state.last_update,
         'edge_summary': guardrail_edge_summary,
         'risk_plan': risk_plan,
+        'governance_summary': governance_summary,
         'signal_pipeline': signal_pipeline,
         'operational_state': operational_state,
         'context_evaluation': context_evaluation,
+        'regime_evaluation': regime_evaluation,
         'structure_evaluation': structure_evaluation,
         'confirmation_evaluation': confirmation_evaluation,
         'entry_quality_evaluation': entry_quality_evaluation,
@@ -1651,6 +1736,7 @@ if st.session_state.current_data is not None:
             'operational_block_reason': operational_block_reason,
             'context_timeframe': live_strategy_settings.get("context_timeframe"),
             'strategy_version': runtime_strategy_version,
+            'regime': (regime_evaluation or {}).get("regime"),
             'macd_value': last_candle['macd'],
             'signal_strength': abs(last_candle['rsi'] - 50) / 50,  # Força do sinal baseada no RSI
             'volume': last_candle.get('volume', 0)
@@ -1664,7 +1750,7 @@ if st.session_state.current_data is not None:
 
         try:
             if risk_plan and risk_plan.get("allowed"):
-                paper_trade_service.register_signal(
+                get_paper_trade_service().register_signal(
                     symbol=symbol,
                     timeframe=timeframe,
                     signal=signal,
@@ -1676,11 +1762,13 @@ if st.session_state.current_data is not None:
                     stop_loss_pct=live_strategy_settings.get("stop_loss_pct"),
                     take_profit_pct=live_strategy_settings.get("take_profit_pct"),
                     risk_plan=risk_plan,
-                    setup_name=runtime_strategy_version,
-                    regime=last_candle.get("market_regime"),
-                    signal_score=last_candle.get("signal_confidence", 0.0),
+                    setup_name=(entry_quality_evaluation or {}).get("setup_type") or runtime_strategy_version,
+                    regime=(regime_evaluation or {}).get("regime") or last_candle.get("market_regime"),
+                    signal_score=(entry_quality_evaluation or {}).get("entry_score", last_candle.get("signal_confidence", 0.0)),
                     atr=last_candle.get("atr", 0.0),
                     entry_reason=entry_reason,
+                    entry_quality=(entry_quality_evaluation or {}).get("entry_quality"),
+                    rejection_reason=(entry_quality_evaluation or {}).get("rejection_reason"),
                     sample_type="paper",
                 )
         except Exception as e:
@@ -1964,18 +2052,22 @@ if st.session_state.current_data is not None:
     if risk_plan:
         if risk_plan.get("allowed"):
             st.info(
-                f"Plano de risco: arriscar {risk_plan.get('risk_per_trade_pct', 0):.2f}% "
+                f"Plano de risco ({risk_plan.get('risk_mode', 'normal')}): arriscar "
+                f"{risk_plan.get('risk_per_trade_pct', 0):.2f}% "
                 f"(${risk_plan.get('risk_amount', 0):.2f}) | "
                 f"Posicao ${risk_plan.get('position_notional', 0):.2f} | "
                 f"Qtd {risk_plan.get('quantity', 0):.6f}"
             )
-        elif operational_block_source == "risk_guardrail":
-            st.warning(f"Risk guardrail: {risk_plan.get('reason')}")
-        portfolio_risk_summary = risk_management_service.get_portfolio_risk_summary()
+        else:
+            st.warning(f"Risk guardrail: {risk_plan.get('risk_reason') or risk_plan.get('reason')}")
+        portfolio_risk_summary = get_risk_management_service().get_portfolio_risk_summary()
         st.caption(
             f"Portfolio paper: {portfolio_risk_summary.get('open_trades', 0)} trades abertos | "
             f"Risco aberto {portfolio_risk_summary.get('total_open_risk_pct', 0):.2f}% | "
-            f"Notional ${portfolio_risk_summary.get('total_open_position_notional', 0):.2f}"
+            f"Notional ${portfolio_risk_summary.get('total_open_position_notional', 0):.2f} | "
+            f"Drawdown {portfolio_risk_summary.get('current_drawdown_pct', 0):.2f}% | "
+            f"Losing streak {portfolio_risk_summary.get('consecutive_losses', 0)} | "
+            f"Modo {portfolio_risk_summary.get('risk_mode', 'normal')}"
         )
         if not portfolio_risk_summary.get("circuit_breaker_allowed", True):
             st.error(
@@ -2012,11 +2104,40 @@ if st.session_state.current_data is not None:
             f"Sinal operacional: {signal} | "
             f"Motivo operacional: {operational_block_reason or '-'}"
         )
+        if governance_summary:
+            st.caption(
+                f"Governanca adaptativa: {governance_summary.get('governance_status', 'research')} | "
+                f"Modo {governance_summary.get('governance_mode', 'blocked')} | "
+                f"Alinhamento {governance_summary.get('alignment_status', 'insufficient')} | "
+                f"Regime atual {governance_summary.get('current_regime') or '-'} "
+                f"({governance_summary.get('current_regime_status', 'unknown')})"
+            )
+            if governance_summary.get("allowed_regimes") or governance_summary.get("blocked_regimes"):
+                st.caption(
+                    f"Regimes aprovados: {', '.join(governance_summary.get('allowed_regimes', [])) or '-'} | "
+                    f"Regimes reduzidos: {', '.join(governance_summary.get('reduced_regimes', [])) or '-'} | "
+                    f"Regimes bloqueados: {', '.join(governance_summary.get('blocked_regimes', [])) or '-'}"
+                )
+            if governance_summary.get("action_reason"):
+                if governance_summary.get("governance_mode") == "blocked":
+                    st.warning(f"Governanca: {governance_summary.get('action_reason')}")
+                elif governance_summary.get("governance_mode") == "reduced":
+                    st.info(f"Governanca reduzida: {governance_summary.get('action_reason')}")
         if context_evaluation:
             st.caption(
                 f"Contexto: {context_evaluation.get('market_bias', 'neutral')} | "
                 f"{context_evaluation.get('regime', '-')} | "
                 f"Forca {context_evaluation.get('context_strength', 0):.2f}/10"
+            )
+        if regime_evaluation:
+            st.caption(
+                f"Regime atual: {regime_evaluation.get('regime', 'range')} | "
+                f"{regime_evaluation.get('volatility_state', 'normal_volatility')} | "
+                f"Forca {regime_evaluation.get('regime_score', 0):.2f}/10 | "
+                f"ADX {regime_evaluation.get('adx', 0):.2f} | "
+                f"ATR% {regime_evaluation.get('atr_pct', 0):.2f} | "
+                f"Trend {regime_evaluation.get('trend_state', 'range')} | "
+                f"Parabolico {regime_evaluation.get('parabolic', False)}"
             )
         if structure_evaluation:
             st.caption(
@@ -2034,9 +2155,13 @@ if st.session_state.current_data is not None:
         if entry_quality_evaluation:
             st.caption(
                 f"Entrada: {entry_quality_evaluation.get('entry_quality', 'bad')} | "
+                f"Setup {entry_quality_evaluation.get('setup_type') or '-'} | "
+                f"Score {float(entry_quality_evaluation.get('entry_score', 0) or 0):.2f}/10 | "
+                f"RSI {entry_quality_evaluation.get('rsi_state', 'neutral')} | "
+                f"Candle {entry_quality_evaluation.get('candle_quality', 'bad')} | "
+                f"Momentum {entry_quality_evaluation.get('momentum_state', 'weak')} | "
                 f"RR {entry_quality_evaluation.get('rr_estimate', 0):.2f} | "
-                f"Late {entry_quality_evaluation.get('late_entry', False)} | "
-                f"Stretched {entry_quality_evaluation.get('stretched_price', False)}"
+                f"Rejeicao {entry_quality_evaluation.get('rejection_reason') or '-'}"
             )
         if scenario_evaluation:
             st.caption(
@@ -2247,7 +2372,7 @@ if signals_df is not None and len(signals_df) > 0:
                     require_volume=require_volume,
                     require_trend=require_trend,
                 )["strategy_version"]
-                paper_summary = paper_trade_service.get_summary(symbol=symbol, timeframe=timeframe)
+                paper_summary = get_paper_trade_service().get_summary(symbol=symbol, timeframe=timeframe)
                 edge_summary = db.get_edge_monitor_summary(
                     symbol=symbol,
                     timeframe=timeframe,
@@ -3062,6 +3187,8 @@ with tab2:
                         'strategy_version',
                         'profile_status',
                         'governance_status',
+                        'governance_mode',
+                        'alignment_status',
                         'paper_closed_trades',
                         'baseline_profit_factor',
                         'paper_profit_factor',
@@ -3072,6 +3199,8 @@ with tab2:
                         'strategy_version': 'Versao',
                         'profile_status': 'Perfil',
                         'governance_status': 'Status',
+                        'governance_mode': 'Modo',
+                        'alignment_status': 'Alignment',
                         'paper_closed_trades': 'Paper Trades',
                         'baseline_profit_factor': 'PF Baseline',
                         'paper_profit_factor': 'PF Paper',
@@ -3079,6 +3208,125 @@ with tab2:
                     }
                 )
                 st.dataframe(governance_df, width="stretch", hide_index=True)
+
+            adaptive_governance = db.evaluate_strategy_governance(
+                symbol=result_symbol,
+                timeframe=result_timeframe,
+                strategy_version=result_strategy_version,
+                persist=False,
+            )
+            regime_baselines = db.get_setup_regime_baselines(
+                symbol=result_symbol,
+                timeframe=result_timeframe,
+                strategy_version=result_strategy_version,
+            )
+            alignment_history = db.get_alignment_metrics(
+                symbol=result_symbol,
+                timeframe=result_timeframe,
+                strategy_version=result_strategy_version,
+                limit=5,
+            )
+            governance_history = db.get_governance_history(
+                symbol=result_symbol,
+                timeframe=result_timeframe,
+                strategy_version=result_strategy_version,
+                limit=10,
+            )
+
+            st.markdown("### Governanca Adaptativa")
+            adaptive_col1, adaptive_col2, adaptive_col3, adaptive_col4 = st.columns(4)
+            with adaptive_col1:
+                st.metric("Status", adaptive_governance.get("governance_status", "-"))
+            with adaptive_col2:
+                st.metric("Modo", adaptive_governance.get("governance_mode", "-"))
+            with adaptive_col3:
+                st.metric("Alignment", adaptive_governance.get("alignment_status", "-"))
+            with adaptive_col4:
+                st.metric("Score", f"{adaptive_governance.get('quality_score', 0):.1f}")
+
+            st.caption(
+                f"Acao: {adaptive_governance.get('action', '-')} | "
+                f"Motivo: {adaptive_governance.get('action_reason', '-')}"
+            )
+            st.caption(
+                f"Regimes aprovados: {', '.join(adaptive_governance.get('allowed_regimes', [])) or '-'} | "
+                f"Reduzidos: {', '.join(adaptive_governance.get('reduced_regimes', [])) or '-'} | "
+                f"Bloqueados: {', '.join(adaptive_governance.get('blocked_regimes', [])) or '-'}"
+            )
+
+            if regime_baselines:
+                regime_df = pd.DataFrame(regime_baselines)[
+                    [
+                        'regime',
+                        'performance_status',
+                        'baseline_trade_count',
+                        'baseline_profit_factor',
+                        'baseline_expectancy_pct',
+                        'baseline_win_rate',
+                        'total_return_pct',
+                    ]
+                ].rename(
+                    columns={
+                        'regime': 'Regime',
+                        'performance_status': 'Status',
+                        'baseline_trade_count': 'Trades',
+                        'baseline_profit_factor': 'PF',
+                        'baseline_expectancy_pct': 'Expectancy %',
+                        'baseline_win_rate': 'Win Rate %',
+                        'total_return_pct': 'Retorno %',
+                    }
+                )
+                st.dataframe(regime_df, width="stretch", hide_index=True)
+
+            if alignment_history:
+                alignment_df = pd.DataFrame(alignment_history)[
+                    [
+                        'regime',
+                        'alignment_status',
+                        'paper_trade_count',
+                        'paper_profit_factor',
+                        'paper_pf_alignment_pct',
+                        'live_trade_count',
+                        'live_pf_alignment_pct',
+                        'created_at',
+                    ]
+                ].rename(
+                    columns={
+                        'regime': 'Regime',
+                        'alignment_status': 'Status',
+                        'paper_trade_count': 'Paper Trades',
+                        'paper_profit_factor': 'PF Paper',
+                        'paper_pf_alignment_pct': 'PF Paper %',
+                        'live_trade_count': 'Live Trades',
+                        'live_pf_alignment_pct': 'PF Live %',
+                        'created_at': 'Snapshot',
+                    }
+                )
+                st.dataframe(alignment_df, width="stretch", hide_index=True)
+
+            if governance_history:
+                governance_history_df = pd.DataFrame(governance_history)[
+                    [
+                        'regime',
+                        'previous_status',
+                        'governance_status',
+                        'governance_mode',
+                        'alignment_status',
+                        'action_reason',
+                        'created_at',
+                    ]
+                ].rename(
+                    columns={
+                        'regime': 'Regime',
+                        'previous_status': 'Status Anterior',
+                        'governance_status': 'Status Atual',
+                        'governance_mode': 'Modo',
+                        'alignment_status': 'Alignment',
+                        'action_reason': 'Motivo',
+                        'created_at': 'Quando',
+                    }
+                )
+                st.dataframe(governance_history_df, width="stretch", hide_index=True)
         except Exception as governance_error:
             st.info(f"Governanca de setups indisponivel: {governance_error}")
 
@@ -3303,9 +3551,13 @@ with tab2:
             'blocked_count': results.get('blocked_count', 0),
             'approval_rate_pct': results.get('approval_rate_pct', 0.0),
             'block_reason_counts': results.get('block_reason_counts', {}),
+            'regime_counts': results.get('regime_counts', {}),
             'structure_state_counts': results.get('structure_state_counts', {}),
             'confirmation_state_counts': results.get('confirmation_state_counts', {}),
             'entry_quality_counts': results.get('entry_quality_counts', {}),
+            'setup_type_counts': results.get('setup_type_counts', {}),
+            'setup_type_approved_counts': results.get('setup_type_approved_counts', {}),
+            'setup_type_approval_rates': results.get('setup_type_approval_rates', {}),
         }
 
         st.markdown("---")
@@ -3368,6 +3620,226 @@ with tab2:
                 )
             else:
                 st.info("Sem estatísticas de entrada para exibir.")
+
+        risk_engine_summary = results.get('risk_engine_summary') or {}
+        if risk_engine_summary:
+            st.caption("Risk Engine")
+            risk_col1, risk_col2, risk_col3 = st.columns(3)
+            with risk_col1:
+                st.metric("Bloqueados por Risco", int(risk_engine_summary.get('risk_blocked_count', 0) or 0))
+            with risk_col2:
+                st.metric("Size Reduzida", int(risk_engine_summary.get('reduced_size_count', 0) or 0))
+            with risk_col3:
+                st.metric("Modos de Risco", len(risk_engine_summary.get('risk_mode_counts') or {}))
+
+            risk_breakdown_col1, risk_breakdown_col2 = st.columns(2)
+            with risk_breakdown_col1:
+                st.caption("Motivos de Bloqueio por Risco")
+                risk_block_reason_counts = risk_engine_summary.get('risk_block_reason_counts') or {}
+                if risk_block_reason_counts:
+                    st.dataframe(
+                        pd.DataFrame(
+                            [{"Motivo": reason, "Qtd": count} for reason, count in risk_block_reason_counts.items()]
+                        ),
+                        width="stretch",
+                        hide_index=True,
+                    )
+                else:
+                    st.info("Nenhum sinal foi bloqueado pela risk engine neste backtest.")
+            with risk_breakdown_col2:
+                st.caption("Performance por Risk Mode")
+                performance_by_risk_mode = risk_engine_summary.get('performance_by_risk_mode') or {}
+                if performance_by_risk_mode:
+                    st.dataframe(
+                        pd.DataFrame(
+                            [
+                                {
+                                    "Risk Mode": mode,
+                                    "Trades": metrics.get('trades', 0),
+                                    "Net Profit": metrics.get('net_profit', 0.0),
+                                    "Wins": metrics.get('wins', 0),
+                                    "Losses": metrics.get('losses', 0),
+                                    "Win Rate %": metrics.get('win_rate', 0.0),
+                                }
+                                for mode, metrics in performance_by_risk_mode.items()
+                            ]
+                        ),
+                        width="stretch",
+                        hide_index=True,
+                    )
+                else:
+                    st.info("Sem trades suficientes para agregar por risk mode.")
+
+        regime_summary = results.get('regime_summary') or stats.get('regime_breakdown') or []
+        setup_type_summary = results.get('setup_type_summary') or stats.get('setup_type_breakdown') or []
+        regime_counts = signal_pipeline_stats.get('regime_counts') or {}
+        setup_type_counts = signal_pipeline_stats.get('setup_type_counts') or {}
+        setup_type_approved_counts = signal_pipeline_stats.get('setup_type_approved_counts') or {}
+        setup_type_approval_rates = signal_pipeline_stats.get('setup_type_approval_rates') or {}
+        if regime_counts:
+            st.caption("Regimes Detectados no Pipeline")
+            st.dataframe(
+                pd.DataFrame(
+                    [{"Regime": regime, "Qtd": count} for regime, count in regime_counts.items()]
+                ),
+                width="stretch",
+                hide_index=True,
+            )
+        if regime_summary:
+            st.caption("Performance por Regime")
+            st.dataframe(
+                pd.DataFrame(regime_summary),
+                width="stretch",
+                hide_index=True,
+            )
+        if setup_type_counts:
+            st.caption("Entradas por Tipo de Setup")
+            st.dataframe(
+                pd.DataFrame(
+                    [
+                        {
+                            "Setup": setup_type,
+                            "Candidatos": count,
+                            "Aprovados": int(setup_type_approved_counts.get(setup_type, 0) or 0),
+                            "Taxa de Aprovação %": float(setup_type_approval_rates.get(setup_type, 0.0) or 0.0),
+                        }
+                        for setup_type, count in setup_type_counts.items()
+                    ]
+                ),
+                width="stretch",
+                hide_index=True,
+            )
+        if setup_type_summary:
+            st.caption("Performance por Tipo de Setup")
+            st.dataframe(
+                pd.DataFrame(setup_type_summary),
+                width="stretch",
+                hide_index=True,
+            )
+
+        position_management_summary = results.get('position_management_summary') or {}
+        exit_type_summary = results.get('exit_type_summary') or stats.get('exit_type_breakdown') or []
+        entry_quality_summary = results.get('entry_quality_summary') or stats.get('entry_quality_breakdown') or []
+        risk_mode_summary = results.get('risk_mode_summary') or stats.get('risk_mode_breakdown') or []
+        signal_audit_summary = results.get('signal_audit_summary') or {}
+        if position_management_summary or exit_type_summary:
+            st.markdown("---")
+            st.subheader("🛡️ Gestão da Posição")
+
+            mgmt_col1, mgmt_col2, mgmt_col3, mgmt_col4 = st.columns(4)
+            with mgmt_col1:
+                st.metric("Break-even", int(position_management_summary.get('break_even_activated_count', 0) or 0))
+            with mgmt_col2:
+                st.metric("Trailing", int(position_management_summary.get('trailing_activated_count', 0) or 0))
+            with mgmt_col3:
+                st.metric("Proteção Pós-Pump", int(position_management_summary.get('post_pump_protection_count', 0) or 0))
+            with mgmt_col4:
+                st.metric(
+                    "MFE / MAE Médio",
+                    f"{float(position_management_summary.get('avg_mfe_pct', 0.0) or 0.0):.2f}% / "
+                    f"{float(position_management_summary.get('avg_mae_pct', 0.0) or 0.0):.2f}%"
+                )
+
+            exit_counts = stats.get('exit_reason_counts') or {}
+            if exit_counts:
+                exit_rows = [{"Saída": reason, "Qtd": count} for reason, count in exit_counts.items()]
+                st.caption("Saídas por Tipo")
+                st.dataframe(pd.DataFrame(exit_rows), width="stretch", hide_index=True)
+
+            if exit_type_summary:
+                st.caption("Performance por Tipo de Saída")
+                st.dataframe(pd.DataFrame(exit_type_summary), width="stretch", hide_index=True)
+
+        if entry_quality_summary or risk_mode_summary or signal_audit_summary:
+            st.markdown("---")
+            st.subheader("ðŸ§¬ Analytics Agregados")
+
+            analytics_col1, analytics_col2, analytics_col3, analytics_col4 = st.columns(4)
+            with analytics_col1:
+                st.metric("Approval Rate", f"{float(signal_audit_summary.get('approval_rate_pct', 0.0) or 0.0):.2f}%")
+            with analytics_col2:
+                st.metric("MFE MÃ©dio", f"{float(stats.get('avg_mfe_pct', 0.0) or 0.0):.2f}%")
+            with analytics_col3:
+                st.metric("MAE MÃ©dio", f"{float(stats.get('avg_mae_pct', 0.0) or 0.0):.2f}%")
+            with analytics_col4:
+                st.metric("Lucro Devolvido", f"{float(stats.get('avg_profit_given_back_pct', 0.0) or 0.0):.2f}%")
+
+            analytics_breakdown_col1, analytics_breakdown_col2, analytics_breakdown_col3 = st.columns(3)
+            with analytics_breakdown_col1:
+                if entry_quality_summary:
+                    st.caption("Performance por Entry Quality")
+                    st.dataframe(pd.DataFrame(entry_quality_summary), width="stretch", hide_index=True)
+            with analytics_breakdown_col2:
+                if risk_mode_summary:
+                    st.caption("Performance por Risk Mode")
+                    st.dataframe(pd.DataFrame(risk_mode_summary), width="stretch", hide_index=True)
+            with analytics_breakdown_col3:
+                approval_by_regime = signal_audit_summary.get('approval_by_regime') or {}
+                if approval_by_regime:
+                    st.caption("AprovaÃ§Ã£o por Regime")
+                    st.dataframe(
+                        pd.DataFrame(
+                            [
+                                {
+                                    "Regime": regime,
+                                    "Candidatos": payload.get('candidate_count', 0),
+                                    "Aprovados": payload.get('approved_count', 0),
+                                    "Taxa %": payload.get('approval_rate_pct', 0.0),
+                                }
+                                for regime, payload in approval_by_regime.items()
+                            ]
+                        ),
+                        width="stretch",
+                        hide_index=True,
+                    )
+
+            block_reason_counts = signal_audit_summary.get('block_reason_counts') or {}
+            time_analytics = results.get('time_analytics') or {}
+            hour_of_day_breakdown = time_analytics.get('hour_of_day_breakdown') or []
+            day_of_week_breakdown = time_analytics.get('day_of_week_breakdown') or []
+            holding_time_breakdown = time_analytics.get('holding_time_breakdown') or []
+            if block_reason_counts or hour_of_day_breakdown or day_of_week_breakdown or holding_time_breakdown:
+                analytics_time_col1, analytics_time_col2, analytics_time_col3 = st.columns(3)
+                with analytics_time_col1:
+                    if block_reason_counts:
+                        st.caption("Top Block Reasons")
+                        st.dataframe(
+                            pd.DataFrame(
+                                [{"Motivo": reason, "Qtd": count} for reason, count in block_reason_counts.items()]
+                            ),
+                            width="stretch",
+                            hide_index=True,
+                        )
+                with analytics_time_col2:
+                    if hour_of_day_breakdown or day_of_week_breakdown:
+                        st.caption("Performance por Hora / Dia")
+                        time_rows = [
+                            {
+                                "Tipo": "Hora",
+                                "Bucket": row.get('hour_of_day'),
+                                "Trades": row.get('total_trades', 0),
+                                "Retorno %": row.get('total_return_pct', 0.0),
+                                "Win Rate %": row.get('win_rate', 0.0),
+                            }
+                            for row in hour_of_day_breakdown
+                        ]
+                        time_rows.extend(
+                            [
+                                {
+                                    "Tipo": "Dia",
+                                    "Bucket": row.get('day_of_week'),
+                                    "Trades": row.get('total_trades', 0),
+                                    "Retorno %": row.get('total_return_pct', 0.0),
+                                    "Win Rate %": row.get('win_rate', 0.0),
+                                }
+                                for row in day_of_week_breakdown
+                            ]
+                        )
+                        st.dataframe(pd.DataFrame(time_rows), width="stretch", hide_index=True)
+                with analytics_time_col3:
+                    if holding_time_breakdown:
+                        st.caption("Holding Time Buckets")
+                        st.dataframe(pd.DataFrame(holding_time_breakdown), width="stretch", hide_index=True)
 
         if results.get('validation'):
             validation = results['validation']
@@ -3607,6 +4079,9 @@ with tab2:
 
             portfolio_df = pd.DataFrame(results['portfolio_values'])
             portfolio_df['timestamp'] = pd.to_datetime(portfolio_df['timestamp'])
+            running_max = portfolio_df['portfolio_value'].cummax()
+            portfolio_df['drawdown_pct'] = ((running_max - portfolio_df['portfolio_value']) / running_max.replace(0, np.nan)) * 100
+            equity_diagnostics = results.get('equity_diagnostics') or {}
 
             fig_portfolio = go.Figure()
             fig_portfolio.add_trace(go.Scatter(
@@ -3633,6 +4108,32 @@ with tab2:
             )
 
             st.plotly_chart(fig_portfolio, width="stretch")
+
+            drawdown_col1, drawdown_col2, drawdown_col3, drawdown_col4 = st.columns(4)
+            with drawdown_col1:
+                st.metric("Drawdown MÃ©dio", f"{float(equity_diagnostics.get('average_drawdown_pct', 0.0) or 0.0):.2f}%")
+            with drawdown_col2:
+                st.metric("RecuperaÃ§Ã£o MÃ¡x.", int(equity_diagnostics.get('max_recovery_periods', 0) or 0))
+            with drawdown_col3:
+                st.metric("Payoff Ratio", f"{float(stats.get('payoff_ratio', 0.0) or 0.0):.2f}")
+            with drawdown_col4:
+                st.metric("Giveback no Topo", f"{float(equity_diagnostics.get('profit_giveback_pct', 0.0) or 0.0):.2f}%")
+
+            fig_drawdown = go.Figure()
+            fig_drawdown.add_trace(go.Scatter(
+                x=portfolio_df['timestamp'],
+                y=portfolio_df['drawdown_pct'].fillna(0.0),
+                mode='lines',
+                name='Drawdown %',
+                line=dict(color='crimson', width=2)
+            ))
+            fig_drawdown.update_layout(
+                title=f"Drawdown Curve - {result_symbol} {result_timeframe}",
+                xaxis_title="Data",
+                yaxis_title="Drawdown %",
+                height=280
+            )
+            st.plotly_chart(fig_drawdown, width="stretch")
 
         # Trade history table
         if results['trades']:
@@ -3669,6 +4170,74 @@ with tab2:
                 if len(trade_df_display) > display_limit:
                     if st.button(f"📋 Ver todos os {len(trade_df_display)} trades", key="show_all_trades"):
                         st.dataframe(trade_df_display, width='stretch', hide_index=True)
+
+        if results.get('trade_autopsy'):
+            st.markdown("---")
+            st.subheader("ðŸ§ª Trade AutÃ³psia")
+
+            autopsy_df = pd.DataFrame(results['trade_autopsy'])
+            if not autopsy_df.empty:
+                filter_col1, filter_col2, filter_col3, filter_col4 = st.columns(4)
+                with filter_col1:
+                    regime_filter = st.multiselect(
+                        "Regime",
+                        sorted(str(x) for x in autopsy_df['regime'].dropna().unique().tolist()),
+                        default=[],
+                        key="autopsy_regime_filter",
+                    )
+                with filter_col2:
+                    setup_filter = st.multiselect(
+                        "Setup",
+                        sorted(str(x) for x in autopsy_df['setup_name'].dropna().unique().tolist()),
+                        default=[],
+                        key="autopsy_setup_filter",
+                    )
+                with filter_col3:
+                    exit_filter = st.multiselect(
+                        "SaÃ­da",
+                        sorted(str(x) for x in autopsy_df['exit_reason'].dropna().unique().tolist()),
+                        default=[],
+                        key="autopsy_exit_filter",
+                    )
+                with filter_col4:
+                    risk_filter = st.multiselect(
+                        "Risk Mode",
+                        sorted(str(x) for x in autopsy_df['risk_mode'].dropna().unique().tolist()),
+                        default=[],
+                        key="autopsy_risk_filter",
+                    )
+
+                filtered_autopsy = autopsy_df.copy()
+                if regime_filter:
+                    filtered_autopsy = filtered_autopsy[filtered_autopsy['regime'].astype(str).isin(regime_filter)]
+                if setup_filter:
+                    filtered_autopsy = filtered_autopsy[filtered_autopsy['setup_name'].astype(str).isin(setup_filter)]
+                if exit_filter:
+                    filtered_autopsy = filtered_autopsy[filtered_autopsy['exit_reason'].astype(str).isin(exit_filter)]
+                if risk_filter:
+                    filtered_autopsy = filtered_autopsy[filtered_autopsy['risk_mode'].astype(str).isin(risk_filter)]
+
+                visible_columns = [
+                    'entry_timestamp', 'timestamp', 'setup_name', 'regime', 'structure_state',
+                    'confirmation_state', 'entry_quality', 'entry_score', 'risk_mode',
+                    'exit_reason', 'profit_loss_pct', 'profit_loss', 'mfe_pct', 'mae_pct',
+                    'rr_realized', 'profit_given_back_pct', 'holding_time_minutes'
+                ]
+                available_columns = [column for column in visible_columns if column in filtered_autopsy.columns]
+                st.dataframe(filtered_autopsy[available_columns], width='stretch', hide_index=True)
+
+        if results.get('signal_audit'):
+            st.markdown("---")
+            st.subheader("ðŸš§ Block Analytics")
+            signal_audit_df = pd.DataFrame(results['signal_audit'])
+            if not signal_audit_df.empty:
+                preview_columns = [
+                    'timestamp', 'candidate_signal', 'approved_signal', 'blocked_signal',
+                    'block_reason', 'regime', 'structure_state', 'confirmation_state',
+                    'entry_quality', 'entry_score', 'scenario_score', 'risk_mode'
+                ]
+                available_preview_columns = [column for column in preview_columns if column in signal_audit_df.columns]
+                st.dataframe(signal_audit_df[available_preview_columns].tail(50), width='stretch', hide_index=True)
 
         # Test comparison and history
         st.markdown("---")
@@ -3901,8 +4470,11 @@ with tab5:
     elif admin_password == configured_admin_password:
         st.success("✅ Acesso autorizado!")
 
+        user_manager = get_user_manager()
+        admin_telegram_bot = get_or_init_admin_telegram_bot()
+
         # Admin stats
-        stats = st.session_state.user_manager.get_user_stats()
+        stats = user_manager.get_user_stats()
 
         col1, col2, col3, col4 = st.columns(4)
 
@@ -3920,7 +4492,7 @@ with tab5:
         st.subheader("👥 Gerenciamento de Usuários")
 
         # List users
-        users = st.session_state.user_manager.list_users(50)
+        users = user_manager.list_users(50)
         if users:
             users_df = pd.DataFrame(users)
 
@@ -3968,7 +4540,7 @@ with tab5:
         with col1:
             user_id_upgrade = st.number_input("ID do Usuário para Upgrade", min_value=1, key="upgrade_user")
             if st.button("💎 Promover para Premium"):
-                if st.session_state.user_manager.upgrade_to_premium(int(user_id_upgrade)):
+                if user_manager.upgrade_to_premium(int(user_id_upgrade)):
                     st.success(f"✅ Usuário {user_id_upgrade} promovido para Premium!")
                 else:
                     st.error("❌ Usuário não encontrado")
@@ -3976,14 +4548,12 @@ with tab5:
         with col2:
             new_admin_id = st.number_input("ID do Novo Admin", min_value=1, key="new_admin")
             if st.button("👑 Adicionar Admin"):
-                st.session_state.user_manager.add_admin(int(new_admin_id))
+                user_manager.add_admin(int(new_admin_id))
                 st.success(f"✅ Usuário {new_admin_id} adicionado como Admin!")
 
         # Telegram Bot Configuration
         st.markdown("---")
         st.subheader("🤖 Configuração do Bot Telegram")
-        admin_telegram_bot = st.session_state.get("telegram_trading_bot")
-
         bot_token_admin = st.text_input(
             "Token do Bot Telegram",
             type="password",
