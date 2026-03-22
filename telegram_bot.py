@@ -1209,24 +1209,24 @@ class TelegramTradingBot:
             f"• Análises hoje: {stats.get('analyses_today', 0)}"
         )
         msg += (
-            f"\nâ€¢ Paper trades fechados: {paper_summary.get('closed_trades', 0)}"
-            f"\nâ€¢ Win rate paper: {paper_summary.get('win_rate', 0):.1f}%"
-            f"\nâ€¢ Resultado paper acumulado: {paper_summary.get('total_result_pct', 0):.2f}%"
+            f"\n• Paper trades fechados: {paper_summary.get('closed_trades', 0)}"
+            f"\n• Win rate paper: {paper_summary.get('win_rate', 0):.1f}%"
+            f"\n• Resultado paper acumulado: {paper_summary.get('total_result_pct', 0):.2f}%"
         )
         msg += (
-            f"\nâ€¢ Edge monitor: {edge_summary.get('status')}"
-            f"\nâ€¢ Baseline PF: {edge_summary.get('baseline_profit_factor', 0):.2f}"
-            f"\nâ€¢ Paper PF: {edge_summary.get('paper_profit_factor', 0):.2f}"
+            f"\n• Edge monitor: {edge_summary.get('status')}"
+            f"\n• Baseline PF: {edge_summary.get('baseline_profit_factor', 0):.2f}"
+            f"\n• Paper PF: {edge_summary.get('paper_profit_factor', 0):.2f}"
         )
         msg += (
-            f"\nâ€¢ Setups aprovados: {governance_counts.get('approved', 0)}"
-            f"\nâ€¢ Setups observando: {governance_counts.get('observing', 0)}"
-            f"\nâ€¢ Setups bloqueados: {governance_counts.get('blocked', 0)}"
+            f"\n• Setups aprovados: {governance_counts.get('approved', 0)}"
+            f"\n• Setups observando: {governance_counts.get('observing', 0)}"
+            f"\n• Setups bloqueados: {governance_counts.get('blocked', 0)}"
         )
         msg += (
-            f"\nâ€¢ Trades abertos: {risk_summary.get('open_trades', 0)}"
-            f"\nâ€¢ Risco aberto: {risk_summary.get('total_open_risk_pct', 0):.2f}%"
-            f"\nâ€¢ Notional aberto: ${risk_summary.get('total_open_position_notional', 0):.2f}"
+            f"\n• Trades abertos: {risk_summary.get('open_trades', 0)}"
+            f"\n• Risco aberto: {risk_summary.get('total_open_risk_pct', 0):.2f}%"
+            f"\n• Notional aberto: ${risk_summary.get('total_open_position_notional', 0):.2f}"
         )
         msg += (
             f"\n- Breaker risco: {'ok' if risk_summary.get('circuit_breaker_allowed', True) else 'ativo'}"

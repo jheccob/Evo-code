@@ -1417,8 +1417,52 @@ class TradingBotLogicTests(unittest.TestCase):
 
         evaluation = TradingBot.get_price_structure_evaluation(bot, structure_df, timeframe="1h")
 
-        self.assertIn(evaluation["structure_state"], {"continuation", "pullback"})
+        self.assertIn(evaluation["structure_state"], {"continuation", "continuation_weak_but_valid", "pullback"})
         self.assertGreaterEqual(evaluation["structure_quality"], 4.5)
+
+    def test_price_structure_evaluation_returns_continuation_weak_but_valid_when_trend_is_preserved(self):
+        bot = TradingBot.__new__(TradingBot)
+        bot.timeframe = "1h"
+
+        base_rows = [
+            {
+                "open": 100.0 + i * 0.35,
+                "high": 100.8 + i * 0.35,
+                "low": 99.7 + i * 0.35,
+                "close": 100.45 + i * 0.35,
+                "atr": 1.0,
+                "sma_21": 99.6 + i * 0.25,
+                "sma_50": 98.9 + i * 0.20,
+                "volume_ratio": 1.05,
+                "market_regime": "trending",
+                "is_closed": True,
+            }
+            for i in range(7)
+        ]
+        base_rows.append(
+            {
+                "open": 102.50,
+                "high": 102.86,
+                "low": 102.45,
+                "close": 102.58,
+                "atr": 1.05,
+                "sma_21": 101.92,
+                "sma_50": 100.82,
+                "volume_ratio": 1.02,
+                "market_regime": "trending",
+                "is_closed": True,
+            }
+        )
+        structure_df = pd.DataFrame(
+            base_rows,
+            index=pd.date_range("2026-01-01 00:00:00", periods=8, freq="1h"),
+        )
+
+        evaluation = TradingBot.get_price_structure_evaluation(bot, structure_df, timeframe="1h")
+
+        self.assertEqual(evaluation["structure_state"], "continuation_weak_but_valid")
+        self.assertTrue(evaluation["is_tradeable"])
+        self.assertGreaterEqual(evaluation["structure_quality"], 4.8)
 
     def test_check_signal_1h_allows_moderate_confidence_when_pipeline_is_strong(self):
         bot = TradingBot.__new__(TradingBot)
@@ -1851,7 +1895,15 @@ class TradingBotLogicTests(unittest.TestCase):
         self.assertEqual(evaluation["entry_quality"], "bad")
         self.assertEqual(evaluation["setup_type"], "continuation_breakout")
         self.assertEqual(evaluation["candle_quality"], "bad")
-        self.assertIn("continuacao sem candle minimamente aceitavel", evaluation["reason"])
+        self.assertTrue(
+            any(
+                token in evaluation["reason"]
+                for token in (
+                    "continuacao sem candle minimamente aceitavel",
+                    "candle atual oferece baixa qualidade",
+                )
+            )
+        )
 
     def test_validate_entry_quality_accepts_imperfect_but_valid_entry(self):
         bot = TradingBot.__new__(TradingBot)
@@ -2340,6 +2392,84 @@ class TradingBotLogicTests(unittest.TestCase):
         self.assertLess(evaluation["scenario_score"], 6.9)
         self.assertIn("resistencia proxima penaliza o cenario", evaluation["notes"])
 
+    def test_build_scenario_score_adds_strong_pullback_bonus(self):
+        bot = TradingBot.__new__(TradingBot)
+
+        evaluation = TradingBot.build_scenario_score(
+            bot,
+            context_result={"market_bias": "bullish", "context_strength": 6.5, "has_minimum_history": True},
+            structure_result={
+                "structure_state": "pullback",
+                "price_location": "trend_zone",
+                "structure_quality": 6.2,
+                "has_minimum_history": True,
+            },
+            confirmation_result={"confirmation_state": "confirmed", "confirmation_score": 6.4, "has_minimum_history": True},
+            entry_result={
+                "entry_quality": "acceptable",
+                "entry_score": 5.5,
+                "rr_estimate": 1.3,
+                "setup_type": "pullback_trend",
+                "has_minimum_history": True,
+            },
+        )
+
+        self.assertEqual(evaluation["pullback_intensity"], "strong")
+        self.assertEqual(evaluation["pullback_score"], 3.0)
+        self.assertGreaterEqual(evaluation["scenario_score"], 8.0)
+
+    def test_build_scenario_score_adds_moderate_pullback_bonus(self):
+        bot = TradingBot.__new__(TradingBot)
+
+        evaluation = TradingBot.build_scenario_score(
+            bot,
+            context_result={"market_bias": "bullish", "context_strength": 6.2, "has_minimum_history": True},
+            structure_result={
+                "structure_state": "pullback",
+                "price_location": "trend_zone",
+                "structure_quality": 5.2,
+                "has_minimum_history": True,
+            },
+            confirmation_result={"confirmation_state": "confirmed", "confirmation_score": 6.0, "has_minimum_history": True},
+            entry_result={
+                "entry_quality": "acceptable",
+                "entry_score": 5.2,
+                "rr_estimate": 1.2,
+                "setup_type": "pullback_trend",
+                "has_minimum_history": True,
+            },
+        )
+
+        self.assertEqual(evaluation["pullback_intensity"], "moderate")
+        self.assertEqual(evaluation["pullback_score"], 1.5)
+        self.assertGreaterEqual(evaluation["scenario_score"], 6.0)
+
+    def test_build_scenario_score_keeps_valid_continuation_without_pullback_bonus(self):
+        bot = TradingBot.__new__(TradingBot)
+
+        evaluation = TradingBot.build_scenario_score(
+            bot,
+            context_result={"market_bias": "bullish", "context_strength": 6.0, "has_minimum_history": True},
+            structure_result={
+                "structure_state": "continuation",
+                "price_location": "trend_zone",
+                "structure_quality": 6.0,
+                "has_minimum_history": True,
+            },
+            confirmation_result={"confirmation_state": "confirmed", "confirmation_score": 6.1, "has_minimum_history": True},
+            entry_result={
+                "entry_quality": "acceptable",
+                "entry_score": 5.0,
+                "rr_estimate": 1.2,
+                "setup_type": "pullback_trend",
+                "has_minimum_history": True,
+            },
+        )
+
+        self.assertEqual(evaluation["pullback_intensity"], "continuation_valid")
+        self.assertEqual(evaluation["pullback_score"], 0.0)
+        self.assertGreaterEqual(evaluation["scenario_score"], 5.0)
+
     def test_check_signal_downgrades_when_scenario_grade_is_c(self):
         bot = TradingBot.__new__(TradingBot)
         bot.rsi_min = 30
@@ -2618,6 +2748,257 @@ class TradingBotLogicTests(unittest.TestCase):
 
         self.assertEqual(decision["action"], "wait")
         self.assertIn("neutro", decision["block_reason"])
+
+    def test_make_trade_decision_allows_mid_scenario_when_structure_and_confirmation_are_strong(self):
+        bot = TradingBot.__new__(TradingBot)
+
+        decision = TradingBot.make_trade_decision(
+            bot,
+            context_result={"market_bias": "bullish", "is_tradeable": True},
+            structure_result={
+                "structure_state": "continuation",
+                "price_location": "trend_zone",
+                "structure_quality": 6.4,
+                "has_minimum_history": True,
+            },
+            confirmation_result={"confirmation_state": "confirmed", "hypothesis_side": "bullish", "has_minimum_history": True},
+            entry_result={"entry_quality": "strong", "has_minimum_history": True},
+            hard_block_result={"hard_block": False, "block_reason": None},
+            scenario_score_result={"scenario_score": 4.8, "scenario_grade": "C", "has_minimum_history": True},
+        )
+
+        self.assertEqual(decision["action"], "buy")
+        self.assertIsNone(decision["block_reason"])
+
+    def test_make_trade_decision_prefers_continuation_breakout_with_mid_score(self):
+        bot = TradingBot.__new__(TradingBot)
+
+        decision = TradingBot.make_trade_decision(
+            bot,
+            context_result={"market_bias": "bullish", "is_tradeable": True},
+            structure_result={
+                "structure_state": "continuation",
+                "price_location": "trend_zone",
+                "structure_quality": 6.0,
+                "has_minimum_history": True,
+            },
+            confirmation_result={"confirmation_state": "confirmed", "hypothesis_side": "bullish", "has_minimum_history": True},
+            entry_result={"entry_quality": "acceptable", "setup_type": "continuation_breakout", "has_minimum_history": True},
+            hard_block_result={"hard_block": False, "block_reason": None},
+            scenario_score_result={"scenario_score": 5.25, "scenario_grade": "C", "has_minimum_history": True},
+        )
+
+        self.assertEqual(decision["action"], "buy")
+        self.assertIsNone(decision["block_reason"])
+
+    def test_make_trade_decision_keeps_pullback_trend_selective_with_acceptable_entry(self):
+        bot = TradingBot.__new__(TradingBot)
+
+        decision = TradingBot.make_trade_decision(
+            bot,
+            context_result={"market_bias": "bullish", "is_tradeable": True},
+            structure_result={
+                "structure_state": "pullback",
+                "price_location": "trend_zone",
+                "structure_quality": 6.1,
+                "has_minimum_history": True,
+            },
+            confirmation_result={"confirmation_state": "confirmed", "hypothesis_side": "bullish", "has_minimum_history": True},
+            entry_result={"entry_quality": "acceptable", "setup_type": "pullback_trend", "has_minimum_history": True},
+            hard_block_result={"hard_block": False, "block_reason": None},
+            scenario_score_result={"scenario_score": 5.1, "scenario_grade": "C", "has_minimum_history": True},
+        )
+
+        self.assertEqual(decision["action"], "wait")
+        self.assertIn("Score do cenario", decision["block_reason"])
+
+    def test_make_trade_decision_allows_pullback_trend_with_strong_pullback_score(self):
+        bot = TradingBot.__new__(TradingBot)
+
+        decision = TradingBot.make_trade_decision(
+            bot,
+            context_result={"market_bias": "bullish", "is_tradeable": True},
+            structure_result={
+                "structure_state": "pullback",
+                "price_location": "trend_zone",
+                "structure_quality": 6.0,
+                "has_minimum_history": True,
+            },
+            confirmation_result={"confirmation_state": "confirmed", "hypothesis_side": "bullish", "has_minimum_history": True},
+            entry_result={"entry_quality": "acceptable", "setup_type": "pullback_trend", "has_minimum_history": True},
+            hard_block_result={"hard_block": False, "block_reason": None},
+            scenario_score_result={
+                "scenario_score": 5.35,
+                "scenario_grade": "C",
+                "pullback_intensity": "strong",
+                "pullback_score": 3.0,
+                "has_minimum_history": True,
+            },
+        )
+
+        self.assertEqual(decision["action"], "buy")
+        self.assertIsNone(decision["block_reason"])
+
+    def test_apply_entry_quality_alignment_downgrades_soft_bad_entry_to_weak_signal(self):
+        bot = TradingBot.__new__(TradingBot)
+
+        signal = TradingBot._apply_entry_quality_alignment(
+            bot,
+            "COMPRA",
+            {
+                "has_minimum_history": True,
+                "entry_quality": "bad",
+                "soft_bad_entry": True,
+            },
+        )
+
+        self.assertEqual(signal, "COMPRA_FRACA")
+
+    def test_check_hard_blocks_softens_bad_entry_when_context_is_strong(self):
+        bot = TradingBot.__new__(TradingBot)
+        entry_evaluation = {
+            "has_minimum_history": True,
+            "entry_quality": "bad",
+            "rr_estimate": 1.05,
+            "late_entry": False,
+            "stretched_price": False,
+            "entry_in_middle": False,
+            "structure_state": "continuation",
+            "rejection_reason": "candle atual oferece baixa qualidade",
+            "conflicts": ["candle atual oferece baixa qualidade"],
+            "notes": [],
+        }
+
+        evaluation = TradingBot.check_hard_blocks(
+            bot,
+            signal="COMPRA",
+            structure_evaluation={
+                "has_minimum_history": True,
+                "structure_state": "continuation",
+                "price_location": "trend_zone",
+                "structure_quality": 6.3,
+            },
+            confirmation_evaluation={
+                "has_minimum_history": True,
+                "confirmation_state": "confirmed",
+                "conflicts": [],
+            },
+            entry_quality_evaluation=entry_evaluation,
+            atr_pct=0.8,
+            min_atr_pct=0.12,
+        )
+
+        self.assertFalse(evaluation["hard_block"])
+        self.assertTrue(entry_evaluation.get("soft_bad_entry"))
+        self.assertTrue(any("suavizada" in note for note in evaluation.get("notes", [])))
+
+    def test_make_trade_decision_allows_soft_bad_entry_when_pipeline_is_strong(self):
+        bot = TradingBot.__new__(TradingBot)
+
+        decision = TradingBot.make_trade_decision(
+            bot,
+            context_result={"market_bias": "bullish", "has_minimum_history": True},
+            structure_result={
+                "structure_state": "continuation",
+                "price_location": "trend_zone",
+                "structure_quality": 6.2,
+                "has_minimum_history": True,
+            },
+            confirmation_result={
+                "confirmation_state": "confirmed",
+                "hypothesis_side": "bullish",
+                "has_minimum_history": True,
+            },
+            entry_result={
+                "entry_quality": "bad",
+                "soft_bad_entry": True,
+                "entry_score": 5.1,
+                "rr_estimate": 1.05,
+                "late_entry": False,
+                "stretched_price": False,
+                "has_minimum_history": True,
+            },
+            hard_block_result={"hard_block": False, "block_reason": None},
+            scenario_score_result={"scenario_score": 6.6, "scenario_grade": "B", "has_minimum_history": True},
+        )
+
+        self.assertEqual(decision["action"], "buy")
+        self.assertIsNone(decision["block_reason"])
+
+    def test_check_hard_blocks_blocks_countertrend_in_strong_regime_without_controlled_reversal(self):
+        bot = TradingBot.__new__(TradingBot)
+
+        evaluation = TradingBot.check_hard_blocks(
+            bot,
+            signal="VENDA",
+            regime_evaluation={
+                "has_minimum_history": True,
+                "regime": "trend_bull",
+                "regime_score": 7.5,
+                "volatility_state": "normal_volatility",
+                "parabolic": False,
+                "notes": ["mercado em trend_bull"],
+            },
+            structure_evaluation={
+                "has_minimum_history": True,
+                "structure_state": "continuation",
+                "price_location": "trend_zone",
+                "structure_quality": 6.8,
+            },
+            confirmation_evaluation={
+                "has_minimum_history": True,
+                "confirmation_state": "confirmed",
+                "conflicts": [],
+            },
+            entry_quality_evaluation={
+                "has_minimum_history": True,
+                "entry_quality": "acceptable",
+                "rr_estimate": 1.2,
+            },
+            atr_pct=0.8,
+            min_atr_pct=0.12,
+        )
+
+        self.assertTrue(evaluation["hard_block"])
+        self.assertEqual(evaluation["block_source"], "market_regime")
+
+    def test_check_hard_blocks_allows_controlled_reversal_in_strong_regime(self):
+        bot = TradingBot.__new__(TradingBot)
+
+        evaluation = TradingBot.check_hard_blocks(
+            bot,
+            signal="VENDA",
+            regime_evaluation={
+                "has_minimum_history": True,
+                "regime": "trend_bull",
+                "regime_score": 7.5,
+                "volatility_state": "normal_volatility",
+                "parabolic": False,
+                "notes": ["mercado em trend_bull"],
+            },
+            structure_evaluation={
+                "has_minimum_history": True,
+                "structure_state": "reversal_risk",
+                "price_location": "resistance",
+                "structure_quality": 6.7,
+                "reversal_risk": True,
+                "against_market_bias": False,
+            },
+            confirmation_evaluation={
+                "has_minimum_history": True,
+                "confirmation_state": "confirmed",
+                "conflicts": [],
+            },
+            entry_quality_evaluation={
+                "has_minimum_history": True,
+                "entry_quality": "acceptable",
+                "rr_estimate": 1.3,
+            },
+            atr_pct=0.8,
+            min_atr_pct=0.12,
+        )
+
+        self.assertFalse(evaluation["hard_block"])
 
     def test_evaluate_signal_pipeline_exposes_candidate_and_blocked_signal(self):
         bot = TradingBot.__new__(TradingBot)
@@ -3014,6 +3395,174 @@ class TradingBotLogicTests(unittest.TestCase):
         self.assertFalse(evaluation["hard_block"])
         self.assertIsNone(evaluation["block_reason"])
         self.assertEqual(evaluation["notes"], [])
+
+    def test_check_hard_blocks_blocks_pullback_setup_filter_when_contra_structure(self):
+        bot = TradingBot.__new__(TradingBot)
+
+        evaluation = TradingBot.check_hard_blocks(
+            bot,
+            signal="VENDA",
+            structure_evaluation={
+                "has_minimum_history": True,
+                "structure_state": "breakout",
+                "price_location": "trend_zone",
+                "structure_quality": 6.8,
+            },
+            confirmation_evaluation={"has_minimum_history": True, "confirmation_state": "confirmed", "conflicts": []},
+            entry_quality_evaluation={
+                "has_minimum_history": True,
+                "entry_quality": "acceptable",
+                "setup_type": "pullback_trend",
+                "rr_estimate": 1.4,
+            },
+            atr_pct=0.8,
+            min_atr_pct=0.12,
+        )
+
+        self.assertTrue(evaluation["hard_block"])
+        self.assertEqual(evaluation["block_source"], "setup_filter")
+        self.assertIn("pullback_trend", evaluation["block_reason"])
+
+    def test_check_hard_blocks_allows_short_pullback_setup_filter_in_bearish_regime(self):
+        bot = TradingBot.__new__(TradingBot)
+
+        evaluation = TradingBot.check_hard_blocks(
+            bot,
+            signal="VENDA",
+            context_evaluation={"is_tradeable": True, "market_bias": "bearish", "bias": "bearish", "context_strength": 6.7},
+            regime_evaluation={
+                "has_minimum_history": True,
+                "regime": "trend_bear",
+                "regime_score": 6.8,
+                "volatility_state": "normal_volatility",
+            },
+            structure_evaluation={
+                "has_minimum_history": True,
+                "structure_state": "pullback",
+                "price_location": "resistance",
+                "structure_quality": 6.1,
+            },
+            confirmation_evaluation={"has_minimum_history": True, "confirmation_state": "confirmed", "conflicts": []},
+            entry_quality_evaluation={
+                "has_minimum_history": True,
+                "entry_quality": "acceptable",
+                "setup_type": "pullback_trend",
+                "rr_estimate": 1.4,
+            },
+            atr_pct=0.8,
+            min_atr_pct=0.12,
+        )
+
+        self.assertFalse(evaluation["hard_block"])
+
+    def test_check_hard_blocks_allows_short_pullback_with_mixed_confirmation_when_structure_is_valid(self):
+        bot = TradingBot.__new__(TradingBot)
+
+        evaluation = TradingBot.check_hard_blocks(
+            bot,
+            signal="VENDA",
+            context_evaluation={"is_tradeable": True, "market_bias": "bearish", "bias": "bearish", "context_strength": 6.9},
+            regime_evaluation={
+                "has_minimum_history": True,
+                "regime": "trend_bear",
+                "regime_score": 7.1,
+                "volatility_state": "normal_volatility",
+            },
+            structure_evaluation={
+                "has_minimum_history": True,
+                "structure_state": "pullback",
+                "price_location": "resistance",
+                "structure_quality": 6.3,
+            },
+            confirmation_evaluation={"has_minimum_history": True, "confirmation_state": "mixed", "conflicts": []},
+            entry_quality_evaluation={
+                "has_minimum_history": True,
+                "entry_quality": "strong",
+                "entry_score": 7.6,
+                "rr_estimate": 1.3,
+                "setup_type": "pullback_trend",
+            },
+            atr_pct=0.8,
+            min_atr_pct=0.12,
+        )
+
+        self.assertFalse(evaluation["hard_block"])
+
+    def test_check_hard_blocks_allows_short_pullback_with_strict_mixed_override(self):
+        bot = TradingBot.__new__(TradingBot)
+
+        evaluation = TradingBot.check_hard_blocks(
+            bot,
+            signal="VENDA",
+            context_evaluation={"is_tradeable": True, "market_bias": "bearish", "bias": "bearish", "context_strength": 7.4},
+            regime_evaluation={
+                "has_minimum_history": True,
+                "regime": "trend_bear",
+                "regime_score": 7.3,
+                "volatility_state": "normal_volatility",
+            },
+            structure_evaluation={
+                "has_minimum_history": True,
+                "structure_state": "pullback",
+                "price_location": "resistance",
+                "structure_quality": 6.1,
+            },
+            confirmation_evaluation={
+                "has_minimum_history": True,
+                "confirmation_state": "mixed",
+                "confirmation_score": 7.1,
+                "conflicts": [],
+            },
+            entry_quality_evaluation={
+                "has_minimum_history": True,
+                "entry_quality": "strong",
+                "entry_score": 8.3,
+                "rr_estimate": 1.35,
+                "setup_type": "pullback_trend",
+            },
+            atr_pct=0.8,
+            min_atr_pct=0.12,
+        )
+
+        self.assertFalse(evaluation["hard_block"])
+
+    def test_check_hard_blocks_keeps_short_pullback_allowed_with_mixed_conflict_when_not_contra_structure(self):
+        bot = TradingBot.__new__(TradingBot)
+
+        evaluation = TradingBot.check_hard_blocks(
+            bot,
+            signal="VENDA",
+            context_evaluation={"is_tradeable": True, "market_bias": "bearish", "bias": "bearish", "context_strength": 7.4},
+            regime_evaluation={
+                "has_minimum_history": True,
+                "regime": "trend_bear",
+                "regime_score": 7.3,
+                "volatility_state": "normal_volatility",
+            },
+            structure_evaluation={
+                "has_minimum_history": True,
+                "structure_state": "pullback",
+                "price_location": "resistance",
+                "structure_quality": 6.1,
+            },
+            confirmation_evaluation={
+                "has_minimum_history": True,
+                "confirmation_state": "mixed",
+                "confirmation_score": 7.2,
+                "conflicts": ["MACD conflita com o vies bearish"],
+            },
+            entry_quality_evaluation={
+                "has_minimum_history": True,
+                "entry_quality": "strong",
+                "entry_score": 8.4,
+                "rr_estimate": 1.4,
+                "setup_type": "pullback_trend",
+            },
+            atr_pct=0.8,
+            min_atr_pct=0.12,
+        )
+
+        self.assertFalse(evaluation["hard_block"])
 
     def test_check_signal_records_hard_block_reason_for_ranging_market(self):
         bot = TradingBot.__new__(TradingBot)

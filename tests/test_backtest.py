@@ -362,6 +362,53 @@ class BacktestEngineTests(unittest.TestCase):
         data.iloc[214, data.columns.get_loc("ema_21")] = 103.2
         return data
 
+    def test_apply_setup_execution_policy_blocks_disallowed_setup(self):
+        engine = BacktestEngine(trading_bot=DeterministicTradingBot())
+        pipeline = {
+            "candidate_signal": "COMPRA",
+            "approved_signal": "COMPRA",
+            "blocked_signal": None,
+            "analytical_signal": "COMPRA",
+            "block_reason": None,
+            "block_source": None,
+            "entry_quality_evaluation": {"setup_type": "pullback_trend"},
+            "trade_decision": {"action": "buy", "setup_type": "pullback_trend"},
+            "hard_block_evaluation": {"hard_block": False},
+        }
+
+        updated = engine._apply_setup_execution_policy(
+            pipeline,
+            allowed_execution_setups={"continuation_breakout"},
+        )
+
+        self.assertEqual(updated["approved_signal"], None)
+        self.assertEqual(updated["blocked_signal"], "COMPRA")
+        self.assertEqual(updated["analytical_signal"], "NEUTRO")
+        self.assertEqual(updated["block_source"], "setup_execution_policy")
+        self.assertIn("modo pesquisa", str(updated["block_reason"]))
+        self.assertEqual(updated["trade_decision"]["action"], "wait")
+        self.assertTrue(updated["hard_block_evaluation"]["hard_block"])
+
+    def test_apply_setup_execution_policy_keeps_allowed_setup(self):
+        engine = BacktestEngine(trading_bot=DeterministicTradingBot())
+        pipeline = {
+            "candidate_signal": "VENDA",
+            "approved_signal": "VENDA",
+            "blocked_signal": None,
+            "analytical_signal": "VENDA",
+            "entry_quality_evaluation": {"setup_type": "continuation_breakout"},
+            "trade_decision": {"action": "sell", "setup_type": "continuation_breakout"},
+        }
+
+        updated = engine._apply_setup_execution_policy(
+            pipeline,
+            allowed_execution_setups={"continuation_breakout"},
+        )
+
+        self.assertEqual(updated["approved_signal"], "VENDA")
+        self.assertEqual(updated["blocked_signal"], None)
+        self.assertEqual(updated["analytical_signal"], "VENDA")
+
     def test_run_backtest_returns_dashboard_contract_and_respects_small_take_profit_pct(self):
         bot = DeterministicTradingBot()
         engine = FixedDataBacktestEngine(self._build_market_data(), bot)
@@ -385,6 +432,11 @@ class BacktestEngineTests(unittest.TestCase):
         self.assertEqual(results["stats"]["winning_trades"], 1)
         self.assertIn("profit_factor", results["stats"])
         self.assertTrue(results["portfolio_values"])
+        self.assertTrue(results["benchmark_values"])
+        self.assertEqual(results["benchmark_values"][0]["benchmark_value"], 1000.0)
+        self.assertIn("objective_check", results)
+        self.assertIn("status", results["objective_check"])
+        self.assertIn("objective_score", results["objective_check"])
         self.assertEqual(results["candidate_count"], 1)
         self.assertEqual(results["approved_count"], 1)
         self.assertEqual(results["blocked_count"], 0)
@@ -430,6 +482,10 @@ class BacktestEngineTests(unittest.TestCase):
         self.assertEqual(results["setup_type_counts"]["continuation_breakout"], 2)
         self.assertEqual(results["setup_type_counts"]["pullback_trend"], 1)
         self.assertEqual(results["setup_type_approved_counts"]["continuation_breakout"], 1)
+        self.assertEqual(results["setup_type_blocked_counts"]["continuation_breakout"], 1)
+        self.assertEqual(results["setup_type_blocked_counts"]["pullback_trend"], 1)
+        self.assertEqual(results["setup_type_block_rates"]["continuation_breakout"], 50.0)
+        self.assertEqual(results["setup_type_block_rates"]["pullback_trend"], 100.0)
         self.assertEqual(results["signal_pipeline_stats"]["candidate_count"], 3)
         self.assertEqual(results["signal_audit_summary"]["candidate_count"], 3)
         self.assertEqual(results["signal_audit_summary"]["blocked_count"], 2)
@@ -1097,6 +1153,157 @@ class BacktestEngineTests(unittest.TestCase):
         self.assertEqual(optimization_results["summary"]["completed_tests"], 2)
         self.assertEqual(optimization_results["summary"]["failed_tests"], 2)
 
+    def test_should_force_opposite_exit_requires_strong_opposite_context(self):
+        engine = BacktestEngine(trading_bot=DeterministicTradingBot())
+        should_exit = engine._should_force_opposite_exit(
+            position_side="long",
+            analytical_signal="VENDA",
+            signal_pipeline={
+                "trade_decision": {"confidence": 6.4},
+                "scenario_evaluation": {"scenario_score": 6.1},
+                "confirmation_evaluation": {"confirmation_state": "confirmed"},
+                "structure_evaluation": {"structure_state": "continuation"},
+            },
+        )
+        self.assertTrue(should_exit)
+
+    def test_should_force_opposite_exit_ignores_weak_or_low_quality_reversal(self):
+        engine = BacktestEngine(trading_bot=DeterministicTradingBot())
+        weak_signal_exit = engine._should_force_opposite_exit(
+            position_side="long",
+            analytical_signal="VENDA_FRACA",
+            signal_pipeline={
+                "trade_decision": {"confidence": 8.0},
+                "scenario_evaluation": {"scenario_score": 8.0},
+                "confirmation_evaluation": {"confirmation_state": "confirmed"},
+                "structure_evaluation": {"structure_state": "breakout"},
+            },
+        )
+        weak_context_exit = engine._should_force_opposite_exit(
+            position_side="long",
+            analytical_signal="VENDA",
+            signal_pipeline={
+                "trade_decision": {"confidence": 5.0},
+                "scenario_evaluation": {"scenario_score": 4.9},
+                "confirmation_evaluation": {"confirmation_state": "mixed"},
+                "structure_evaluation": {"structure_state": "weak_structure"},
+            },
+        )
+        self.assertFalse(weak_signal_exit)
+        self.assertFalse(weak_context_exit)
+
+    def test_build_objective_setup_check_marks_approved_on_robust_metrics(self):
+        engine = BacktestEngine(trading_bot=DeterministicTradingBot())
+
+        objective_check = engine._build_objective_setup_check(
+            stats={
+                "total_trades": 240,
+                "total_return_pct": 18.5,
+                "profit_factor": 1.42,
+                "expectancy_pct": 0.18,
+                "max_drawdown": 11.2,
+            },
+            validation={
+                "oos_passed": True,
+                "out_of_sample": {
+                    "stats": {
+                        "total_trades": 72,
+                        "total_return_pct": 5.6,
+                        "profit_factor": 1.16,
+                        "expectancy_pct": 0.07,
+                    }
+                },
+            },
+            walk_forward={
+                "total_windows": 5,
+                "overall_passed": True,
+                "pass_rate_pct": 80.0,
+                "avg_oos_return_pct": 2.3,
+                "avg_oos_profit_factor": 1.08,
+            },
+            signal_pipeline_stats={
+                "candidate_count": 980,
+                "approval_rate_pct": 19.7,
+            },
+            risk_engine_summary={
+                "risk_blocked_count": 130,
+            },
+            setup_type_summary=[
+                {
+                    "setup_type": "continuation_breakout",
+                    "total_trades": 160,
+                    "profit_factor": 1.34,
+                    "win_rate": 57.2,
+                    "net_profit": 1420.0,
+                },
+                {
+                    "setup_type": "pullback_trend",
+                    "total_trades": 80,
+                    "profit_factor": 1.12,
+                    "win_rate": 52.5,
+                    "net_profit": 460.0,
+                },
+            ],
+        )
+
+        self.assertEqual(objective_check["status"], "approved")
+        self.assertGreaterEqual(objective_check["objective_score"], 75.0)
+        self.assertEqual(objective_check["recommended_setup"], "continuation_breakout")
+        self.assertTrue(objective_check["checks"])
+        self.assertFalse(objective_check["blockers"])
+
+    def test_build_objective_setup_check_blocks_weak_configuration(self):
+        engine = BacktestEngine(trading_bot=DeterministicTradingBot())
+
+        objective_check = engine._build_objective_setup_check(
+            stats={
+                "total_trades": 42,
+                "total_return_pct": -8.2,
+                "profit_factor": 0.82,
+                "expectancy_pct": -0.11,
+                "max_drawdown": 26.4,
+            },
+            validation={
+                "oos_passed": False,
+                "out_of_sample": {
+                    "stats": {
+                        "total_trades": 10,
+                        "total_return_pct": -3.6,
+                        "profit_factor": 0.74,
+                        "expectancy_pct": -0.09,
+                    }
+                },
+            },
+            walk_forward={
+                "total_windows": 3,
+                "overall_passed": False,
+                "pass_rate_pct": 33.3,
+                "avg_oos_return_pct": -1.2,
+                "avg_oos_profit_factor": 0.81,
+            },
+            signal_pipeline_stats={
+                "candidate_count": 220,
+                "approval_rate_pct": 3.5,
+            },
+            risk_engine_summary={
+                "risk_blocked_count": 190,
+            },
+            setup_type_summary=[
+                {
+                    "setup_type": "continuation_breakout",
+                    "total_trades": 32,
+                    "profit_factor": 0.88,
+                    "win_rate": 41.0,
+                    "net_profit": -540.0,
+                }
+            ],
+        )
+
+        self.assertEqual(objective_check["status"], "blocked")
+        self.assertLess(objective_check["objective_score"], 55.0)
+        self.assertTrue(objective_check["blockers"])
+        self.assertIn("Amostra insuficiente", " | ".join(objective_check["blockers"]))
+
 
 class DashboardBacktestIntegrationTests(unittest.TestCase):
     def test_dashboard_passes_existing_risk_and_filter_inputs_to_backtest(self):
@@ -1116,6 +1323,10 @@ class DashboardBacktestIntegrationTests(unittest.TestCase):
         self.assertIn("trade_autopsy", source)
         self.assertIn("signal_audit", source)
         self.assertIn("time_analytics", source)
+        self.assertIn("objective_check", source)
+        self.assertIn("Checagem Objetiva de Sobrevivência", source)
+        self.assertIn("Linha do Tempo da Execução", source)
+        self.assertIn("Taxa Aprovação %", source)
 
 
 if __name__ == "__main__":

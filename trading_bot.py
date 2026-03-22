@@ -9,6 +9,8 @@ from config import AppConfig, ProductionConfig
 
 logger = logging.getLogger(__name__)
 ACTIONABLE_SIGNALS = {"COMPRA", "VENDA", "COMPRA_FRACA", "VENDA_FRACA"}
+TREND_STRUCTURE_STATES = {"continuation", "continuation_weak_but_valid", "pullback", "breakout"}
+CONTINUATION_STRUCTURE_STATES = {"continuation", "continuation_weak_but_valid"}
 
 class TradingBot:
     def __init__(self, allow_simulated_data=False):
@@ -911,6 +913,12 @@ class TradingBot:
         elif bearish_stack and price_location in {"trend_zone", "resistance"} and close_location <= 0.62 and not losing_structure:
             structure_state = "continuation"
             reasons.append("continuidade apos micro pausa")
+        elif bullish_stack and price_location in {"trend_zone", "support"} and close_location >= 0.28 and body_share >= 0.10:
+            structure_state = "continuation_weak_but_valid"
+            reasons.append("continuidade fraca, mas valida em contexto de tendencia")
+        elif bearish_stack and price_location in {"trend_zone", "resistance"} and close_location <= 0.72 and body_share >= 0.10:
+            structure_state = "continuation_weak_but_valid"
+            reasons.append("continuidade fraca, mas valida em contexto de tendencia")
         else:
             reasons.append("estrutura fraca ou indefinida")
 
@@ -919,6 +927,8 @@ class TradingBot:
             structure_quality += 4.0
         elif structure_state == "continuation":
             structure_quality += 3.4
+        elif structure_state == "continuation_weak_but_valid":
+            structure_quality += 2.8
         elif structure_state == "pullback":
             structure_quality += 3.2
         elif structure_state == "reversal_risk":
@@ -946,7 +956,7 @@ class TradingBot:
                 structure_quality += 1.0
             elif float(volume_ratio) >= 1.2:
                 structure_quality += 0.5
-            elif float(volume_ratio) >= 1.0 and structure_state in {"continuation", "pullback"}:
+            elif float(volume_ratio) >= 1.0 and structure_state in (CONTINUATION_STRUCTURE_STATES | {"pullback"}):
                 structure_quality += 0.2
             elif float(volume_ratio) < 0.9:
                 structure_quality -= 0.6
@@ -991,7 +1001,8 @@ class TradingBot:
                 reasons.append(f"estrutura contra vies {resolved_market_bias}")
 
         structure_quality = round(float(max(0.0, min(10.0, structure_quality))), 2)
-        is_tradeable = structure_state in {"continuation", "pullback", "breakout"} and structure_quality >= 5.5
+        min_tradeable_quality = 5.0 if structure_state == "continuation_weak_but_valid" else 5.2
+        is_tradeable = structure_state in TREND_STRUCTURE_STATES and structure_quality >= min_tradeable_quality
 
         if price_location == "support":
             reasons.append("preco proximo do suporte recente")
@@ -1379,6 +1390,8 @@ class TradingBot:
             "late_entry": False,
             "stretched_price": False,
             "entry_in_middle": True,
+            "low_volatility": False,
+            "dead_range": False,
             "is_tradeable": False,
             "has_minimum_history": False,
             "timestamp": None,
@@ -1504,7 +1517,7 @@ class TradingBot:
         candle_close_is_clean = close_location >= 0.50 if signal_side == "bullish" else close_location <= 0.50
         price_in_middle = price_location == "mid_range"
         low_volatility = volatility_ratio < 0.70
-        dead_range = price_in_middle and structure_state not in {"pullback", "continuation", "breakout", "reversal_risk"}
+        dead_range = price_in_middle and structure_state not in (TREND_STRUCTURE_STATES | {"reversal_risk"})
         late_entry = breakout_extension and stretched_price
 
         if candle_range <= 0 or body_share < 0.10:
@@ -1524,7 +1537,7 @@ class TradingBot:
         ):
             candle_quality = "acceptable"
         elif (
-            structure_state in {"pullback", "continuation", "breakout"}
+            structure_state in TREND_STRUCTURE_STATES
             and structure_quality >= 5.4
             and body_share >= 0.20
             and adverse_wick_share <= 0.75
@@ -1627,13 +1640,13 @@ class TradingBot:
         setup_type = None
         if aligned_trend_regime and structure_state == "pullback":
             setup_type = "pullback_trend"
-        elif aligned_trend_regime and structure_state in {"continuation", "breakout"}:
+        elif aligned_trend_regime and structure_state in (CONTINUATION_STRUCTURE_STATES | {"breakout"}):
             setup_type = "continuation_breakout"
         elif structure_state == "reversal_risk" and reversal_confirmed:
             setup_type = "reversal_controlled"
         elif regime_name == "range" and structure_state in {"pullback", "reversal_risk"} and price_location in {"support", "resistance"}:
             setup_type = "reversal_controlled"
-        elif structure_state in {"continuation", "breakout"}:
+        elif structure_state in (CONTINUATION_STRUCTURE_STATES | {"breakout"}):
             setup_type = "continuation_breakout"
         elif structure_state == "pullback":
             setup_type = "pullback_trend"
@@ -1665,14 +1678,17 @@ class TradingBot:
 
         base_stop_pct = max(candle_stop_pct, atr_pct * 0.85)
         if structure_stop_pct > 0:
-            structure_stop_cap = max(base_stop_pct, atr_pct * (1.15 if structure_state == "continuation" else 1.35))
+            structure_stop_cap = max(
+                base_stop_pct,
+                atr_pct * (1.15 if structure_state in CONTINUATION_STRUCTURE_STATES else 1.35),
+            )
             stop_distance_pct = max(base_stop_pct, min(structure_stop_pct, structure_stop_cap))
         else:
             stop_distance_pct = base_stop_pct
         target_distance_pct = max(structure_target_pct, atr_pct * (1.45 if structure_state == "breakout" else 1.05))
         if structure_state == "pullback":
             target_distance_pct = max(target_distance_pct, stop_distance_pct * 1.35)
-        elif structure_state == "continuation":
+        elif structure_state in CONTINUATION_STRUCTURE_STATES:
             target_distance_pct = max(target_distance_pct, stop_distance_pct * 1.20)
         elif setup_type == "reversal_controlled":
             target_distance_pct = max(target_distance_pct, stop_distance_pct * 1.10)
@@ -1713,6 +1729,9 @@ class TradingBot:
             score_breakdown["structure"] = min(2.0, 1.0 + (structure_quality / 10.0))
             if structure_state == "breakout" or micro_breakout_recent:
                 score_breakdown["structure"] = min(2.0, score_breakdown["structure"] + 0.2)
+            if structure_state == "continuation_weak_but_valid":
+                score_breakdown["structure"] = max(0.8, score_breakdown["structure"] - 0.25)
+                notes.append("continuidade fraca, mas validada por contexto")
             notes.append("continuidade apos compressao local")
         elif setup_type == "reversal_controlled":
             score_breakdown["structure"] = min(2.0, 0.9 + (structure_quality / 12.0))
@@ -1822,7 +1841,7 @@ class TradingBot:
                 conflicts.append("venda perto do suporte sem rompimento")
                 notes.append("suporte proximo penaliza a entrada")
 
-        if rr_estimate < 0.85:
+        if rr_estimate < 0.75:
             rejection_reason = rejection_reason or "risco retorno insuficiente"
         elif rr_estimate < 1.0:
             conflicts.append("risco retorno insuficiente")
@@ -1831,7 +1850,7 @@ class TradingBot:
 
         if setup_type == "reversal_controlled" and (strong_trend_regime or parabolic):
             rejection_reason = rejection_reason or "reversao simples contra trend forte"
-        if setup_type == "continuation_breakout" and candle_quality == "bad":
+        if setup_type == "continuation_breakout" and candle_quality == "bad" and momentum_state == "weak":
             rejection_reason = rejection_reason or "continuacao sem candle minimamente aceitavel"
         if setup_type in {"pullback_trend", "continuation_breakout"} and regime_name == "range" and low_volatility:
             rejection_reason = rejection_reason or "mercado lateral sem edge suficiente"
@@ -1848,9 +1867,9 @@ class TradingBot:
 
         entry_score = sum(score_breakdown.values())
         if low_volatility:
-            entry_score -= 1.0
+            entry_score -= 0.7
         if dead_range:
-            entry_score -= 1.4
+            entry_score -= 0.9
         if stretched_price:
             entry_score -= 1.0
         if late_entry:
@@ -1860,7 +1879,7 @@ class TradingBot:
         if parabolic and setup_type == "reversal_controlled":
             entry_score -= 1.2
         if regime_name == "range" and setup_type == "continuation_breakout":
-            entry_score -= 1.3 if price_in_middle else 0.8
+            entry_score -= 0.9 if price_in_middle else 0.6
 
         entry_score = round(float(max(0.0, min(10.0, entry_score))), 2)
         entry_quality = self._classify_entry_quality(
@@ -1918,6 +1937,8 @@ class TradingBot:
             "late_entry": bool(late_entry),
             "stretched_price": bool(stretched_price),
             "entry_in_middle": bool(price_in_middle),
+            "low_volatility": bool(low_volatility),
+            "dead_range": bool(dead_range),
             "is_tradeable": entry_quality != "bad",
             "has_minimum_history": True,
             "timestamp": pd.Timestamp(working_df.index[-1]).isoformat(),
@@ -1967,7 +1988,11 @@ class TradingBot:
         dead_range: bool = False,
     ) -> str:
         structure_state = structure_state or "weak_structure"
-        if dead_range or low_volatility:
+        if dead_range and low_volatility:
+            return "bad"
+        if dead_range and quality_score < 5.0 and rr_estimate < 1.0:
+            return "bad"
+        if low_volatility and quality_score < 4.5 and rr_estimate < 1.0:
             return "bad"
         if late_entry and stretched_price and rr_estimate < 1.20:
             return "bad"
@@ -1982,7 +2007,7 @@ class TradingBot:
         if (
             quality_score >= 4.0
             and rr_estimate >= 0.90
-            and structure_state in {"pullback", "continuation", "breakout", "reversal_risk"}
+            and structure_state in (TREND_STRUCTURE_STATES | {"reversal_risk"})
             and not (price_in_middle and structure_state not in {"breakout", "reversal_risk"})
         ):
             return "acceptable"
@@ -1996,6 +2021,63 @@ class TradingBot:
         if normalized in {"strong", "acceptable", "bad"}:
             return normalized
         return "bad"
+
+    @staticmethod
+    def _is_soft_entry_rejection(
+        entry_evaluation: Optional[Dict[str, object]],
+        structure_state: Optional[str] = None,
+        structure_quality: float = 0.0,
+        confirmation_state: Optional[str] = None,
+    ) -> bool:
+        if not isinstance(entry_evaluation, dict):
+            return False
+
+        reason = str(
+            entry_evaluation.get("rejection_reason")
+            or entry_evaluation.get("reason")
+            or ""
+        ).strip().lower()
+        if not reason:
+            return False
+
+        soft_reason_tokens = (
+            "score de entrada insuficiente",
+            "candle atual oferece baixa qualidade",
+            "continuacao sem candle minimamente aceitavel",
+        )
+        if not any(token in reason for token in soft_reason_tokens):
+            return False
+
+        rr_estimate = float(entry_evaluation.get("rr_estimate", 0.0) or 0.0)
+        if rr_estimate < 0.95:
+            return False
+
+        if bool(entry_evaluation.get("stretched_price")):
+            return False
+        if bool(entry_evaluation.get("late_entry")):
+            return False
+        if bool(entry_evaluation.get("entry_in_middle")):
+            return False
+        if bool(entry_evaluation.get("dead_range")):
+            return False
+        if bool(entry_evaluation.get("low_volatility")):
+            return False
+
+        normalized_structure_state = str(
+            structure_state
+            or entry_evaluation.get("structure_state")
+            or "weak_structure"
+        )
+        if normalized_structure_state not in TREND_STRUCTURE_STATES:
+            return False
+        if float(structure_quality or 0.0) < 5.6:
+            return False
+
+        normalized_confirmation_state = str(confirmation_state or "weak")
+        if normalized_confirmation_state != "confirmed":
+            return False
+
+        return True
 
     def get_entry_quality_evaluation(
         self,
@@ -2113,6 +2195,33 @@ class TradingBot:
 
             return _clip_score(base_score)
 
+        def _resolve_pullback_intensity(
+            entry_data: Optional[Dict[str, object]],
+            structure_data: Optional[Dict[str, object]],
+        ):
+            setup_type = str((entry_data or {}).get("setup_type") or "").strip().lower()
+            if setup_type != "pullback_trend":
+                return "not_applicable", 0.0, None
+
+            structure_state = str((structure_data or {}).get("structure_state") or "weak_structure")
+            structure_quality = float((structure_data or {}).get("structure_quality", 0.0) or 0.0)
+            against_market_bias = bool((structure_data or {}).get("against_market_bias", False))
+            reversal_risk = bool((structure_data or {}).get("reversal_risk", structure_state == "reversal_risk"))
+            contra_structure = (
+                against_market_bias
+                or reversal_risk
+                or structure_state not in ({"pullback"} | CONTINUATION_STRUCTURE_STATES)
+            )
+            if contra_structure:
+                return "against_structure", -2.0, "pullback contra estrutura reduz o cenario"
+            if structure_state == "pullback":
+                if structure_quality >= 5.8:
+                    return "strong", 3.0, "pullback forte adiciona +3.0 ao cenario"
+                return "moderate", 1.5, "pullback moderado adiciona +1.5 ao cenario"
+            if structure_quality >= 5.4:
+                return "continuation_valid", 0.0, "sem pullback claro; continuidade valida sem bonus"
+            return "continuation_weak", -0.4, "sem pullback claro; continuidade fraca penaliza levemente"
+
         result_map = {
             "context": context_result,
             "structure": structure_result,
@@ -2144,6 +2253,12 @@ class TradingBot:
                 notes.append(f"{name} forte")
             elif score < 4.5:
                 notes.append(f"{name} fraco")
+        pullback_intensity, pullback_score, pullback_note = _resolve_pullback_intensity(
+            entry_result,
+            structure_result,
+        )
+        if pullback_note:
+            notes.append(pullback_note)
 
         weak_components = [name for name, score in available_components.items() if score < 4.0]
         available_weight = sum(weights[name] for name in available_components)
@@ -2196,7 +2311,7 @@ class TradingBot:
             volatility_state = str(regime_result.get("volatility_state") or "normal_volatility")
             structure_state = str((structure_result or {}).get("structure_state") or "weak_structure")
             confirmation_state = str((confirmation_result or {}).get("confirmation_state") or "weak")
-            if regime == "range" and structure_state in {"continuation", "pullback"}:
+            if regime == "range" and structure_state in (CONTINUATION_STRUCTURE_STATES | {"pullback"}):
                 scenario_score -= 0.8
                 notes.append("regime lateral reduz confianca do setup")
             if volatility_state == "low_volatility":
@@ -2208,6 +2323,9 @@ class TradingBot:
             if regime_result.get("parabolic") and regime_score >= 7.0 and confirmation_state != "confirmed":
                 scenario_score -= 0.6
                 notes.append("regime parabolico penaliza reversao simples")
+
+        if pullback_score != 0.0:
+            scenario_score += float(pullback_score)
 
         scenario_score = _clip_score(scenario_score)
         if scenario_score >= 8.0:
@@ -2224,6 +2342,8 @@ class TradingBot:
             "scenario_grade": scenario_grade,
             "score_breakdown": score_breakdown,
             "regime": (regime_result or {}).get("regime"),
+            "pullback_intensity": pullback_intensity,
+            "pullback_score": round(float(pullback_score), 2),
             "notes": list(dict.fromkeys(str(note) for note in notes if note)),
             "has_minimum_history": bool(available_components),
         }
@@ -2259,22 +2379,72 @@ class TradingBot:
         support_zone_distance = float((structure_result or {}).get("support_zone_distance", 1.0) or 1.0)
         confirmation_state = str((confirmation_result or {}).get("confirmation_state") or "weak")
         entry_quality = self._normalize_entry_quality_label((entry_result or {}).get("entry_quality"))
+        soft_bad_entry = bool((entry_result or {}).get("soft_bad_entry", False))
+        entry_score = float((entry_result or {}).get("entry_score", (entry_result or {}).get("quality_score", 0.0)) or 0.0)
+        rr_estimate = float((entry_result or {}).get("rr_estimate", 0.0) or 0.0)
         structure_available = bool(structure_result) and bool((structure_result or {}).get("has_minimum_history", True))
         confirmation_available = bool(confirmation_result) and bool((confirmation_result or {}).get("has_minimum_history", True))
         entry_available = bool(entry_result) and bool((entry_result or {}).get("has_minimum_history", True))
         scenario_available = bool(scenario_score_result) and bool((scenario_score_result or {}).get("has_minimum_history", True))
         scenario_score = float((scenario_score_result or {}).get("scenario_score", 0.0) or 0.0)
         scenario_grade = str((scenario_score_result or {}).get("scenario_grade", "D") or "D").upper()
+        pullback_intensity = str((scenario_score_result or {}).get("pullback_intensity") or "not_applicable")
+        pullback_score = float((scenario_score_result or {}).get("pullback_score", 0.0) or 0.0)
         against_market_bias = bool((structure_result or {}).get("against_market_bias", False))
 
         setup_type = (entry_result or {}).get("setup_type")
         if not setup_type:
             setup_type = (
                 structure_state
-                if structure_available and structure_state in {"continuation", "pullback", "breakout"}
+                if structure_available and structure_state in TREND_STRUCTURE_STATES
                 else None
             )
         block_reason = None
+        required_scenario_score = 5.0
+        if entry_quality == "acceptable":
+            required_scenario_score = 5.6
+        if structure_state in (CONTINUATION_STRUCTURE_STATES | {"breakout"}) and entry_quality != "strong":
+            required_scenario_score = max(required_scenario_score, 5.8)
+        if confirmation_state == "mixed":
+            required_scenario_score = max(required_scenario_score, 5.9)
+        if (
+            confirmation_state == "confirmed"
+            and structure_state in TREND_STRUCTURE_STATES
+            and structure_quality >= 6.0
+        ):
+            required_scenario_score = max(4.7, required_scenario_score - 0.35)
+        if entry_quality == "strong" and confirmation_state == "confirmed":
+            required_scenario_score = max(4.6, required_scenario_score - 0.15)
+        if (
+            setup_type == "continuation_breakout"
+            and structure_quality >= 5.8
+            and confirmation_state in {"confirmed", "mixed"}
+            and entry_quality in {"strong", "acceptable"}
+        ):
+            continuation_floor = 5.2 if confirmation_state == "confirmed" else 5.4
+            required_scenario_score = min(required_scenario_score, continuation_floor)
+        if setup_type == "pullback_trend":
+            if pullback_intensity == "strong" or pullback_score >= 3.0:
+                required_scenario_score = max(4.6, required_scenario_score - 0.6)
+            elif pullback_intensity == "moderate" or pullback_score >= 1.5:
+                required_scenario_score = max(4.9, required_scenario_score - 0.35)
+            elif pullback_score < 0.0:
+                required_scenario_score = max(required_scenario_score, 5.85)
+        if soft_bad_entry and entry_quality == "bad":
+            required_scenario_score = max(required_scenario_score, 6.4)
+
+        allow_soft_bad_entry = (
+            entry_available
+            and entry_quality == "bad"
+            and soft_bad_entry
+            and confirmation_state == "confirmed"
+            and scenario_score >= required_scenario_score
+            and entry_score >= 4.8
+            and rr_estimate >= 0.95
+            and structure_state in TREND_STRUCTURE_STATES
+            and not bool((entry_result or {}).get("late_entry"))
+            and not bool((entry_result or {}).get("stretched_price"))
+        )
 
         if hard_block_result and hard_block_result.get("hard_block"):
             block_reason = hard_block_result.get("block_reason") or "Hard block ativo."
@@ -2286,7 +2456,7 @@ class TradingBot:
             block_reason = (structure_result or {}).get("reason") or "Estrutura fraca."
         elif structure_available and structure_state == "reversal_risk" and against_market_bias:
             block_reason = (structure_result or {}).get("reason") or "Risco de reversao contra o vies."
-        elif structure_available and structure_state not in {"continuation", "pullback", "breakout"}:
+        elif structure_available and structure_state not in TREND_STRUCTURE_STATES:
             block_reason = "Estrutura nao valida para entrada."
         elif (
             structure_available
@@ -2294,7 +2464,7 @@ class TradingBot:
             and price_location == "resistance"
             and structure_state != "breakout"
             and not (
-                structure_state in {"continuation", "pullback"}
+                structure_state in (CONTINUATION_STRUCTURE_STATES | {"pullback"})
                 and structure_quality >= 5.4
                 and resistance_zone_distance > 0.04
                 and scenario_score >= 5.8
@@ -2309,7 +2479,7 @@ class TradingBot:
             and price_location == "support"
             and structure_state != "breakout"
             and not (
-                structure_state in {"continuation", "pullback"}
+                structure_state in (CONTINUATION_STRUCTURE_STATES | {"pullback"})
                 and structure_quality >= 5.4
                 and support_zone_distance > 0.04
                 and scenario_score >= 5.8
@@ -2320,13 +2490,13 @@ class TradingBot:
             block_reason = "Venda perto do suporte sem rompimento."
         elif confirmation_available and confirmation_state == "weak":
             block_reason = (confirmation_result or {}).get("reason") or "Confirmacao tecnica fraca."
-        elif entry_available and entry_quality == "bad":
+        elif entry_available and entry_quality == "bad" and not allow_soft_bad_entry:
             block_reason = (
                 (entry_result or {}).get("rejection_reason")
                 or (entry_result or {}).get("reason")
                 or "Qualidade de entrada ruim."
             )
-        elif scenario_available and (scenario_grade == "D" or scenario_score < 5.0):
+        elif scenario_available and (scenario_grade == "D" or scenario_score < required_scenario_score):
             block_reason = "Score do cenario abaixo do minimo."
 
         confidence = scenario_score
@@ -2339,9 +2509,13 @@ class TradingBot:
             confidence += 0.3
         elif entry_quality == "acceptable":
             confidence -= 0.2
+        elif entry_quality == "bad":
+            confidence -= 0.7 if not allow_soft_bad_entry else 0.4
 
         if structure_state == "pullback":
             confidence += 0.2
+        elif structure_state == "continuation_weak_but_valid":
+            confidence -= 0.15
         elif structure_state == "breakout":
             confidence -= 0.1
 
@@ -2450,16 +2624,19 @@ class TradingBot:
         structure_state = None
         structure_quality = 0.0
         price_location = "mid_range"
+        current_timeframe = str(getattr(self, "timeframe", "") or "").lower()
         if structure_evaluation and structure_evaluation.get("has_minimum_history"):
             structure_state = structure_evaluation.get("structure_state", "weak_structure")
             structure_quality = float(structure_evaluation.get("structure_quality", 0.0) or 0.0)
             price_location = str(structure_evaluation.get("price_location", "mid_range") or "mid_range")
+            current_timeframe = str(structure_evaluation.get("timeframe") or current_timeframe or "").lower()
+        is_higher_tf = current_timeframe in {"30m", "1h", "4h", "1d"}
 
         if context_evaluation:
             bias = context_evaluation.get("market_bias") or context_evaluation.get("bias") or "neutral"
-            context_strength = float(
-                context_evaluation.get("context_strength", context_evaluation.get("strength", 0.0) or 0.0) or 0.0
-            )
+            raw_context_strength = context_evaluation.get("context_strength", context_evaluation.get("strength"))
+            has_explicit_strength = raw_context_strength is not None
+            context_strength = float(raw_context_strength or 0.0)
             if not context_evaluation.get("is_tradeable", True) and bias in {"bullish", "bearish"} and context_strength < 3.5:
                 return block(
                     context_evaluation.get("reason") or "Contexto superior nao esta operavel.",
@@ -2467,9 +2644,13 @@ class TradingBot:
                     [context_evaluation.get("reason") or "contexto superior sem operabilidade"],
                 )
             elif signal.startswith("COMPRA") and bias == "bearish":
-                return block("Entrada contra o timeframe maior.", "higher_timeframe_conflict", ["contexto superior contra compra"])
+                if (not has_explicit_strength) or context_strength >= 6.2:
+                    return block("Entrada contra o timeframe maior.", "higher_timeframe_conflict", ["contexto superior contra compra"])
+                notes.append("contexto superior bearish com forca moderada; entrada penalizada")
             elif signal.startswith("VENDA") and bias == "bullish":
-                return block("Entrada contra o timeframe maior.", "higher_timeframe_conflict", ["contexto superior contra venda"])
+                if (not has_explicit_strength) or context_strength >= 6.2:
+                    return block("Entrada contra o timeframe maior.", "higher_timeframe_conflict", ["contexto superior contra venda"])
+                notes.append("contexto superior bullish com forca moderada; entrada penalizada")
 
         if regime_evaluation and regime_evaluation.get("has_minimum_history", True):
             regime = str(regime_evaluation.get("regime") or "range")
@@ -2477,12 +2658,17 @@ class TradingBot:
             volatility_state = str(regime_evaluation.get("volatility_state") or "normal_volatility")
             parabolic = bool(regime_evaluation.get("parabolic", False))
             confirmation_state = str((confirmation_evaluation or {}).get("confirmation_state") or "weak")
+            entry_quality_label = self._normalize_entry_quality_label((entry_quality_evaluation or {}).get("entry_quality"))
+            has_controlled_reversal = (
+                structure_state == "reversal_risk"
+                and confirmation_state == "confirmed"
+                and entry_quality_label in {"acceptable", "strong"}
+            )
             if (
                 signal.startswith("VENDA")
                 and regime == "trend_bull"
                 and regime_score >= (6.5 if parabolic else 7.2)
-                and structure_state != "reversal_risk"
-                and confirmation_state != "confirmed"
+                and not has_controlled_reversal
             ):
                 return block(
                     "Reversao simples contra regime bull.",
@@ -2493,8 +2679,7 @@ class TradingBot:
                 signal.startswith("COMPRA")
                 and regime == "trend_bear"
                 and regime_score >= (6.5 if parabolic else 7.2)
-                and structure_state != "reversal_risk"
-                and confirmation_state != "confirmed"
+                and not has_controlled_reversal
             ):
                 return block(
                     "Reversao simples contra regime bear.",
@@ -2510,7 +2695,7 @@ class TradingBot:
                     )
 
         if market_regime == "ranging":
-            if structure_state not in {"pullback", "continuation", "breakout"} or price_location == "mid_range":
+            if structure_state not in TREND_STRUCTURE_STATES or price_location == "mid_range":
                 return block("Mercado lateral demais para operar.", "market_regime", ["regime lateral"])
 
         if atr_pct is not None and not pd.isna(atr_pct):
@@ -2523,18 +2708,21 @@ class TradingBot:
                 )
 
         if require_trend and adx is not None and min_adx_threshold is not None and not pd.isna(adx):
-            effective_min_adx = float(min_adx_threshold) * (
-                0.82 if structure_state in {"pullback", "continuation", "breakout"} and structure_quality >= 6.0 else 0.9
-            )
+            relax_factor = 0.82 if structure_state in TREND_STRUCTURE_STATES and structure_quality >= 6.0 else 0.9
+            if is_higher_tf:
+                relax_factor -= 0.06
+            effective_min_adx = float(min_adx_threshold) * max(0.72, relax_factor)
             if float(adx) < effective_min_adx:
                 return block("ADX fraco; sem forca direcional suficiente.", "adx_floor", [f"adx {float(adx):.2f}"])
 
         if require_volume and volume_ratio is not None and min_volume_ratio is not None and not pd.isna(volume_ratio):
+            volume_relax_factor = 0.82 if structure_state in TREND_STRUCTURE_STATES and structure_quality >= 6.0 else 0.9
+            if is_higher_tf:
+                volume_relax_factor -= 0.06
+            base_volume_floor = 0.90 if is_higher_tf else 0.95
             effective_min_volume_ratio = max(
-                0.95,
-                float(min_volume_ratio) * (
-                    0.82 if structure_state in {"pullback", "continuation", "breakout"} and structure_quality >= 6.0 else 0.9
-                ),
+                base_volume_floor,
+                float(min_volume_ratio) * max(0.72, volume_relax_factor),
             )
             if float(volume_ratio) < effective_min_volume_ratio:
                 return block(
@@ -2547,18 +2735,27 @@ class TradingBot:
             reversal_risk = bool(structure_evaluation.get("reversal_risk", structure_state == "reversal_risk"))
             against_market_bias = bool(structure_evaluation.get("against_market_bias", reversal_risk))
             if structure_state == "weak_structure":
-                return block(
-                    structure_evaluation.get("reason") or "Estrutura ruim para entrada.",
-                    "price_structure",
-                    structure_evaluation.get("notes", []),
+                structure_confirmation_state = str((confirmation_evaluation or {}).get("confirmation_state") or "weak")
+                weak_structure_floor = (
+                    4.1
+                    if structure_confirmation_state == "confirmed" and price_location in {"trend_zone", "support", "resistance"}
+                    else 4.4
                 )
+                if structure_quality >= weak_structure_floor and price_location in {"trend_zone", "support", "resistance"}:
+                    notes.append("estrutura fraca tolerada por qualidade minima em zona operacional")
+                else:
+                    return block(
+                        structure_evaluation.get("reason") or "Estrutura ruim para entrada.",
+                        "price_structure",
+                        structure_evaluation.get("notes", []),
+                    )
             elif reversal_risk and against_market_bias:
                 return block(
                     structure_evaluation.get("reason") or "Estrutura mostra risco de reversao contra o vies.",
                     "price_structure",
                     structure_evaluation.get("notes", []),
                 )
-            elif structure_quality < (4.5 if structure_state in {"pullback", "continuation", "breakout"} and price_location == "trend_zone" else 4.8):
+            elif structure_quality < (4.2 if structure_state in TREND_STRUCTURE_STATES and price_location == "trend_zone" else 4.5):
                 return block(
                     "Qualidade estrutural abaixo do minimo para operar.",
                     "price_structure_quality",
@@ -2576,18 +2773,55 @@ class TradingBot:
                 )
 
         if entry_quality_evaluation and entry_quality_evaluation.get("has_minimum_history"):
+            setup_type = str(entry_quality_evaluation.get("setup_type") or "").strip().lower()
+            if setup_type == "pullback_trend":
+                contra_structure = (
+                    bool((structure_evaluation or {}).get("against_market_bias", False))
+                    or structure_state in {"reversal_risk", "weak_structure"}
+                    or structure_state not in ({"pullback"} | CONTINUATION_STRUCTURE_STATES)
+                )
+                if contra_structure:
+                    return block(
+                        "Setup pullback_trend contra estrutura vigente.",
+                        "setup_filter",
+                        list(entry_quality_evaluation.get("notes", []) or []),
+                    )
+                if structure_state == "pullback":
+                    notes.append("setup pullback_trend alinhado com estrutura de pullback")
+                else:
+                    notes.append("setup pullback_trend sem pullback claro; continuidade valida com peso reduzido")
+
             entry_quality_label = self._normalize_entry_quality_label(entry_quality_evaluation.get("entry_quality"))
+            soft_bad_entry = self._is_soft_entry_rejection(
+                entry_quality_evaluation,
+                structure_state=structure_state,
+                structure_quality=structure_quality,
+                confirmation_state=str((confirmation_evaluation or {}).get("confirmation_state") or "weak"),
+            )
+            entry_quality_evaluation["soft_bad_entry"] = soft_bad_entry
             if entry_quality_label == "bad":
                 conflicts = entry_quality_evaluation.get("conflicts", []) or []
                 rejection_reason = entry_quality_evaluation.get("rejection_reason")
-                return block(
-                    rejection_reason or (conflicts[0] if conflicts else (
-                        entry_quality_evaluation.get("reason") or "Qualidade da entrada ruim."
-                    )),
-                    "entry_quality",
-                    list(conflicts) + list(entry_quality_evaluation.get("notes", []) or []),
-                )
+                if soft_bad_entry:
+                    notes.append("qualidade de entrada ruim suavizada por contexto estrutural forte")
+                else:
+                    fallback_reason = "Qualidade da entrada ruim."
+                    if conflicts:
+                        fallback_reason = str(conflicts[0])
+                    elif rejection_reason:
+                        fallback_reason = str(rejection_reason)
+                    elif entry_quality_evaluation.get("reason"):
+                        raw_reason = str(entry_quality_evaluation.get("reason") or "").strip()
+                        if raw_reason and "|" not in raw_reason:
+                            fallback_reason = raw_reason
+                    return block(
+                        fallback_reason,
+                        "entry_quality",
+                        list(conflicts) + list(entry_quality_evaluation.get("notes", []) or []),
+                    )
 
+        if notes:
+            evaluation["notes"] = list(dict.fromkeys(str(note) for note in notes if note))
         self._last_hard_block_evaluation = evaluation
         return evaluation
 
@@ -2647,10 +2881,21 @@ class TradingBot:
             return signal
 
         bias = context_evaluation.get("market_bias") or context_evaluation.get("bias", "neutral")
+        raw_context_strength = context_evaluation.get("context_strength", context_evaluation.get("strength"))
+        has_explicit_strength = raw_context_strength is not None
+        context_strength = float(raw_context_strength or 0.0)
+        strong_context_conflict = (
+            not has_explicit_strength
+            or (context_strength >= 6.2 and context_evaluation.get("is_tradeable", True))
+        )
         if signal.startswith("COMPRA") and bias == "bearish":
-            return "NEUTRO"
+            if strong_context_conflict:
+                return "NEUTRO"
+            return "COMPRA_FRACA"
         if signal.startswith("VENDA") and bias == "bullish":
-            return "NEUTRO"
+            if strong_context_conflict:
+                return "NEUTRO"
+            return "VENDA_FRACA"
         return signal
 
     def _apply_structure_alignment(self, signal: str, structure_evaluation: Optional[Dict[str, object]]) -> str:
@@ -2669,20 +2914,25 @@ class TradingBot:
         against_market_bias = bool(structure_evaluation.get("against_market_bias", reversal_risk))
 
         if structure_state == "weak_structure":
+            if structure_quality >= 4.4 and price_location in {"trend_zone", "support", "resistance"}:
+                if signal.startswith("COMPRA"):
+                    return "COMPRA_FRACA"
+                if signal.startswith("VENDA"):
+                    return "VENDA_FRACA"
             return "NEUTRO"
         if reversal_risk and against_market_bias:
             return "NEUTRO"
-        minimum_structure_quality = 4.8
-        if structure_state in {"pullback", "continuation", "breakout"} and price_location == "trend_zone":
-            minimum_structure_quality = 4.5
+        minimum_structure_quality = 4.5
+        if structure_state in TREND_STRUCTURE_STATES and price_location == "trend_zone":
+            minimum_structure_quality = 4.2
         if structure_quality < minimum_structure_quality:
             return "NEUTRO"
         if signal.startswith("COMPRA") and price_location == "resistance" and structure_state != "breakout":
-            if structure_state in {"pullback", "continuation"} and structure_quality >= 5.4 and resistance_zone_distance > 0.04:
+            if structure_state in ({"pullback"} | CONTINUATION_STRUCTURE_STATES) and structure_quality >= 5.0 and resistance_zone_distance > 0.03:
                 return "COMPRA_FRACA"
             return "NEUTRO"
         if signal.startswith("VENDA") and price_location == "support" and structure_state != "breakout":
-            if structure_state in {"pullback", "continuation"} and structure_quality >= 5.4 and support_zone_distance > 0.04:
+            if structure_state in ({"pullback"} | CONTINUATION_STRUCTURE_STATES) and structure_quality >= 5.0 and support_zone_distance > 0.03:
                 return "VENDA_FRACA"
             return "NEUTRO"
         return signal
@@ -2721,6 +2971,12 @@ class TradingBot:
 
         entry_quality = self._normalize_entry_quality_label(entry_quality_evaluation.get("entry_quality", "bad"))
         if entry_quality == "bad":
+            if bool(entry_quality_evaluation.get("soft_bad_entry")):
+                if signal == "COMPRA":
+                    return "COMPRA_FRACA"
+                if signal == "VENDA":
+                    return "VENDA_FRACA"
+                return signal
             return "NEUTRO"
         if entry_quality == "acceptable":
             should_downgrade = (
@@ -3297,9 +3553,9 @@ class TradingBot:
         if current_timeframe == "15m":
             return float(max(66, min_confidence - 1))
         if current_timeframe == "30m":
-            return float(max(60, min_confidence - 8))
+            return float(max(58, min_confidence - 10))
         if current_timeframe == "1h":
-            return float(max(60, min_confidence - 10))
+            return float(max(56, min_confidence - 12))
         return float(max(62, min_confidence - 1))
 
     @staticmethod
@@ -3317,11 +3573,11 @@ class TradingBot:
             return None
         if confidence >= effective_min_confidence:
             return signal
-        if signal == "COMPRA" and confidence >= effective_min_confidence - 4.0:
+        if signal == "COMPRA" and confidence >= effective_min_confidence - 6.0:
             return "COMPRA_FRACA"
-        if signal == "VENDA" and confidence >= effective_min_confidence - 4.0:
+        if signal == "VENDA" and confidence >= effective_min_confidence - 6.0:
             return "VENDA_FRACA"
-        if signal in {"COMPRA_FRACA", "VENDA_FRACA"} and confidence >= effective_min_confidence - 3.0:
+        if signal in {"COMPRA_FRACA", "VENDA_FRACA"} and confidence >= effective_min_confidence - 5.0:
             return signal
         return None
 
@@ -3380,7 +3636,7 @@ class TradingBot:
         structure_quality = float((structure_evaluation or {}).get("structure_quality", 0.0) or 0.0)
         price_location = str((structure_evaluation or {}).get("price_location") or "mid_range")
         supportive_structure = (
-            structure_state in {"continuation", "pullback", "breakout"}
+            structure_state in TREND_STRUCTURE_STATES
             and structure_quality >= 5.0
         )
         body_share_floor = 0.25 if is_short_term else 0.12
@@ -3573,6 +3829,21 @@ class TradingBot:
             except (TypeError, ValueError):
                 pass
         structure_evaluation = self.get_price_structure_evaluation(df, **structure_kwargs)
+        structure_state = str((structure_evaluation or {}).get("structure_state") or "weak_structure")
+        structure_quality = float((structure_evaluation or {}).get("structure_quality", 0.0) or 0.0)
+        price_location = str((structure_evaluation or {}).get("price_location") or "mid_range")
+
+        # Quality prefilter: avoid generating candidate signals in dead mid-range structure.
+        if (
+            current_timeframe in {"30m", "1h", "4h"}
+            and structure_state == "weak_structure"
+            and price_location == "mid_range"
+            and structure_quality < 5.0
+        ):
+            return self._set_hard_block(
+                "Estrutura fraca no meio do range; sem edge para gerar candidato.",
+                "price_structure_prefilter",
+            )
 
         if market_regime == 'ranging' and current_timeframe in {"5m", "15m"}:
             return self._set_hard_block("Mercado lateral demais para operar.", "market_regime")
@@ -3630,8 +3901,8 @@ class TradingBot:
                 min_volume_ratio = max(min_volume_ratio, 1.4)
                 min_adx_threshold = max(min_adx_threshold, 25)
             elif current_timeframe in {"30m", "1h"}:
-                min_volume_ratio = max(1.0, min_volume_ratio * 0.85)
-                min_adx_threshold = max(20, min_adx_threshold * 0.85)
+                min_volume_ratio = max(0.92, min_volume_ratio * 0.78)
+                min_adx_threshold = max(18, min_adx_threshold * 0.78)
 
             logger.debug(
                 "Crypto otimizado - RSI: %s-%s, Conf: %s%%",
@@ -3658,8 +3929,8 @@ class TradingBot:
             min_adx_threshold = 18
 
             if current_timeframe in {"30m", "1h"}:
-                min_volume_ratio = max(0.95, min_volume_ratio * 0.9)
-                min_adx_threshold = max(16, min_adx_threshold * 0.9)
+                min_volume_ratio = max(0.90, min_volume_ratio * 0.82)
+                min_adx_threshold = max(15, min_adx_threshold * 0.82)
 
             logger.debug(
                 "Configuracao padrao otimizada - RSI: %s-%s",
@@ -3685,7 +3956,6 @@ class TradingBot:
                 return self._set_hard_block("Volume muito fraco para validar a entrada.", "volume_floor")
 
             signal = self._generate_trend_signal(last_row, actual_rsi_min, actual_rsi_max)
-            self._last_candidate_signal = signal
             if signal == "NEUTRO":
                 return self._set_hard_block("Indicadores base nao confirmam hipotese de entrada.", "signal_hypothesis")
 
@@ -3707,6 +3977,7 @@ class TradingBot:
             if current_atr_pct > max_volatility:
                 return self._set_hard_block("ATR excessivo; mercado desordenado para entrada.", "atr_extreme")
 
+            self._last_candidate_signal = signal
             confirmation_evaluation = self.get_confirmation_evaluation(
                 df,
                 signal_hypothesis=signal,
@@ -3757,7 +4028,6 @@ class TradingBot:
         # Gerar sinal usando configurações atuais
         if signal is None:
             signal = self._generate_advanced_signal(last_row)
-        self._last_candidate_signal = signal
         confidence = self._calculate_signal_confidence(last_row)
 
         # Log apenas sinais não-neutros
@@ -3860,6 +4130,7 @@ class TradingBot:
 
         if advanced_score < 0.55 and signal in ['COMPRA', 'VENDA', 'COMPRA_FRACA', 'VENDA_FRACA']:
             logger.debug("📉 score baixo, converte para NEUTRO")
+            self._last_candidate_signal = "NEUTRO"
             self._last_trade_decision = {
                 "action": "wait",
                 "confidence": round(float(max(0.0, min(10.0, advanced_score * 10))), 2),
@@ -3978,6 +4249,7 @@ class TradingBot:
 
         if signal in ['COMPRA_FRACA', 'VENDA_FRACA'] and advanced_score < 0.72:
             logger.debug("🔁 sinal fraco + score médio, NEUTRO")
+            self._last_candidate_signal = "NEUTRO"
             self._last_trade_decision = {
                 "action": "wait",
                 "confidence": round(float(max(0.0, min(10.0, advanced_score * 10))), 2),

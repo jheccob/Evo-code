@@ -4,7 +4,7 @@ import json
 import logging
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, Iterable, List, Optional, Set, Tuple
 
 import numpy as np
 import pandas as pd
@@ -94,6 +94,7 @@ class BacktestEngine:
             "entry_quality_counts": {},
             "setup_type_counts": {},
             "setup_type_approved_counts": {},
+            "setup_type_blocked_counts": {},
         }
 
     def _build_empty_risk_engine_stats(self) -> Dict[str, object]:
@@ -114,6 +115,73 @@ class BacktestEngine:
             "block_reason_counts": {},
             "approval_by_regime": {},
         }
+
+    @staticmethod
+    def _normalize_setup_allowlist(allowed_execution_setups: Optional[Iterable[str]]) -> Optional[Set[str]]:
+        if allowed_execution_setups is None:
+            return None
+        normalized = {
+            str(item or "").strip().lower()
+            for item in allowed_execution_setups
+            if str(item or "").strip()
+        }
+        return normalized or None
+
+    def _apply_setup_execution_policy(
+        self,
+        signal_pipeline: Dict[str, object],
+        allowed_execution_setups: Optional[Set[str]],
+    ) -> Dict[str, object]:
+        if not allowed_execution_setups:
+            return signal_pipeline
+
+        candidate_signal = str(signal_pipeline.get("candidate_signal") or "NEUTRO")
+        if candidate_signal not in ACTIONABLE_SIGNALS:
+            return signal_pipeline
+
+        entry_evaluation = signal_pipeline.get("entry_quality_evaluation") or {}
+        trade_decision = signal_pipeline.get("trade_decision") or {}
+        setup_type = str(
+            entry_evaluation.get("setup_type")
+            or trade_decision.get("setup_type")
+            or ""
+        ).strip().lower()
+        if not setup_type or setup_type in allowed_execution_setups:
+            return signal_pipeline
+
+        blocked_pipeline = dict(signal_pipeline)
+        block_reason = (
+            f"Setup {setup_type} em modo pesquisa; execucao bloqueada "
+            "pela policy de setups permitidos."
+        )
+        blocked_pipeline["approved_signal"] = None
+        blocked_pipeline["blocked_signal"] = candidate_signal
+        blocked_pipeline["analytical_signal"] = "NEUTRO"
+        blocked_pipeline["block_reason"] = block_reason
+        blocked_pipeline["block_source"] = "setup_execution_policy"
+
+        updated_trade_decision = dict(trade_decision) if isinstance(trade_decision, dict) else {}
+        updated_trade_decision.update(
+            {
+                "action": "wait",
+                "entry_reason": None,
+                "block_reason": block_reason,
+                "setup_type": setup_type,
+            }
+        )
+        blocked_pipeline["trade_decision"] = updated_trade_decision
+
+        updated_hard_block = dict(blocked_pipeline.get("hard_block_evaluation") or {})
+        updated_hard_block.update(
+            {
+                "hard_block": True,
+                "block_reason": block_reason,
+                "block_source": "setup_execution_policy",
+                "notes": [block_reason],
+            }
+        )
+        blocked_pipeline["hard_block_evaluation"] = updated_hard_block
+        return blocked_pipeline
 
     def _increment_count(self, counts: Dict[str, int], key: Optional[str]) -> None:
         normalized_key = str(key or "").strip()
@@ -151,6 +219,8 @@ class BacktestEngine:
         self._increment_count(stats["setup_type_counts"], setup_type)
         if approved_signal in ACTIONABLE_SIGNALS:
             self._increment_count(stats["setup_type_approved_counts"], setup_type)
+        if blocked_signal in ACTIONABLE_SIGNALS:
+            self._increment_count(stats["setup_type_blocked_counts"], setup_type)
 
     def _finalize_signal_pipeline_stats(self, stats: Dict[str, object]) -> Dict[str, object]:
         finalized = dict(stats)
@@ -159,8 +229,14 @@ class BacktestEngine:
         finalized["approval_rate_pct"] = round((approved_count / candidate_count) * 100, 2) if candidate_count else 0.0
         setup_type_counts = finalized.get("setup_type_counts") or {}
         setup_type_approved_counts = finalized.get("setup_type_approved_counts") or {}
+        setup_type_blocked_counts = finalized.get("setup_type_blocked_counts") or {}
         finalized["setup_type_approval_rates"] = {
             setup_type: round((int(setup_type_approved_counts.get(setup_type, 0) or 0) / count) * 100, 2)
+            for setup_type, count in setup_type_counts.items()
+            if int(count or 0) > 0
+        }
+        finalized["setup_type_block_rates"] = {
+            setup_type: round((int(setup_type_blocked_counts.get(setup_type, 0) or 0) / count) * 100, 2)
             for setup_type, count in setup_type_counts.items()
             if int(count or 0) > 0
         }
@@ -381,6 +457,7 @@ class BacktestEngine:
         validation_split_pct: float = 0.0,
         walk_forward_windows: int = 0,
         persist_result: bool = True,
+        allowed_execution_setups: Optional[Iterable[str]] = None,
     ) -> Dict:
         if start_date >= end_date:
             raise ValueError("Data inicial deve ser anterior a data final")
@@ -465,6 +542,7 @@ class BacktestEngine:
             validation_split_pct=normalized_validation_split,
             walk_forward_windows=normalized_walk_forward_windows,
             persist_result=persist_result,
+            allowed_execution_setups=self._normalize_setup_allowlist(allowed_execution_setups),
         )
 
     def run_backtest_from_dataframe(
@@ -491,6 +569,7 @@ class BacktestEngine:
         validation_split_pct: float = 0.0,
         walk_forward_windows: int = 0,
         persist_result: bool = False,
+        allowed_execution_setups: Optional[Iterable[str]] = None,
     ) -> Dict:
         if df is None or df.empty:
             raise ValueError("DataFrame historico vazio para backtest")
@@ -559,6 +638,7 @@ class BacktestEngine:
             validation_split_pct=normalized_validation_split,
             walk_forward_windows=normalized_walk_forward_windows,
             persist_result=persist_result,
+            allowed_execution_setups=self._normalize_setup_allowlist(allowed_execution_setups),
         )
 
     def run_market_scan(
@@ -719,6 +799,7 @@ class BacktestEngine:
         validation_split_pct: float,
         walk_forward_windows: int,
         persist_result: bool,
+        allowed_execution_setups: Optional[Set[str]],
     ) -> Dict:
         df = self.trading_bot.calculate_indicators(df.copy())
         resolved_context_df = None
@@ -727,6 +808,14 @@ class BacktestEngine:
         warmup_candles = max(210, int(rsi_period) + 5)
         if len(df) <= warmup_candles + 1:
             raise ValueError("Dados insuficientes para backtest")
+
+        benchmark_history = self._build_benchmark_history(
+            df=df,
+            start_date=start_date,
+            end_date=end_date,
+            initial_balance=float(initial_balance),
+            warmup_candles=warmup_candles,
+        )
 
         self._trade_history, self._portfolio_history, final_balance, signal_pipeline_stats, risk_engine_stats, self._signal_audit_log = self._run_simulation(
             symbol=symbol,
@@ -748,6 +837,7 @@ class BacktestEngine:
             strategy_version=strategy_version,
             setup_name=strategy_version,
             sample_type="backtest",
+            allowed_execution_setups=allowed_execution_setups,
         )
 
         stats = self._build_stats(
@@ -773,6 +863,7 @@ class BacktestEngine:
             "trades": list(self._trade_history),
             "trade_autopsy": list(self._trade_history),
             "portfolio_values": list(self._portfolio_history),
+            "benchmark_values": benchmark_history,
             "regime_summary": stats.get("regime_breakdown", []),
             "setup_type_summary": stats.get("setup_type_breakdown", []),
             "exit_type_summary": stats.get("exit_type_breakdown", []),
@@ -823,6 +914,7 @@ class BacktestEngine:
             require_trend=require_trend,
             avoid_ranging=avoid_ranging,
             validation_split_pct=validation_split_pct,
+            allowed_execution_setups=allowed_execution_setups,
         )
         if validation is not None:
             results["validation"] = validation
@@ -844,9 +936,21 @@ class BacktestEngine:
             require_trend=require_trend,
             avoid_ranging=avoid_ranging,
             walk_forward_windows=walk_forward_windows,
+            allowed_execution_setups=allowed_execution_setups,
         )
         if walk_forward is not None:
             results["walk_forward"] = walk_forward
+
+        objective_check = self._build_objective_setup_check(
+            stats=stats,
+            validation=validation,
+            walk_forward=walk_forward,
+            signal_pipeline_stats=signal_pipeline_stats,
+            risk_engine_summary=risk_engine_stats,
+            setup_type_summary=results.get("setup_type_summary") or [],
+        )
+        results["objective_check"] = objective_check
+
         if persist_result:
             results["saved_run_id"] = self._persist_backtest_run(
                 symbol=symbol,
@@ -997,6 +1101,316 @@ class BacktestEngine:
 
         return round(min(100.0, max(0.0, score)), 2)
 
+    def _build_objective_setup_check(
+        self,
+        stats: Dict[str, object],
+        validation: Optional[Dict[str, object]],
+        walk_forward: Optional[Dict[str, object]],
+        signal_pipeline_stats: Optional[Dict[str, object]],
+        risk_engine_summary: Optional[Dict[str, object]],
+        setup_type_summary: Optional[List[Dict[str, object]]],
+    ) -> Dict[str, object]:
+        checks: List[Dict[str, object]] = []
+        blockers: List[str] = []
+        warnings: List[str] = []
+
+        def _as_float(value: object, default: float = 0.0) -> float:
+            try:
+                return float(value if value is not None else default)
+            except (TypeError, ValueError):
+                return float(default)
+
+        def _as_int(value: object, default: int = 0) -> int:
+            try:
+                return int(value if value is not None else default)
+            except (TypeError, ValueError):
+                return int(default)
+
+        def _add_check(
+            name: str,
+            value: object,
+            target: str,
+            passed: bool,
+            weight: float,
+            hard: bool = False,
+            fail_message: Optional[str] = None,
+        ) -> None:
+            checks.append(
+                {
+                    "name": name,
+                    "value": value,
+                    "target": target,
+                    "passed": bool(passed),
+                    "weight": float(weight),
+                    "hard": bool(hard),
+                }
+            )
+            if not passed:
+                if hard and fail_message:
+                    blockers.append(str(fail_message))
+                elif fail_message:
+                    warnings.append(str(fail_message))
+
+        total_trades = _as_int(stats.get("total_trades", 0))
+        total_return_pct = _as_float(stats.get("total_return_pct", 0.0))
+        profit_factor = _as_float(stats.get("profit_factor", 0.0))
+        expectancy_pct = _as_float(stats.get("expectancy_pct", 0.0))
+        max_drawdown = _as_float(stats.get("max_drawdown", 0.0))
+        approval_rate_pct = _as_float((signal_pipeline_stats or {}).get("approval_rate_pct", 0.0))
+        candidate_count = _as_int((signal_pipeline_stats or {}).get("candidate_count", 0))
+        risk_blocked_count = _as_int((risk_engine_summary or {}).get("risk_blocked_count", 0))
+
+        _add_check(
+            name="Amostra de trades",
+            value=total_trades,
+            target=">= 120",
+            passed=total_trades >= 120,
+            weight=15.0,
+            hard=True,
+            fail_message="Amostra insuficiente para declarar robustez.",
+        )
+        _add_check(
+            name="Retorno total",
+            value=round(total_return_pct, 2),
+            target="> 0%",
+            passed=total_return_pct > 0.0,
+            weight=15.0,
+            hard=True,
+            fail_message="Retorno total negativo ou nulo.",
+        )
+        _add_check(
+            name="Profit factor",
+            value=round(profit_factor, 2),
+            target=">= 1.15",
+            passed=profit_factor >= 1.15,
+            weight=15.0,
+            hard=True,
+            fail_message="Profit factor abaixo do mínimo de robustez.",
+        )
+        _add_check(
+            name="Expectancy",
+            value=round(expectancy_pct, 3),
+            target=">= 0.03%",
+            passed=expectancy_pct >= 0.03,
+            weight=8.0,
+            hard=False,
+            fail_message="Expectancy ainda fraca para consistência de longo prazo.",
+        )
+        _add_check(
+            name="Drawdown máximo",
+            value=round(max_drawdown, 2),
+            target="<= 18%",
+            passed=max_drawdown <= 18.0,
+            weight=10.0,
+            hard=True,
+            fail_message="Drawdown acima do limite objetivo.",
+        )
+        _add_check(
+            name="Taxa de aprovação",
+            value=round(approval_rate_pct, 2),
+            target="8% a 45%",
+            passed=8.0 <= approval_rate_pct <= 45.0 if candidate_count > 0 else False,
+            weight=5.0,
+            hard=False,
+            fail_message="Pipeline de sinais desbalanceado (aprovação muito baixa/alta).",
+        )
+        risk_block_rate = (risk_blocked_count / candidate_count * 100.0) if candidate_count > 0 else 0.0
+        _add_check(
+            name="Bloqueio por risco",
+            value=round(risk_block_rate, 2),
+            target="<= 75%",
+            passed=risk_block_rate <= 75.0,
+            weight=4.0,
+            hard=False,
+            fail_message="Risk engine está bloqueando sinais em excesso.",
+        )
+
+        out_stats = ((validation or {}).get("out_of_sample") or {}).get("stats", {}) if validation else {}
+        oos_trades = _as_int(out_stats.get("total_trades", 0))
+        has_validation_window = bool(validation)
+        if has_validation_window:
+            oos_return_pct = _as_float(out_stats.get("total_return_pct", 0.0))
+            oos_pf = _as_float(out_stats.get("profit_factor", 0.0))
+            oos_expectancy = _as_float(out_stats.get("expectancy_pct", 0.0))
+            oos_passed_flag = bool((validation or {}).get("oos_passed", False))
+
+            _add_check(
+                name="OOS amostra",
+                value=oos_trades,
+                target=">= 30",
+                passed=oos_trades >= 30,
+                weight=6.0,
+                hard=True,
+                fail_message="Amostra OOS insuficiente para validação de sobrevivência.",
+            )
+            _add_check(
+                name="OOS retorno",
+                value=round(oos_return_pct, 2),
+                target="> 0%",
+                passed=oos_return_pct > 0.0,
+                weight=8.0,
+                hard=True,
+                fail_message="OOS sem retorno positivo.",
+            )
+            _add_check(
+                name="OOS PF",
+                value=round(oos_pf, 2),
+                target=">= 1.05",
+                passed=oos_pf >= 1.05,
+                weight=8.0,
+                hard=True,
+                fail_message="OOS profit factor abaixo do mínimo.",
+            )
+            _add_check(
+                name="OOS expectancy",
+                value=round(oos_expectancy, 3),
+                target=">= 0%",
+                passed=oos_expectancy >= 0.0,
+                weight=4.0,
+                hard=False,
+                fail_message="Expectancy OOS negativa.",
+            )
+            _add_check(
+                name="Flag OOS",
+                value=oos_passed_flag,
+                target="True",
+                passed=oos_passed_flag,
+                weight=4.0,
+                hard=False,
+                fail_message="Validação OOS não passou no critério atual.",
+            )
+        else:
+            warnings.append("Sem validação OOS nesta execução.")
+
+        has_walk_forward = bool(walk_forward and _as_int((walk_forward or {}).get("total_windows", 0)) > 0)
+        if has_walk_forward:
+            wf_pass_rate = _as_float((walk_forward or {}).get("pass_rate_pct", 0.0))
+            wf_pf = _as_float((walk_forward or {}).get("avg_oos_profit_factor", 0.0))
+            wf_return = _as_float((walk_forward or {}).get("avg_oos_return_pct", 0.0))
+            wf_passed = bool((walk_forward or {}).get("overall_passed", False))
+
+            _add_check(
+                name="WF pass rate",
+                value=round(wf_pass_rate, 2),
+                target=">= 55%",
+                passed=wf_pass_rate >= 55.0,
+                weight=6.0,
+                hard=True,
+                fail_message="Walk-forward inconsistente.",
+            )
+            _add_check(
+                name="WF OOS PF médio",
+                value=round(wf_pf, 2),
+                target=">= 1.0",
+                passed=wf_pf >= 1.0,
+                weight=5.0,
+                hard=False,
+                fail_message="Walk-forward com PF médio fraco.",
+            )
+            _add_check(
+                name="WF OOS retorno médio",
+                value=round(wf_return, 2),
+                target=">= 0%",
+                passed=wf_return >= 0.0,
+                weight=5.0,
+                hard=False,
+                fail_message="Walk-forward com retorno médio negativo.",
+            )
+            _add_check(
+                name="Flag WF",
+                value=wf_passed,
+                target="True",
+                passed=wf_passed,
+                weight=3.0,
+                hard=False,
+                fail_message="Critério final de walk-forward não aprovado.",
+            )
+        else:
+            warnings.append("Sem walk-forward nesta execução.")
+
+        setup_candidates: List[Dict[str, object]] = []
+        for row in (setup_type_summary or []):
+            setup_name = str(row.get("setup_type") or row.get("setup_name") or "unknown")
+            setup_trades = _as_int(row.get("total_trades", 0))
+            setup_pf = _as_float(row.get("profit_factor", 0.0))
+            setup_wr = _as_float(row.get("win_rate", 0.0))
+            setup_net = _as_float(row.get("net_profit", 0.0))
+            setup_score = (
+                min(max(setup_pf - 1.0, 0.0), 1.5) * 35.0
+                + min(max(setup_wr, 0.0), 100.0) * 0.25
+                + (10.0 if setup_net > 0 else -6.0)
+                + min(setup_trades, 120) * 0.10
+            )
+            setup_candidates.append(
+                {
+                    "setup_type": setup_name,
+                    "total_trades": setup_trades,
+                    "profit_factor": round(setup_pf, 2),
+                    "win_rate": round(setup_wr, 2),
+                    "net_profit": round(setup_net, 2),
+                    "setup_score": round(max(setup_score, 0.0), 2),
+                }
+            )
+        setup_candidates.sort(key=lambda item: item.get("setup_score", 0.0), reverse=True)
+        recommended_setup = setup_candidates[0]["setup_type"] if setup_candidates else None
+        if setup_candidates:
+            best_setup = setup_candidates[0]
+            if best_setup.get("profit_factor", 0.0) < 1.0:
+                warnings.append("Nenhum setup com PF >= 1.0 na amostra atual.")
+            if _as_int(best_setup.get("total_trades", 0)) < 30:
+                warnings.append("Setup líder ainda tem amostra pequena.")
+
+        weighted_total = sum(float(item.get("weight", 0.0) or 0.0) for item in checks)
+        weighted_pass = sum(
+            float(item.get("weight", 0.0) or 0.0)
+            for item in checks
+            if bool(item.get("passed"))
+        )
+        objective_score = round((weighted_pass / weighted_total) * 100.0, 2) if weighted_total > 0 else 0.0
+
+        if blockers:
+            status = "blocked"
+        elif objective_score >= 75.0:
+            status = "approved"
+        else:
+            status = "candidate"
+
+        if objective_score >= 85.0:
+            grade = "A"
+        elif objective_score >= 70.0:
+            grade = "B"
+        elif objective_score >= 55.0:
+            grade = "C"
+        else:
+            grade = "D"
+
+        next_actions: List[str] = []
+        if any("Amostra insuficiente" in blocker for blocker in blockers):
+            next_actions.append("Aumentar amostra de trades antes de promover o setup.")
+        if any("Profit factor" in blocker for blocker in blockers) or any("Retorno total" in blocker for blocker in blockers):
+            next_actions.append("Recalibrar entrada/saída (RR, filtros de contexto e quality gates).")
+        if any("OOS" in blocker for blocker in blockers):
+            next_actions.append("Priorizar robustez OOS antes de qualquer ativação operacional.")
+        if any("Walk-forward" in blocker for blocker in blockers):
+            next_actions.append("Ajustar lógica para manter consistência entre janelas temporais.")
+        if recommended_setup:
+            next_actions.append(f"Focar iterações no setup com maior score atual: {recommended_setup}.")
+
+        if not next_actions:
+            next_actions.append("Manter monitoramento e repetir validação após nova janela de dados.")
+
+        return {
+            "status": status,
+            "objective_score": objective_score,
+            "objective_grade": grade,
+            "checks": checks,
+            "blockers": list(dict.fromkeys(blockers)),
+            "warnings": list(dict.fromkeys(warnings)),
+            "recommended_setup": recommended_setup,
+            "setup_candidates": setup_candidates[:5],
+            "next_actions": list(dict.fromkeys(next_actions)),
+        }
+
     def _market_scan_sort_key(self, row: Dict) -> Tuple[float, float, float, float]:
         return (
             float(row.get("quality_score", 0.0)),
@@ -1128,6 +1542,40 @@ class BacktestEngine:
         df.set_index("timestamp", inplace=True)
         return df
 
+    def _build_benchmark_history(
+        self,
+        df: pd.DataFrame,
+        start_date: datetime,
+        end_date: datetime,
+        initial_balance: float,
+        warmup_candles: int,
+    ) -> List[Dict[str, object]]:
+        start_idx = max(warmup_candles, int(df.index.searchsorted(pd.Timestamp(start_date), side="left")))
+        end_idx = min(int(df.index.searchsorted(pd.Timestamp(end_date), side="right")) - 1, len(df) - 1)
+        if start_idx >= len(df) or end_idx < start_idx:
+            return []
+
+        benchmark_slice = df.iloc[start_idx : end_idx + 1]
+        if benchmark_slice.empty:
+            return []
+
+        base_close = float(benchmark_slice.iloc[0].get("close", 0.0) or 0.0)
+        if base_close <= 0:
+            return []
+
+        benchmark_history: List[Dict[str, object]] = []
+        for timestamp, row in benchmark_slice.iterrows():
+            close_price = float(row.get("close", base_close) or base_close)
+            benchmark_value = float(initial_balance) * (close_price / base_close)
+            benchmark_history.append(
+                {
+                    "timestamp": pd.Timestamp(timestamp),
+                    "benchmark_value": round(float(benchmark_value), 2),
+                    "close": round(close_price, 6),
+                }
+            )
+        return benchmark_history
+
     def _run_simulation(
         self,
         symbol: str,
@@ -1149,11 +1597,14 @@ class BacktestEngine:
         strategy_version: Optional[str],
         setup_name: Optional[str],
         sample_type: str,
+        allowed_execution_setups: Optional[Set[str]],
     ) -> Tuple[List[Dict], List[Dict], float, Dict[str, object], Dict[str, object], List[Dict[str, object]]]:
         warmup_candles = max(210, int(getattr(self.trading_bot, "rsi_period", 14)) + 5)
         start_idx = max(warmup_candles, int(df.index.searchsorted(pd.Timestamp(start_date), side="left")))
         end_idx = min(int(df.index.searchsorted(pd.Timestamp(end_date), side="right")) - 1, len(df) - 1)
         effective_context_timeframe = context_timeframe if context_df is not None else None
+        signal_window_candles = max(320, warmup_candles + 40)
+        context_window_candles = max(220, signal_window_candles // 2)
 
         if start_idx >= len(df) - 1 or end_idx <= start_idx:
             raise ValueError("Dados insuficientes para backtest")
@@ -1167,9 +1618,23 @@ class BacktestEngine:
         open_position: Optional[Position] = None
 
         for idx in range(start_idx, end_idx):
-            current_slice = df.iloc[: idx + 1]
+            slice_start = max(0, (idx + 1) - signal_window_candles)
+            current_slice = df.iloc[slice_start : idx + 1]
             current_row = current_slice.iloc[-1]
             next_row = df.iloc[idx + 1]
+            pending_audit_entry: Optional[Dict[str, object]] = None
+
+            def _queue_audit(entry: Optional[Dict[str, object]]) -> None:
+                nonlocal pending_audit_entry
+                if entry:
+                    pending_audit_entry = entry
+
+            current_context_slice = None
+            if context_df is not None and not context_df.empty:
+                context_end = int(context_df.index.searchsorted(pd.Timestamp(current_row.name), side="right"))
+                if context_end > 0:
+                    context_start = max(0, context_end - context_window_candles)
+                    current_context_slice = context_df.iloc[context_start:context_end]
 
             if open_position is not None:
                 open_position.age_candles += 1
@@ -1238,15 +1703,23 @@ class BacktestEngine:
                 require_volume=require_volume,
                 require_trend=require_trend,
                 avoid_ranging=avoid_ranging,
-                context_df=context_df,
+                context_df=current_context_slice,
                 context_timeframe=effective_context_timeframe,
                 stop_loss_pct=stop_loss_pct,
                 take_profit_pct=take_profit_pct,
             )
+            signal_pipeline = self._apply_setup_execution_policy(
+                signal_pipeline,
+                allowed_execution_setups=allowed_execution_setups,
+            )
             self._record_signal_pipeline_stats(signal_pipeline_stats, signal_pipeline)
             signal = str(signal_pipeline.get("analytical_signal") or "NEUTRO")
 
-            if open_position is not None and self._is_opposite_signal(open_position.side, signal):
+            if open_position is not None and self._should_force_opposite_exit(
+                position_side=open_position.side,
+                signal_pipeline=signal_pipeline,
+                analytical_signal=signal,
+            ):
                 signal_trade = self._close_position(
                     open_position=open_position,
                     raw_exit_price=float(next_row["open"]),
@@ -1267,8 +1740,7 @@ class BacktestEngine:
                     timestamp=pd.Timestamp(current_row.name),
                     signal_pipeline=signal_pipeline,
                 )
-                if audit_entry:
-                    signal_audit_log.append(audit_entry)
+                _queue_audit(audit_entry)
 
             if open_position is None and signal in LONG_SIGNALS.union(SHORT_SIGNALS):
                 risk_plan = None
@@ -1306,8 +1778,9 @@ class BacktestEngine:
                             signal_pipeline=signal_pipeline,
                             risk_plan=risk_plan,
                         )
-                        if audit_entry:
-                            signal_audit_log.append(audit_entry)
+                        _queue_audit(audit_entry)
+                        if pending_audit_entry:
+                            signal_audit_log.append(pending_audit_entry)
                         self._record_risk_block(risk_engine_stats, risk_plan)
                         portfolio_value = balance
                         portfolio_history.append(
@@ -1326,8 +1799,7 @@ class BacktestEngine:
                     signal_pipeline=signal_pipeline,
                     risk_plan=risk_plan,
                 )
-                if audit_entry:
-                    signal_audit_log.append(audit_entry)
+                _queue_audit(audit_entry)
 
                 opened = self._open_position(
                     signal=signal,
@@ -1358,8 +1830,10 @@ class BacktestEngine:
                     timestamp=pd.Timestamp(current_row.name),
                     signal_pipeline=signal_pipeline,
                 )
-                if audit_entry:
-                    signal_audit_log.append(audit_entry)
+                _queue_audit(audit_entry)
+
+            if pending_audit_entry:
+                signal_audit_log.append(pending_audit_entry)
 
             portfolio_value = balance
             if open_position is not None:
@@ -1948,6 +2422,34 @@ class BacktestEngine:
             return signal in SHORT_SIGNALS
         return signal in LONG_SIGNALS
 
+    def _should_force_opposite_exit(
+        self,
+        position_side: str,
+        signal_pipeline: Dict[str, object],
+        analytical_signal: str,
+    ) -> bool:
+        # Avoid premature exits from weak opposite signals in noisy regimes.
+        opposite_strong_signal = "VENDA" if position_side == "long" else "COMPRA"
+        if str(analytical_signal or "") != opposite_strong_signal:
+            return False
+
+        decision = signal_pipeline.get("trade_decision") or {}
+        scenario = signal_pipeline.get("scenario_evaluation") or {}
+        confirmation = signal_pipeline.get("confirmation_evaluation") or {}
+        structure = signal_pipeline.get("structure_evaluation") or {}
+
+        confidence = float(decision.get("confidence", 0.0) or 0.0)
+        scenario_score = float(scenario.get("scenario_score", 0.0) or 0.0)
+        confirmation_state = str(confirmation.get("confirmation_state") or "weak")
+        structure_state = str(structure.get("structure_state") or "weak_structure")
+
+        return (
+            confidence >= 6.2
+            and scenario_score >= 5.8
+            and confirmation_state in {"confirmed", "mixed"}
+            and structure_state in {"continuation", "pullback", "breakout"}
+        )
+
     def _annualization_factor(self, timeframe: str) -> float:
         candles_per_year = {
             "1m": 525_600,
@@ -2000,6 +2502,7 @@ class BacktestEngine:
         require_trend: bool,
         avoid_ranging: bool,
         validation_split_pct: float,
+        allowed_execution_setups: Optional[Set[str]],
     ) -> Optional[Dict]:
         split_date = self._calculate_validation_split_date(start_date, end_date, validation_split_pct)
         if split_date is None:
@@ -2029,6 +2532,7 @@ class BacktestEngine:
                 strategy_version=None,
                 setup_name=None,
                 sample_type="in_sample",
+                allowed_execution_setups=allowed_execution_setups,
             )
             out_sample_trades, out_sample_portfolio, out_sample_balance, out_sample_signal_pipeline, out_sample_risk_engine, out_sample_signal_audit = self._run_simulation(
                 symbol=symbol,
@@ -2050,6 +2554,7 @@ class BacktestEngine:
                 strategy_version=None,
                 setup_name=None,
                 sample_type="out_of_sample",
+                allowed_execution_setups=allowed_execution_setups,
             )
         except ValueError:
             logger.info("Periodo insuficiente para validacao fora da amostra; split ignorado")
@@ -2118,6 +2623,7 @@ class BacktestEngine:
         require_trend: bool,
         avoid_ranging: bool,
         walk_forward_windows: int,
+        allowed_execution_setups: Optional[Set[str]],
     ) -> Optional[Dict]:
         if walk_forward_windows <= 0:
             return None
@@ -2162,6 +2668,7 @@ class BacktestEngine:
                     strategy_version=None,
                     setup_name=None,
                     sample_type="walk_forward_in_sample",
+                    allowed_execution_setups=allowed_execution_setups,
                 )
                 out_sample_trades, out_sample_portfolio, out_sample_balance, out_sample_signal_pipeline, out_sample_risk_engine, out_sample_signal_audit = self._run_simulation(
                     symbol=symbol,
@@ -2183,6 +2690,7 @@ class BacktestEngine:
                     strategy_version=None,
                     setup_name=None,
                     sample_type="walk_forward_out_of_sample",
+                    allowed_execution_setups=allowed_execution_setups,
                 )
             except ValueError:
                 logger.info("Janela walk-forward %s ignorada por dados insuficientes", window_index)
