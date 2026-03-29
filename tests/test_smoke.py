@@ -202,6 +202,25 @@ class ProductionConfigSmokeTests(unittest.TestCase):
         self.assertIn("ETH/USDT", supported_pairs)
         self.assertGreater(len(supported_pairs), 1)
 
+    def test_app_config_exposes_global_backtest_preset_catalog(self):
+        presets = AppConfig.get_backtest_setup_presets()
+        notes = AppConfig.get_backtest_preset_notes()
+
+        self.assertIn(AppConfig.DEFAULT_BACKTEST_PRESET, presets)
+        self.assertIn(AppConfig.DEFAULT_BACKTEST_PRESET, notes)
+        self.assertEqual(
+            presets[AppConfig.DEFAULT_BACKTEST_PRESET]["bt_context_mode"],
+            AppConfig.PRIMARY_CONTEXT_TIMEFRAME,
+        )
+        self.assertIn("global", AppConfig.DEFAULT_BACKTEST_PRESET_SUMMARY.lower())
+
+    def test_app_config_classifies_symbol_profile_families(self):
+        self.assertEqual(AppConfig.get_symbol_profile_family("BTC/USDT"), "majors")
+        self.assertEqual(AppConfig.get_symbol_profile_family("ETH/USDT"), "majors")
+        self.assertEqual(AppConfig.get_symbol_profile_family("SOL/USDT"), "trend_alts")
+        self.assertEqual(AppConfig.get_symbol_profile_family("UNKNOWN/USDT"), "global")
+        self.assertEqual(AppConfig.get_symbol_profile_family_label("XLM/USDT"), "Broad Alts")
+
     def test_admin_users_default_to_empty_without_environment_configuration(self):
         import importlib
         import config.config as config_module

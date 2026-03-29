@@ -1592,13 +1592,20 @@ def main():
             "📈 Par para análise:",
             available_pairs,
             index=available_pairs.index(AppConfig.DEFAULT_SYMBOL) if AppConfig.DEFAULT_SYMBOL in available_pairs else 0,
-            help="O setup principal continua fixo, mas a auditoria analítica pode ser feita em outros pares.",
+            help="O perfil global continua fixo, mas a auditoria analitica pode ser feita em outros pares.",
             key="single_setup_symbol",
         )
         selected_symbols = [symbol]
+        symbol_family_label = AppConfig.get_symbol_profile_family_label(symbol)
         st.sidebar.info(
-            f"Setup principal: {AppConfig.PRIMARY_SYMBOL} em {AppConfig.DEFAULT_TIMEFRAME} | "
-            f"Analisando: {symbol}"
+            "\n".join(
+                [
+                    f"Perfil base: {AppConfig.DEFAULT_BACKTEST_PRESET}",
+                    f"Janela base: {AppConfig.DEFAULT_TIMEFRAME} + contexto {AppConfig.PRIMARY_CONTEXT_TIMEFRAME}",
+                    f"Familia observada: {symbol_family_label}",
+                    f"Analisando: {symbol}",
+                ]
+            )
         )
     else:
         trading_mode = st.sidebar.radio(
@@ -3559,119 +3566,11 @@ def main():
 
         st.markdown("---")
 
-        setup_focus_labels = {
-            "ema_rsi_resume_long": "EMA/RSI Long",
-            "ema_rsi_resume_short": "EMA/RSI Short",
-        }
-        market_reading_family_configs = {
-            "all_states": {
-                "label": "Ambos os lados",
-                "description": "Opera compra e venda com o motor mecanico EMA/RSI.",
-                "allowed_setups": list(setup_focus_labels.keys()),
-            },
-            "long_only": {
-                "label": "Somente compra",
-                "description": "Limita o motor mecanico ao lado comprador.",
-                "allowed_setups": ["ema_rsi_resume_long"],
-            },
-            "short_only": {
-                "label": "Somente venda",
-                "description": "Limita o motor mecanico ao lado vendedor.",
-                "allowed_setups": ["ema_rsi_resume_short"],
-            },
-        }
-        risk_profile_configs = {
-            "manual": {
-                "label": "Manual",
-                "description": "Mantém SL/TP exatamente como você definir.",
-            },
-            "conservative": {
-                "label": "Conservador",
-                "description": "Menor frequência e alvo mais estável.",
-                "stop_loss_pct": 1.0,
-                "take_profit_pct": 2.0,
-            },
-            "balanced": {
-                "label": "Balanceado",
-                "description": "Relação risco/retorno padrão para operar continuamente.",
-                "stop_loss_pct": 0.8,
-                "take_profit_pct": 1.8,
-            },
-            "aggressive": {
-                "label": "Agressivo",
-                "description": "Stop mais curto e alvo mais longo para throughput maior.",
-                "stop_loss_pct": 0.7,
-                "take_profit_pct": 2.2,
-            },
-        }
-        setup_preset_configs = {
-            "Manual": None,
-            "Leitura Conservadora (1h)": {
-                "bt_timeframe": "1h",
-                "bt_context_mode": "same_timeframe",
-                "bt_market_family": "all_states",
-                "bt_setup_focus": list(setup_focus_labels.keys()),
-                "bt_risk_profile": "conservative",
-                "bt_rsi_period": 14,
-                "bt_rsi_min": 50,
-                "bt_rsi_max": 50,
-                "bt_enable_volume_filter": True,
-                "bt_enable_trend_filter": True,
-                "bt_enable_avoid_ranging": True,
-                "bt_stop_loss_pct": 1.5,
-                "bt_take_profit_pct": 3.0,
-                "bt_enable_oos_validation": True,
-                "bt_validation_split_pct": 30,
-                "bt_enable_walk_forward": True,
-                "bt_walk_forward_windows": 3,
-            },
-            AppConfig.DEFAULT_BACKTEST_PRESET: {
-                "bt_timeframe": "15m",
-                "bt_context_mode": AppConfig.PRIMARY_CONTEXT_TIMEFRAME,
-                "bt_market_family": "all_states",
-                "bt_setup_focus": list(setup_focus_labels.keys()),
-                "bt_risk_profile": "balanced",
-                "bt_rsi_period": 14,
-                "bt_rsi_min": 54,
-                "bt_rsi_max": 47,
-                "bt_enable_volume_filter": False,
-                "bt_enable_trend_filter": False,
-                "bt_enable_avoid_ranging": False,
-                "bt_stop_loss_pct": 0.8,
-                "bt_take_profit_pct": 1.8,
-                "bt_enable_oos_validation": True,
-                "bt_validation_split_pct": 30,
-                "bt_enable_walk_forward": True,
-                "bt_walk_forward_windows": 3,
-            },
-            "Leitura Ativa (15m)": {
-                "bt_timeframe": "15m",
-                "bt_context_mode": "same_timeframe",
-                "bt_market_family": "all_states",
-                "bt_setup_focus": list(setup_focus_labels.keys()),
-                "bt_risk_profile": "aggressive",
-                "bt_rsi_period": 14,
-                "bt_rsi_min": 54,
-                "bt_rsi_max": 46,
-                "bt_enable_volume_filter": False,
-                "bt_enable_trend_filter": True,
-                "bt_enable_avoid_ranging": True,
-                "bt_stop_loss_pct": 0.7,
-                "bt_take_profit_pct": 2.2,
-                "bt_enable_oos_validation": True,
-                "bt_validation_split_pct": 30,
-                "bt_enable_walk_forward": True,
-                "bt_walk_forward_windows": 3,
-            },
-        }
-        setup_preset_notes = {
-            "Manual": "Sem sobrescrever os campos atuais.",
-            "Leitura Conservadora (1h)": "Prioriza leitura limpa e menor ruído operacional.",
-            AppConfig.DEFAULT_BACKTEST_PRESET: (
-                "Preset oficial do motor EMA/RSI, validado em 30d, 90d, 180d e 1 ano, com filtro de ADX no short."
-            ),
-            "Leitura Ativa (15m)": "Busca mais fluxo operacional, aceitando mais ruído e variação.",
-        }
+        setup_focus_labels = AppConfig.get_backtest_setup_focus_labels()
+        market_reading_family_configs = AppConfig.get_market_reading_family_configs()
+        risk_profile_configs = AppConfig.get_risk_profile_configs()
+        setup_preset_configs = AppConfig.get_backtest_setup_presets()
+        setup_preset_notes = AppConfig.get_backtest_preset_notes()
 
         default_setup_preset = (
             AppConfig.DEFAULT_BACKTEST_PRESET
@@ -3719,7 +3618,7 @@ def main():
             _apply_bt_preset(selected_setup_preset)
         st.caption(setup_preset_notes.get(selected_setup_preset, ""))
         if selected_setup_preset == AppConfig.DEFAULT_BACKTEST_PRESET:
-            st.success(AppConfig.VALIDATED_BACKTEST_SUMMARY)
+            st.info(AppConfig.DEFAULT_BACKTEST_PRESET_SUMMARY)
 
         # Main configuration in tabs
         config_tab1, config_tab2, config_tab3 = st.tabs(["📊 Básico", "⚙️ Avançado", "📈 Otimização"])
@@ -3733,6 +3632,10 @@ def main():
                 # Usar sempre o símbolo configurado na sidebar
                 bt_symbol = symbol
                 st.success(f"✅ **Par do Backtest:** {bt_symbol}")
+                st.caption(
+                    f"Perfil ativo: {selected_setup_preset} | "
+                    f"Familia observada: {AppConfig.get_symbol_profile_family_label(bt_symbol)}"
+                )
                 st.info("💡 *Usando par configurado na sidebar*")
 
                 bt_timeframe = st.selectbox(

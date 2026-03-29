@@ -28,12 +28,17 @@ class AppConfig:
     PRIMARY_SYMBOL = "BTC/USDT"
     PRIMARY_TIMEFRAME = "15m"
     PRIMARY_CONTEXT_TIMEFRAME = "1h"
-    DEFAULT_BACKTEST_PRESET = "EMA/RSI Validado (15m)"
+    DEFAULT_BACKTEST_PRESET = "Perfil Global Base (15m)"
     DEFAULT_BACKTEST_WINDOW_DAYS = 30
-    VALIDATED_BACKTEST_SUMMARY = (
-        "Validação multi-horizonte: 30d +4.10% | 90d +7.94% | "
-        "180d +4.07% | 1a +3.86% | DD anual 6.68% | PF anual 1.08"
+    DEFAULT_BACKTEST_PRESET_SUMMARY = (
+        "Perfil global base: 15m + contexto 1h, motor EMA/RSI nos dois lados, "
+        "risco balanceado e validacao temporal ligada. Use como baseline transversal."
     )
+    DEFAULT_BACKTEST_PRESET_NOTE = (
+        "Preset global base do motor EMA/RSI. Ele serve como ponto de partida compartilhado; "
+        "a promocao real continua dependendo de validacao por familia."
+    )
+    VALIDATED_BACKTEST_SUMMARY = DEFAULT_BACKTEST_PRESET_SUMMARY
     DEFAULT_SYMBOL = PRIMARY_SYMBOL
     DEFAULT_TIMEFRAME = PRIMARY_TIMEFRAME
     DEFAULT_RSI_PERIOD = 14
@@ -79,6 +84,28 @@ class AppConfig:
         "1h": "4h",
         "4h": "1d",
     }
+    BACKTEST_SETUP_FOCUS_LABELS = {
+        "ema_rsi_resume_long": "EMA/RSI Long",
+        "ema_rsi_resume_short": "EMA/RSI Short",
+    }
+    SYMBOL_PROFILE_FAMILIES = {
+        "BTC/USDT": "majors",
+        "ETH/USDT": "majors",
+        "SOL/USDT": "trend_alts",
+        "AVAX/USDT": "trend_alts",
+        "LINK/USDT": "trend_alts",
+        "ADA/USDT": "broad_alts",
+        "DOT/USDT": "broad_alts",
+        "MATIC/USDT": "broad_alts",
+        "UNI/USDT": "broad_alts",
+        "XLM/USDT": "broad_alts",
+    }
+    SYMBOL_PROFILE_FAMILY_LABELS = {
+        "majors": "Majors",
+        "trend_alts": "Trend Alts",
+        "broad_alts": "Broad Alts",
+        "global": "Global",
+    }
 
     @classmethod
     def get_supported_pairs(cls):
@@ -111,6 +138,141 @@ class AppConfig:
         if not context_timeframe or context_timeframe == timeframe:
             return None
         return context_timeframe
+
+    @classmethod
+    def get_backtest_setup_focus_labels(cls) -> dict[str, str]:
+        return dict(cls.BACKTEST_SETUP_FOCUS_LABELS)
+
+    @classmethod
+    def get_market_reading_family_configs(cls) -> dict[str, dict[str, object]]:
+        setup_focus_labels = cls.get_backtest_setup_focus_labels()
+        return {
+            "all_states": {
+                "label": "Ambos os lados",
+                "description": "Opera compra e venda com o motor mecanico EMA/RSI.",
+                "allowed_setups": list(setup_focus_labels.keys()),
+            },
+            "long_only": {
+                "label": "Somente compra",
+                "description": "Limita o motor mecanico ao lado comprador.",
+                "allowed_setups": ["ema_rsi_resume_long"],
+            },
+            "short_only": {
+                "label": "Somente venda",
+                "description": "Limita o motor mecanico ao lado vendedor.",
+                "allowed_setups": ["ema_rsi_resume_short"],
+            },
+        }
+
+    @classmethod
+    def get_risk_profile_configs(cls) -> dict[str, dict[str, object]]:
+        return {
+            "manual": {
+                "label": "Manual",
+                "description": "Mantem SL/TP exatamente como voce definir.",
+            },
+            "conservative": {
+                "label": "Conservador",
+                "description": "Menor frequencia e alvo mais estavel.",
+                "stop_loss_pct": 1.0,
+                "take_profit_pct": 2.0,
+            },
+            "balanced": {
+                "label": "Balanceado",
+                "description": "Relacao risco/retorno padrao para operar continuamente.",
+                "stop_loss_pct": 0.8,
+                "take_profit_pct": 1.8,
+            },
+            "aggressive": {
+                "label": "Agressivo",
+                "description": "Stop mais curto e alvo mais longo para throughput maior.",
+                "stop_loss_pct": 0.7,
+                "take_profit_pct": 2.2,
+            },
+        }
+
+    @classmethod
+    def get_backtest_setup_presets(cls) -> dict[str, Optional[dict[str, object]]]:
+        setup_focus_labels = cls.get_backtest_setup_focus_labels()
+        return {
+            "Manual": None,
+            "Leitura Conservadora (1h)": {
+                "bt_timeframe": "1h",
+                "bt_context_mode": "same_timeframe",
+                "bt_market_family": "all_states",
+                "bt_setup_focus": list(setup_focus_labels.keys()),
+                "bt_risk_profile": "conservative",
+                "bt_rsi_period": 14,
+                "bt_rsi_min": 50,
+                "bt_rsi_max": 50,
+                "bt_enable_volume_filter": True,
+                "bt_enable_trend_filter": True,
+                "bt_enable_avoid_ranging": True,
+                "bt_stop_loss_pct": 1.5,
+                "bt_take_profit_pct": 3.0,
+                "bt_enable_oos_validation": True,
+                "bt_validation_split_pct": 30,
+                "bt_enable_walk_forward": True,
+                "bt_walk_forward_windows": 3,
+            },
+            cls.DEFAULT_BACKTEST_PRESET: {
+                "bt_timeframe": "15m",
+                "bt_context_mode": cls.PRIMARY_CONTEXT_TIMEFRAME,
+                "bt_market_family": "all_states",
+                "bt_setup_focus": list(setup_focus_labels.keys()),
+                "bt_risk_profile": "balanced",
+                "bt_rsi_period": 14,
+                "bt_rsi_min": 54,
+                "bt_rsi_max": 47,
+                "bt_enable_volume_filter": False,
+                "bt_enable_trend_filter": False,
+                "bt_enable_avoid_ranging": False,
+                "bt_stop_loss_pct": 0.8,
+                "bt_take_profit_pct": 1.8,
+                "bt_enable_oos_validation": True,
+                "bt_validation_split_pct": 30,
+                "bt_enable_walk_forward": True,
+                "bt_walk_forward_windows": 3,
+            },
+            "Leitura Ativa (15m)": {
+                "bt_timeframe": "15m",
+                "bt_context_mode": "same_timeframe",
+                "bt_market_family": "all_states",
+                "bt_setup_focus": list(setup_focus_labels.keys()),
+                "bt_risk_profile": "aggressive",
+                "bt_rsi_period": 14,
+                "bt_rsi_min": 54,
+                "bt_rsi_max": 46,
+                "bt_enable_volume_filter": False,
+                "bt_enable_trend_filter": True,
+                "bt_enable_avoid_ranging": True,
+                "bt_stop_loss_pct": 0.7,
+                "bt_take_profit_pct": 2.2,
+                "bt_enable_oos_validation": True,
+                "bt_validation_split_pct": 30,
+                "bt_enable_walk_forward": True,
+                "bt_walk_forward_windows": 3,
+            },
+        }
+
+    @classmethod
+    def get_backtest_preset_notes(cls) -> dict[str, str]:
+        return {
+            "Manual": "Sem sobrescrever os campos atuais.",
+            "Leitura Conservadora (1h)": "Prioriza leitura limpa e menor ruido operacional.",
+            cls.DEFAULT_BACKTEST_PRESET: cls.DEFAULT_BACKTEST_PRESET_NOTE,
+            "Leitura Ativa (15m)": "Busca mais fluxo operacional, aceitando mais ruido e variacao.",
+        }
+
+    @classmethod
+    def get_symbol_profile_family(cls, symbol: Optional[str]) -> str:
+        normalized_symbol = str(symbol or "").strip().upper()
+        return cls.SYMBOL_PROFILE_FAMILIES.get(normalized_symbol, "global")
+
+    @classmethod
+    def get_symbol_profile_family_label(cls, symbol: Optional[str]) -> str:
+        family_key = cls.get_symbol_profile_family(symbol)
+        return cls.SYMBOL_PROFILE_FAMILY_LABELS.get(family_key, "Global")
 
     @classmethod
     def get_runtime_allowed_execution_setups(
