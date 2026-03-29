@@ -106,6 +106,40 @@ class AppConfig:
         "broad_alts": "Broad Alts",
         "global": "Global",
     }
+    BACKTEST_FAMILY_PROFILE_OVERRIDES = {
+        "global": {
+            "label": "Global",
+            "description": "Usa o perfil global base sem ajustes adicionais.",
+            "overrides": {},
+        },
+        "majors": {
+            "label": "Majors",
+            "description": "BTC e ETH tendem a aceitar o baseline global com menos atrito estrutural.",
+            "overrides": {},
+        },
+        "trend_alts": {
+            "label": "Trend Alts",
+            "description": "Altcoins de impulso costumam responder melhor com filtro estrutural extra.",
+            "overrides": {
+                "bt_enable_trend_filter": True,
+                "bt_enable_avoid_ranging": True,
+                "bt_stop_loss_pct": 0.9,
+                "bt_take_profit_pct": 2.0,
+            },
+        },
+        "broad_alts": {
+            "label": "Broad Alts",
+            "description": "Altcoins mais irregulares pedem filtros extras e risco um pouco mais disciplinado.",
+            "overrides": {
+                "bt_enable_volume_filter": True,
+                "bt_enable_trend_filter": True,
+                "bt_enable_avoid_ranging": True,
+                "bt_risk_profile": "conservative",
+                "bt_stop_loss_pct": 1.0,
+                "bt_take_profit_pct": 2.0,
+            },
+        },
+    }
 
     @classmethod
     def get_supported_pairs(cls):
@@ -265,6 +299,17 @@ class AppConfig:
         }
 
     @classmethod
+    def get_backtest_family_profile_overlays(cls) -> dict[str, dict[str, object]]:
+        overlays: dict[str, dict[str, object]] = {}
+        for family_key, payload in cls.BACKTEST_FAMILY_PROFILE_OVERRIDES.items():
+            overlays[family_key] = {
+                "label": payload.get("label"),
+                "description": payload.get("description"),
+                "overrides": dict(payload.get("overrides") or {}),
+            }
+        return overlays
+
+    @classmethod
     def get_symbol_profile_family(cls, symbol: Optional[str]) -> str:
         normalized_symbol = str(symbol or "").strip().upper()
         return cls.SYMBOL_PROFILE_FAMILIES.get(normalized_symbol, "global")
@@ -273,6 +318,31 @@ class AppConfig:
     def get_symbol_profile_family_label(cls, symbol: Optional[str]) -> str:
         family_key = cls.get_symbol_profile_family(symbol)
         return cls.SYMBOL_PROFILE_FAMILY_LABELS.get(family_key, "Global")
+
+    @classmethod
+    def get_backtest_family_profile(cls, symbol: Optional[str]) -> dict[str, object]:
+        family_key = cls.get_symbol_profile_family(symbol)
+        overlays = cls.get_backtest_family_profile_overlays()
+        payload = overlays.get(family_key) or overlays["global"]
+        return {
+            "family_key": family_key,
+            "label": payload.get("label") or cls.get_symbol_profile_family_label(symbol),
+            "description": payload.get("description") or "",
+            "overrides": dict(payload.get("overrides") or {}),
+        }
+
+    @classmethod
+    def get_backtest_preset_updates(
+        cls,
+        preset_name: str,
+        symbol: Optional[str] = None,
+        include_family_overlay: bool = False,
+    ) -> dict[str, object]:
+        preset_updates = dict(cls.get_backtest_setup_presets().get(preset_name) or {})
+        if include_family_overlay:
+            family_profile = cls.get_backtest_family_profile(symbol)
+            preset_updates.update(family_profile.get("overrides") or {})
+        return preset_updates
 
     @classmethod
     def get_runtime_allowed_execution_setups(

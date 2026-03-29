@@ -221,6 +221,29 @@ class ProductionConfigSmokeTests(unittest.TestCase):
         self.assertEqual(AppConfig.get_symbol_profile_family("UNKNOWN/USDT"), "global")
         self.assertEqual(AppConfig.get_symbol_profile_family_label("XLM/USDT"), "Broad Alts")
 
+    def test_app_config_exposes_backtest_family_overlay_for_symbol(self):
+        trend_alt_profile = AppConfig.get_backtest_family_profile("SOL/USDT")
+        broad_alt_profile = AppConfig.get_backtest_family_profile("XLM/USDT")
+
+        self.assertEqual(trend_alt_profile["family_key"], "trend_alts")
+        self.assertTrue(trend_alt_profile["overrides"]["bt_enable_trend_filter"])
+        self.assertTrue(trend_alt_profile["overrides"]["bt_enable_avoid_ranging"])
+        self.assertEqual(broad_alt_profile["family_key"], "broad_alts")
+        self.assertTrue(broad_alt_profile["overrides"]["bt_enable_volume_filter"])
+
+    def test_app_config_can_merge_global_preset_with_family_overlay(self):
+        updates = AppConfig.get_backtest_preset_updates(
+            AppConfig.DEFAULT_BACKTEST_PRESET,
+            symbol="XLM/USDT",
+            include_family_overlay=True,
+        )
+
+        self.assertEqual(updates["bt_timeframe"], AppConfig.PRIMARY_TIMEFRAME)
+        self.assertTrue(updates["bt_enable_volume_filter"])
+        self.assertTrue(updates["bt_enable_trend_filter"])
+        self.assertTrue(updates["bt_enable_avoid_ranging"])
+        self.assertEqual(updates["bt_risk_profile"], "conservative")
+
     def test_admin_users_default_to_empty_without_environment_configuration(self):
         import importlib
         import config.config as config_module

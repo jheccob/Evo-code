@@ -3480,6 +3480,45 @@ def main():
             "Não representa sinal operacional ao vivo."
         )
         max_backtest_days = 730
+        setup_focus_labels = AppConfig.get_backtest_setup_focus_labels()
+        market_reading_family_configs = AppConfig.get_market_reading_family_configs()
+        risk_profile_configs = AppConfig.get_risk_profile_configs()
+        setup_preset_configs = AppConfig.get_backtest_setup_presets()
+        setup_preset_notes = AppConfig.get_backtest_preset_notes()
+
+        def _apply_bt_session_updates(
+            updates: dict[str, object],
+            preset_name: str | None = None,
+            start_days: int | None = None,
+        ) -> None:
+            for state_key, state_value in updates.items():
+                st.session_state[state_key] = list(state_value) if isinstance(state_value, list) else state_value
+            if start_days is not None:
+                st.session_state.bt_start_date = date.today() - timedelta(days=start_days)
+            if preset_name is not None:
+                st.session_state.bt_setup_preset = preset_name
+                st.session_state.bt_last_setup_preset = preset_name
+            if "bt_market_family" in updates:
+                st.session_state.bt_last_market_family = updates["bt_market_family"]
+            if "bt_risk_profile" in updates:
+                st.session_state.bt_last_risk_profile = updates["bt_risk_profile"]
+
+        def _apply_bt_preset(preset_name: str, start_days: int | None = None) -> None:
+            preset_updates = AppConfig.get_backtest_preset_updates(preset_name)
+            _apply_bt_session_updates(preset_updates, preset_name=preset_name, start_days=start_days)
+            st.session_state.bt_family_overlay_key = "global"
+
+        def _apply_bt_family_overlay(symbol_name: str) -> dict[str, object]:
+            family_profile = AppConfig.get_backtest_family_profile(symbol_name)
+            _apply_bt_preset(
+                AppConfig.DEFAULT_BACKTEST_PRESET,
+                start_days=AppConfig.DEFAULT_BACKTEST_WINDOW_DAYS,
+            )
+            overlay_updates = dict(family_profile.get("overrides") or {})
+            if overlay_updates:
+                _apply_bt_session_updates(overlay_updates)
+            st.session_state.bt_family_overlay_key = family_profile.get("family_key", "global")
+            return family_profile
 
         # Quick test presets
         st.markdown("### ⚡ Testes Rápidos")
@@ -3487,90 +3526,27 @@ def main():
 
         with col1:
             if st.button("🚀 Teste Agressivo", help="RSI 54/46, 7 dias", width="stretch"):
-                st.session_state.bt_setup_preset = "Leitura Ativa (15m)"
-                st.session_state.bt_last_setup_preset = "Leitura Ativa (15m)"
-                st.session_state.bt_timeframe = "15m"
-                st.session_state.bt_context_mode = "same_timeframe"
-                st.session_state.bt_market_family = "all_states"
-                st.session_state.bt_last_market_family = "all_states"
-                st.session_state.bt_risk_profile = "aggressive"
-                st.session_state.bt_last_risk_profile = "aggressive"
-                st.session_state.bt_rsi_min = 54
-                st.session_state.bt_rsi_max = 46
-                st.session_state.bt_enable_volume_filter = False
-                st.session_state.bt_enable_trend_filter = True
-                st.session_state.bt_enable_avoid_ranging = True
-                st.session_state.bt_stop_loss_pct = 0.7
-                st.session_state.bt_take_profit_pct = 2.2
-                st.session_state.bt_start_date = date.today() - timedelta(days=7)
+                _apply_bt_preset("Leitura Ativa (15m)", start_days=7)
 
         with col2:
-            if st.button("✅ Preset Validado", help="Aplica o setup EMA/RSI validado em múltiplos horizontes", width="stretch"):
-                st.session_state.bt_setup_preset = AppConfig.DEFAULT_BACKTEST_PRESET
-                st.session_state.bt_rsi_period = AppConfig.DEFAULT_RSI_PERIOD
-                st.session_state.bt_rsi_min = AppConfig.DEFAULT_RSI_MIN
-                st.session_state.bt_rsi_max = AppConfig.DEFAULT_RSI_MAX
-                st.session_state.bt_timeframe = AppConfig.PRIMARY_TIMEFRAME
-                st.session_state.bt_context_mode = AppConfig.PRIMARY_CONTEXT_TIMEFRAME
-                st.session_state.bt_market_family = "all_states"
-                st.session_state.bt_last_market_family = "all_states"
-                st.session_state.bt_risk_profile = "balanced"
-                st.session_state.bt_last_risk_profile = "balanced"
-                st.session_state.bt_enable_volume_filter = False
-                st.session_state.bt_enable_trend_filter = False
-                st.session_state.bt_enable_avoid_ranging = False
-                st.session_state.bt_stop_loss_pct = 0.8
-                st.session_state.bt_take_profit_pct = 1.8
-                st.session_state.bt_start_date = date.today() - timedelta(days=AppConfig.DEFAULT_BACKTEST_WINDOW_DAYS)
-                st.session_state.bt_last_setup_preset = AppConfig.DEFAULT_BACKTEST_PRESET
+            if st.button("✅ Perfil Global", help="Aplica o baseline global EMA/RSI para backtest", width="stretch"):
+                _apply_bt_preset(
+                    AppConfig.DEFAULT_BACKTEST_PRESET,
+                    start_days=AppConfig.DEFAULT_BACKTEST_WINDOW_DAYS,
+                )
 
         with col3:
             if st.button("🛡️ Teste Conservador", help="RSI 50/50, 30 dias", width="stretch"):
-                st.session_state.bt_setup_preset = "Leitura Conservadora (1h)"
-                st.session_state.bt_last_setup_preset = "Leitura Conservadora (1h)"
-                st.session_state.bt_timeframe = "1h"
-                st.session_state.bt_context_mode = "same_timeframe"
-                st.session_state.bt_market_family = "all_states"
-                st.session_state.bt_last_market_family = "all_states"
-                st.session_state.bt_risk_profile = "conservative"
-                st.session_state.bt_last_risk_profile = "conservative"
-                st.session_state.bt_rsi_period = 14
-                st.session_state.bt_rsi_min = 50
-                st.session_state.bt_rsi_max = 50
-                st.session_state.bt_enable_volume_filter = True
-                st.session_state.bt_enable_trend_filter = True
-                st.session_state.bt_enable_avoid_ranging = True
-                st.session_state.bt_stop_loss_pct = 1.5
-                st.session_state.bt_take_profit_pct = 3.0
-                st.session_state.bt_start_date = date.today() - timedelta(days=30)
+                _apply_bt_preset("Leitura Conservadora (1h)", start_days=30)
 
         with col4:
             if st.button("🔄 Reset Padrão", help="Voltar configurações padrão", width="stretch"):
-                st.session_state.bt_setup_preset = AppConfig.DEFAULT_BACKTEST_PRESET
-                st.session_state.bt_rsi_period = AppConfig.DEFAULT_RSI_PERIOD
-                st.session_state.bt_rsi_min = AppConfig.DEFAULT_RSI_MIN
-                st.session_state.bt_rsi_max = AppConfig.DEFAULT_RSI_MAX
-                st.session_state.bt_timeframe = AppConfig.PRIMARY_TIMEFRAME
-                st.session_state.bt_context_mode = AppConfig.PRIMARY_CONTEXT_TIMEFRAME
-                st.session_state.bt_market_family = "all_states"
-                st.session_state.bt_last_market_family = "all_states"
-                st.session_state.bt_risk_profile = "balanced"
-                st.session_state.bt_last_risk_profile = "balanced"
-                st.session_state.bt_enable_volume_filter = False
-                st.session_state.bt_enable_trend_filter = False
-                st.session_state.bt_enable_avoid_ranging = False
-                st.session_state.bt_stop_loss_pct = 0.8
-                st.session_state.bt_take_profit_pct = 1.8
-                st.session_state.bt_start_date = date.today() - timedelta(days=AppConfig.DEFAULT_BACKTEST_WINDOW_DAYS)
-                st.session_state.bt_last_setup_preset = AppConfig.DEFAULT_BACKTEST_PRESET
+                _apply_bt_preset(
+                    AppConfig.DEFAULT_BACKTEST_PRESET,
+                    start_days=AppConfig.DEFAULT_BACKTEST_WINDOW_DAYS,
+                )
 
         st.markdown("---")
-
-        setup_focus_labels = AppConfig.get_backtest_setup_focus_labels()
-        market_reading_family_configs = AppConfig.get_market_reading_family_configs()
-        risk_profile_configs = AppConfig.get_risk_profile_configs()
-        setup_preset_configs = AppConfig.get_backtest_setup_presets()
-        setup_preset_notes = AppConfig.get_backtest_preset_notes()
 
         default_setup_preset = (
             AppConfig.DEFAULT_BACKTEST_PRESET
@@ -3579,24 +3555,13 @@ def main():
         )
         default_preset_updates = dict(setup_preset_configs.get(default_setup_preset) or {})
 
-        def _apply_bt_preset(preset_name: str, start_days: int | None = None) -> None:
-            preset_updates = dict(setup_preset_configs.get(preset_name) or {})
-            for state_key, state_value in preset_updates.items():
-                st.session_state[state_key] = list(state_value) if isinstance(state_value, list) else state_value
-            if start_days is not None:
-                st.session_state.bt_start_date = date.today() - timedelta(days=start_days)
-            st.session_state.bt_setup_preset = preset_name
-            st.session_state.bt_last_setup_preset = preset_name
-            if "bt_market_family" in preset_updates:
-                st.session_state.bt_last_market_family = preset_updates["bt_market_family"]
-            if "bt_risk_profile" in preset_updates:
-                st.session_state.bt_last_risk_profile = preset_updates["bt_risk_profile"]
-
         if "bt_setup_preset" not in st.session_state:
             st.session_state.bt_setup_preset = default_setup_preset
             for state_key, state_value in default_preset_updates.items():
                 st.session_state[state_key] = list(state_value) if isinstance(state_value, list) else state_value
             st.session_state.bt_start_date = date.today() - timedelta(days=AppConfig.DEFAULT_BACKTEST_WINDOW_DAYS)
+        if "bt_family_overlay_key" not in st.session_state:
+            st.session_state.bt_family_overlay_key = "global"
         if "bt_last_setup_preset" not in st.session_state:
             st.session_state.bt_last_setup_preset = st.session_state.bt_setup_preset
         if "bt_market_family" not in st.session_state:
@@ -3637,6 +3602,54 @@ def main():
                     f"Familia observada: {AppConfig.get_symbol_profile_family_label(bt_symbol)}"
                 )
                 st.info("💡 *Usando par configurado na sidebar*")
+                family_profile = AppConfig.get_backtest_family_profile(bt_symbol)
+                family_override_updates = dict(family_profile.get("overrides") or {})
+                active_family_overlay_key = str(st.session_state.get("bt_family_overlay_key") or "global")
+                if family_override_updates:
+                    overlay_summary = []
+                    if family_override_updates.get("bt_enable_volume_filter"):
+                        overlay_summary.append("volume ON")
+                    if family_override_updates.get("bt_enable_trend_filter"):
+                        overlay_summary.append("tendencia ON")
+                    if family_override_updates.get("bt_enable_avoid_ranging"):
+                        overlay_summary.append("anti-ranging ON")
+                    if "bt_stop_loss_pct" in family_override_updates:
+                        overlay_summary.append(f"SL {family_override_updates['bt_stop_loss_pct']:.1f}%")
+                    if "bt_take_profit_pct" in family_override_updates:
+                        overlay_summary.append(f"TP {family_override_updates['bt_take_profit_pct']:.1f}%")
+
+                    st.caption(
+                        f"Overlay sugerido para {family_profile.get('label')}: {family_profile.get('description')}"
+                    )
+                    st.caption(
+                        "Ajustes sugeridos sobre o perfil global: "
+                        + (", ".join(overlay_summary) if overlay_summary else "sem ajustes extras")
+                    )
+
+                    overlay_col1, overlay_col2 = st.columns(2)
+                    with overlay_col1:
+                        if st.button(
+                            f"Aplicar Overlay {family_profile.get('label')}",
+                            key=f"bt_apply_family_overlay_{family_profile.get('family_key')}",
+                            width="stretch",
+                        ):
+                            _apply_bt_family_overlay(bt_symbol)
+                            st.rerun()
+                    with overlay_col2:
+                        if active_family_overlay_key != "global" and st.button(
+                            "Voltar ao Global",
+                            key="bt_clear_family_overlay",
+                            width="stretch",
+                        ):
+                            _apply_bt_preset(
+                                AppConfig.DEFAULT_BACKTEST_PRESET,
+                                start_days=AppConfig.DEFAULT_BACKTEST_WINDOW_DAYS,
+                            )
+                            st.rerun()
+                else:
+                    st.caption(
+                        "Esta familia usa o baseline global sem overlay adicional recomendado no momento."
+                    )
 
                 bt_timeframe = st.selectbox(
                     "Timeframe:",
@@ -5493,23 +5506,11 @@ def main():
                             st.rerun()
 
             with opt_col2:
-                if st.button("✅ Preset Validado", help="Reaplicar setup EMA/RSI validado"):
-                    st.session_state.bt_setup_preset = AppConfig.DEFAULT_BACKTEST_PRESET
-                    st.session_state.bt_rsi_period = AppConfig.DEFAULT_RSI_PERIOD
-                    st.session_state.bt_rsi_min = AppConfig.DEFAULT_RSI_MIN
-                    st.session_state.bt_rsi_max = AppConfig.DEFAULT_RSI_MAX
-                    st.session_state.bt_timeframe = AppConfig.PRIMARY_TIMEFRAME
-                    st.session_state.bt_context_mode = AppConfig.PRIMARY_CONTEXT_TIMEFRAME
-                    st.session_state.bt_market_family = "all_states"
-                    st.session_state.bt_last_market_family = "all_states"
-                    st.session_state.bt_risk_profile = "balanced"
-                    st.session_state.bt_last_risk_profile = "balanced"
-                    st.session_state.bt_enable_volume_filter = False
-                    st.session_state.bt_enable_trend_filter = False
-                    st.session_state.bt_enable_avoid_ranging = False
-                    st.session_state.bt_stop_loss_pct = 0.8
-                    st.session_state.bt_take_profit_pct = 1.8
-                    st.session_state.bt_last_setup_preset = AppConfig.DEFAULT_BACKTEST_PRESET
+                if st.button("✅ Perfil Global", help="Reaplicar o baseline global EMA/RSI"):
+                    _apply_bt_preset(
+                        AppConfig.DEFAULT_BACKTEST_PRESET,
+                        start_days=AppConfig.DEFAULT_BACKTEST_WINDOW_DAYS,
+                    )
                     st.rerun()
 
                 if st.button("🔄 Período Maior", help="Dobrar período de teste"):
