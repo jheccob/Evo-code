@@ -28,21 +28,21 @@ class AdaptiveGovernanceTests(unittest.TestCase):
 
     def _save_backtest_run(self) -> int:
         trade_analytics = []
-        bullish_results = [0.7, 0.6, 0.4, 0.3, -0.5, -0.4]
-        range_results = [-0.4, -0.3, -0.2, -0.5, -0.1, -0.2]
+        bullish_results = ([0.7, 0.6, 0.4, 0.3, -0.5, -0.4] * 5)
+        range_results = ([-0.4, -0.3, -0.2, -0.5, -0.1, -0.2] * 5)
         all_results = [("trend_bull", value) for value in bullish_results] + [("range", value) for value in range_results]
 
         for index, (regime, pnl_pct) in enumerate(all_results, start=1):
             trade_analytics.append(
                 {
                     "strategy_version": self.strategy_version,
-                    "setup_name": "continuation_breakout",
+                    "setup_name": "ema_rsi_resume_long",
                     "regime": regime,
                     "regime_score": 7.5 if regime == "trend_bull" else 3.0,
                     "trend_state": regime,
                     "volatility_state": "normal_volatility",
                     "context_bias": "bullish" if regime == "trend_bull" else "neutral",
-                    "structure_state": "continuation" if regime == "trend_bull" else "weak_structure",
+                    "structure_state": "trend_resume" if regime == "trend_bull" else "flat",
                     "confirmation_state": "confirmed" if regime == "trend_bull" else "mixed",
                     "entry_quality": "strong" if regime == "trend_bull" else "bad",
                     "entry_score": 7.1 if regime == "trend_bull" else 3.2,
@@ -80,9 +80,9 @@ class AdaptiveGovernanceTests(unittest.TestCase):
                 "final_balance": 10550.0,
                 "net_profit": 550.0,
                 "total_return_pct": 5.5,
-                "total_trades": 12,
-                "winning_trades": 4,
-                "losing_trades": 8,
+                "total_trades": len(all_results),
+                "winning_trades": sum(1 for _, value in all_results if value > 0),
+                "losing_trades": sum(1 for _, value in all_results if value <= 0),
                 "win_rate": 33.3,
                 "max_drawdown": 6.0,
                 "sharpe_ratio": 1.1,
@@ -96,9 +96,14 @@ class AdaptiveGovernanceTests(unittest.TestCase):
                 "require_volume": True,
                 "require_trend": True,
                 "avoid_ranging": True,
+                "approved_setup_type": "ema_rsi_resume_long",
+                "approved_setup_trades": len(all_results),
+                "approved_setup_profit_factor": 1.35,
+                "evaluation_period_days": 59.0,
                 "out_of_sample_return_pct": 2.3,
                 "out_of_sample_profit_factor": 1.28,
                 "out_of_sample_expectancy_pct": 0.11,
+                "out_of_sample_total_trades": 18,
                 "out_of_sample_passed": True,
             },
             trades=[],

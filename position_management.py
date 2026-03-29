@@ -8,6 +8,13 @@ import pandas as pd
 from config import ProductionConfig
 
 
+EVO_RESUME_SETUPS = {"ema_rsi_resume_long", "ema_rsi_resume_short"}
+EVO_RESUME_TRAILING_PCTS = {
+    "long": 0.7,
+    "short": 0.8,
+}
+
+
 def _prefer_closed_candles(df: Optional[pd.DataFrame]) -> pd.DataFrame:
     if df is None:
         return pd.DataFrame()
@@ -26,6 +33,10 @@ def _safe_float(value: Optional[float], default: float = 0.0) -> float:
         return float(value)
     except (TypeError, ValueError):
         return float(default)
+
+
+def _normalize_setup_name(setup_name: Optional[str]) -> str:
+    return str(setup_name or "").strip().lower()
 
 
 def _apply_stop_precedence(current: Optional[float], candidate: Optional[float], side: str) -> Optional[float]:
@@ -88,8 +99,12 @@ def evaluate_position_management(
     mfe_pct: float = 0.0,
     mae_pct: float = 0.0,
     position_age_candles: int = 0,
+    timeframe: Optional[str] = None,
+    setup_name: Optional[str] = None,
+    entry_quality: Optional[str] = None,
 ) -> Dict[str, object]:
     regime_evaluation = regime_evaluation or {}
+    normalized_setup = _normalize_setup_name(setup_name)
     evaluation = {
         "action": "hold",
         "action_reason": None,
@@ -147,6 +162,44 @@ def evaluate_position_management(
     evaluation["mae_pct"] = round(float(max(mae_pct, (adverse_move / entry_price) * 100.0)), 4)
     progressed_rr = max(close_rr, evaluation["unrealized_rr"])
 
+    if normalized_setup in EVO_RESUME_SETUPS:
+        close_favorable_move = max(close_price - entry_price, 0.0) if side == "long" else max(entry_price - close_price, 0.0)
+        close_adverse_move = max(entry_price - close_price, 0.0) if side == "long" else max(close_price - entry_price, 0.0)
+        evaluation["unrealized_rr"] = round(float(max(close_rr, 0.0)), 4)
+        evaluation["mfe_pct"] = round(float(max(mfe_pct, (close_favorable_move / entry_price) * 100.0)), 4)
+        evaluation["mae_pct"] = round(float(max(mae_pct, (close_adverse_move / entry_price) * 100.0)), 4)
+        trailing_pct = float(EVO_RESUME_TRAILING_PCTS.get(side, 0.0) or 0.0)
+        best_move_pct = float(max(evaluation["mfe_pct"], 0.0))
+        if side == "long":
+            best_price = entry_price * (1.0 + (best_move_pct / 100.0))
+            trailing_ready = best_price >= entry_price * (1.0 + (trailing_pct / 100.0))
+            trail_candidate = (
+                best_price * (1.0 - (trailing_pct / 100.0))
+                if trailing_ready and trailing_pct > 0
+                else None
+            )
+        else:
+            best_price = entry_price * (1.0 - (best_move_pct / 100.0))
+            trailing_ready = best_price <= entry_price * (1.0 - (trailing_pct / 100.0))
+            trail_candidate = (
+                best_price * (1.0 + (trailing_pct / 100.0))
+                if trailing_ready and trailing_pct > 0
+                else None
+            )
+
+        tightened_stop = _apply_stop_precedence(current_stop_price, trail_candidate, side)
+        evaluation["stop_price"] = tightened_stop
+        evaluation["take_price"] = current_take_price
+        evaluation["trailing_active"] = bool(trailing_ready and tightened_stop is not None)
+        evaluation["break_even_active"] = False
+        evaluation["protection_level"] = "ema_rsi_resume"
+        evaluation["action_reason"] = "Gestao percentual do motor EMA/RSI aplicada."
+        evaluation["notes"].append("gestao percentual simples do motor EMA/RSI")
+        if tightened_stop != current_stop_price and tightened_stop is not None:
+            evaluation["action"] = "activate_trailing" if not trailing_active else "tighten_stop"
+            evaluation["notes"].append(f"trailing percentual ativo ({trailing_pct:.2f}%)")
+        return evaluation
+
     regime = str(regime_evaluation.get("regime") or "range")
     regime_score = _safe_float(regime_evaluation.get("regime_score"))
     volatility_state = str(regime_evaluation.get("volatility_state") or "normal_volatility")
@@ -167,19 +220,23 @@ def evaluate_position_management(
     stop_price = current_stop_price
     take_price = current_take_price
     protection_level_value = evaluation["protection_level"]
+    break_even_trigger_r = float(ProductionConfig.BREAK_EVEN_TRIGGER_R)
+    trailing_trigger_r = float(ProductionConfig.TRAILING_TRIGGER_R)
 
     break_even_ready = (
         position_age_candles >= 1
         and not evaluation["break_even_active"]
-        and close_rr >= ProductionConfig.BREAK_EVEN_TRIGGER_R
+        and close_rr >= break_even_trigger_r
     )
     if break_even_ready:
         stop_price = _apply_stop_precedence(stop_price, float(entry_price), side)
         evaluation["break_even_active"] = True
         evaluation["action"] = "move_stop_to_break_even"
-        evaluation["action_reason"] = "Trade atingiu 1R e moveu o stop para break-even."
+        evaluation["action_reason"] = (
+            f"Trade atingiu {break_even_trigger_r:.2f}R e moveu o stop para break-even."
+        )
         protection_level_value = "break_even"
-        notes.append("break-even ativado em 1R")
+        notes.append(f"break-even ativado em {break_even_trigger_r:.2f}R")
 
     trailing_multiplier = ProductionConfig.TRAILING_ATR_MULTIPLIER
     if regime in {"trend_bull", "trend_bear"} and regime_score >= 7.0:
@@ -213,7 +270,7 @@ def evaluate_position_management(
         evaluation["post_pump_protection"] = True
         protection_level_value = "aggressive"
         notes.append("protecao extra por expansao/parabolico")
-        if close_rr >= max(1.25, ProductionConfig.BREAK_EVEN_TRIGGER_R):
+        if close_rr >= max(1.25, break_even_trigger_r):
             trail_candidate = _build_trailing_candidate(
                 close_price=close_price,
                 atr_value=atr_value,
@@ -227,7 +284,7 @@ def evaluate_position_management(
                 evaluation["action"] = "activate_trailing" if not trailing_active else "tighten_stop"
                 evaluation["action_reason"] = "Projecao estendida ativou protecao agressiva por volatilidade."
 
-    trailing_ready = close_rr >= ProductionConfig.TRAILING_TRIGGER_R
+    trailing_ready = close_rr >= trailing_trigger_r
     if trailing_ready and atr_value > 0:
         trail_candidate = _build_trailing_candidate(
             close_price=close_price,
@@ -240,7 +297,9 @@ def evaluate_position_management(
             stop_price = tightened_stop
             evaluation["trailing_active"] = True
             evaluation["action"] = "activate_trailing" if not trailing_active else "tighten_stop"
-            evaluation["action_reason"] = "Trade evoluiu para 2R e ativou trailing por ATR."
+            evaluation["action_reason"] = (
+                f"Trade evoluiu para {trailing_trigger_r:.2f}R e ativou trailing por ATR."
+            )
             protection_level_value = "trailing"
             notes.append(f"trailing ATR ativo ({trailing_multiplier:.2f}x)")
 

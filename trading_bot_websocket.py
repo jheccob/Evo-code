@@ -92,22 +92,37 @@ class StreamlinedTradingBot:
             "last_error": self.last_error,
         }
 
-    def get_market_data(self, limit: int = 200, timeout: float = 20.0) -> pd.DataFrame:
+    def get_market_data(
+        self,
+        limit: int = 200,
+        timeout: float = 20.0,
+        include_current_candle: bool = False,
+    ) -> pd.DataFrame:
         if not self._ready_event.wait(timeout=timeout):
             raise ConnectionError(
                 f"Stream real nao ficou pronto para {self.symbol} {self.timeframe} dentro de {timeout:.0f}s"
             )
 
         with self._lock:
-            rows = list(self._candles.values())[-limit:]
+            current_candle = dict(self._current_candle) if include_current_candle and self._current_candle else None
+            closed_limit = max(int(limit) - (1 if current_candle else 0), 0)
+            rows = list(self._candles.values())[-closed_limit:] if closed_limit else []
+            if current_candle:
+                rows.append(current_candle)
 
         if not rows:
             raise ConnectionError(f"Nenhum candle fechado disponivel para {self.symbol} {self.timeframe}")
 
-        df = pd.DataFrame(rows)
+        df = (
+            pd.DataFrame(rows)
+            .drop_duplicates(subset=["timestamp"], keep="last")
+            .sort_values("timestamp")
+        )
         df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
         df.set_index("timestamp", inplace=True)
-        df["is_closed"] = True
+        if "is_closed" not in df.columns:
+            df["is_closed"] = True
+        df["is_closed"] = df["is_closed"].fillna(True).astype(bool)
         return df
 
     def _run(self):

@@ -12,16 +12,21 @@ import requests
 
 from config import AppConfig, ProductionConfig
 from database.database import build_strategy_version, db as runtime_db
-from position_management import evaluate_position_management
+from market_state_engine import (
+    market_states_to_setup_allowlist,
+    normalize_setup_collection,
+)
+from position_management import EVO_RESUME_SETUPS, evaluate_position_management
 from services.risk_management_service import RiskManagementService
 from trading_bot import TradingBot
 
 logger = logging.getLogger(__name__)
 
 
-LONG_SIGNALS = {"COMPRA", "COMPRA_FRACA"}
-SHORT_SIGNALS = {"VENDA", "VENDA_FRACA"}
+LONG_SIGNALS = {"COMPRA"}
+SHORT_SIGNALS = {"VENDA"}
 ACTIONABLE_SIGNALS = LONG_SIGNALS.union(SHORT_SIGNALS)
+EVO_RESUME_EXECUTION_MODE = "ema_rsi_resume"
 
 
 @dataclass
@@ -29,6 +34,8 @@ class Position:
     side: str
     signal: str
     setup_name: str
+    market_state: Optional[str]
+    execution_mode: Optional[str]
     strategy_version: Optional[str]
     context_timeframe: Optional[str]
     regime: Optional[str]
@@ -74,7 +81,7 @@ class Position:
 
 class BacktestEngine:
     def __init__(self, trading_bot: Optional[TradingBot] = None, database=None):
-        self.trading_bot = trading_bot or TradingBot(allow_simulated_data=False)
+        self.trading_bot = trading_bot or TradingBot()
         self.database = database or runtime_db
         self.risk_management_service = RiskManagementService(database=self.database)
         self._trade_history: List[Dict] = []
@@ -95,6 +102,10 @@ class BacktestEngine:
             "setup_type_counts": {},
             "setup_type_approved_counts": {},
             "setup_type_blocked_counts": {},
+            "market_state_counts": {},
+            "market_state_approved_counts": {},
+            "market_state_blocked_counts": {},
+            "execution_mode_counts": {},
         }
 
     def _build_empty_risk_engine_stats(self) -> Dict[str, object]:
@@ -114,6 +125,7 @@ class BacktestEngine:
             "approval_rate_pct": 0.0,
             "block_reason_counts": {},
             "approval_by_regime": {},
+            "approval_by_market_state": {},
         }
 
     @staticmethod
@@ -126,6 +138,113 @@ class BacktestEngine:
             if str(item or "").strip()
         }
         return normalized or None
+
+    @staticmethod
+    def _normalize_text(value: Optional[object]) -> str:
+        return str(value or "").strip().lower()
+
+    def _extract_setup_name(
+        self,
+        signal_pipeline: Optional[Dict[str, object]],
+        fallback: Optional[str] = None,
+    ) -> str:
+        if not isinstance(signal_pipeline, dict):
+            return self._normalize_text(fallback)
+        entry_evaluation = signal_pipeline.get("entry_quality_evaluation") or {}
+        trade_decision = signal_pipeline.get("trade_decision") or {}
+        return self._normalize_text(
+            entry_evaluation.get("setup_type")
+            or (trade_decision.get("setup_type") if isinstance(trade_decision, dict) else None)
+            or fallback
+        )
+
+    def _uses_close_to_close_execution(
+        self,
+        signal_pipeline: Optional[Dict[str, object]] = None,
+        open_position: Optional[Position] = None,
+        setup_name: Optional[str] = None,
+    ) -> bool:
+        normalized_setup = self._normalize_text(setup_name)
+        normalized_execution_mode = ""
+
+        if open_position is not None:
+            normalized_setup = normalized_setup or self._normalize_text(open_position.setup_name)
+            normalized_execution_mode = self._normalize_text(open_position.execution_mode)
+
+        if normalized_setup in EVO_RESUME_SETUPS:
+            return True
+
+        if isinstance(signal_pipeline, dict):
+            normalized_setup = normalized_setup or self._extract_setup_name(signal_pipeline)
+            if normalized_setup in EVO_RESUME_SETUPS:
+                return True
+
+            market_state_evaluation = signal_pipeline.get("market_state_evaluation") or {}
+            trade_decision = signal_pipeline.get("trade_decision") or {}
+            normalized_execution_mode = normalized_execution_mode or self._normalize_text(
+                market_state_evaluation.get("execution_mode")
+                or (trade_decision.get("execution_mode") if isinstance(trade_decision, dict) else None)
+            )
+
+        return normalized_execution_mode == EVO_RESUME_EXECUTION_MODE
+
+    @staticmethod
+    def _management_action_to_reason(action: str) -> Optional[str]:
+        mapping = {
+            "exit_on_structure_failure": "STRUCTURE_FAILURE",
+            "exit_on_regime_shift": "REGIME_SHIFT",
+            "exit_on_time_decay": "TIME_DECAY",
+        }
+        return mapping.get(str(action or "").strip().lower())
+
+    @staticmethod
+    def _apply_management_updates(open_position: Position, management: Dict[str, object]) -> None:
+        open_position.stop_loss_price = management.get("stop_price")
+        open_position.take_profit_price = management.get("take_price")
+        open_position.break_even_active = bool(
+            management.get("break_even_active", open_position.break_even_active)
+        )
+        open_position.trailing_active = bool(
+            management.get("trailing_active", open_position.trailing_active)
+        )
+        open_position.protection_level = str(
+            management.get("protection_level") or open_position.protection_level
+        )
+        open_position.regime_exit_flag = bool(management.get("regime_exit_flag", False))
+        open_position.structure_exit_flag = bool(management.get("structure_exit_flag", False))
+        open_position.post_pump_protection = bool(
+            management.get("post_pump_protection", open_position.post_pump_protection)
+        )
+        open_position.mfe_pct = max(open_position.mfe_pct, float(management.get("mfe_pct", 0.0) or 0.0))
+        open_position.mae_pct = max(open_position.mae_pct, float(management.get("mae_pct", 0.0) or 0.0))
+        open_position.max_unrealized_rr = max(
+            open_position.max_unrealized_rr,
+            float(management.get("unrealized_rr", 0.0) or 0.0),
+        )
+
+    def _is_trailing_stop_exit(self, open_position: Position) -> bool:
+        if not bool(open_position.trailing_active):
+            return False
+        if open_position.stop_loss_price is None or open_position.initial_stop_loss_price is None:
+            return False
+        return not np.isclose(
+            float(open_position.stop_loss_price),
+            float(open_position.initial_stop_loss_price),
+        )
+
+    @staticmethod
+    def _align_timestamp_to_index(value: object, index: pd.Index) -> pd.Timestamp:
+        resolved = pd.Timestamp(value)
+        index_tz = getattr(index, "tz", None)
+
+        if index_tz is None:
+            if resolved.tzinfo is not None:
+                return resolved.tz_convert("UTC").tz_localize(None)
+            return resolved
+
+        if resolved.tzinfo is None:
+            return resolved.tz_localize(index_tz)
+        return resolved.tz_convert(index_tz)
 
     def _apply_setup_execution_policy(
         self,
@@ -209,18 +328,26 @@ class BacktestEngine:
         regime = (pipeline.get("regime_evaluation") or {}).get("regime")
         confirmation_state = (pipeline.get("confirmation_evaluation") or {}).get("confirmation_state")
         entry_evaluation = pipeline.get("entry_quality_evaluation") or {}
+        market_state_evaluation = pipeline.get("market_state_evaluation") or {}
+        trade_decision = pipeline.get("trade_decision") or {}
         entry_quality = TradingBot._normalize_entry_quality_label(entry_evaluation.get("entry_quality"))
         setup_type = entry_evaluation.get("setup_type")
+        market_state = market_state_evaluation.get("market_state") or trade_decision.get("market_state")
+        execution_mode = market_state_evaluation.get("execution_mode") or trade_decision.get("execution_mode")
 
         self._increment_count(stats["regime_counts"], regime)
         self._increment_count(stats["structure_state_counts"], structure_state)
         self._increment_count(stats["confirmation_state_counts"], confirmation_state)
         self._increment_count(stats["entry_quality_counts"], entry_quality)
         self._increment_count(stats["setup_type_counts"], setup_type)
+        self._increment_count(stats["market_state_counts"], market_state)
+        self._increment_count(stats["execution_mode_counts"], execution_mode)
         if approved_signal in ACTIONABLE_SIGNALS:
             self._increment_count(stats["setup_type_approved_counts"], setup_type)
+            self._increment_count(stats["market_state_approved_counts"], market_state)
         if blocked_signal in ACTIONABLE_SIGNALS:
             self._increment_count(stats["setup_type_blocked_counts"], setup_type)
+            self._increment_count(stats["market_state_blocked_counts"], market_state)
 
     def _finalize_signal_pipeline_stats(self, stats: Dict[str, object]) -> Dict[str, object]:
         finalized = dict(stats)
@@ -304,6 +431,8 @@ class BacktestEngine:
         confirmation_evaluation = signal_pipeline.get("confirmation_evaluation") or {}
         entry_evaluation = signal_pipeline.get("entry_quality_evaluation") or {}
         scenario_evaluation = signal_pipeline.get("scenario_evaluation") or {}
+        market_state_evaluation = signal_pipeline.get("market_state_evaluation") or {}
+        trade_decision = signal_pipeline.get("trade_decision") or {}
 
         approved_signal = signal_pipeline.get("approved_signal")
         blocked_signal = signal_pipeline.get("blocked_signal")
@@ -348,6 +477,8 @@ class BacktestEngine:
             "entry_score": float(entry_evaluation.get("entry_score", 0.0) or 0.0),
             "scenario_score": float(scenario_evaluation.get("scenario_score", 0.0) or 0.0),
             "setup_type": entry_evaluation.get("setup_type"),
+            "market_state": market_state_evaluation.get("market_state") or trade_decision.get("market_state"),
+            "execution_mode": market_state_evaluation.get("execution_mode") or trade_decision.get("execution_mode"),
             "risk_mode": risk_mode,
             "notes": notes,
         }
@@ -358,6 +489,7 @@ class BacktestEngine:
             return stats
 
         approval_by_regime: Dict[str, Dict[str, int]] = {}
+        approval_by_market_state: Dict[str, Dict[str, int]] = {}
         for row in signal_audit_log:
             candidate_signal = str(row.get("candidate_signal") or "NEUTRO")
             if candidate_signal not in ACTIONABLE_SIGNALS:
@@ -377,6 +509,15 @@ class BacktestEngine:
             if approved:
                 regime_bucket["approved_count"] += 1
 
+            market_state = str(row.get("market_state") or "unknown")
+            market_state_bucket = approval_by_market_state.setdefault(
+                market_state,
+                {"candidate_count": 0, "approved_count": 0},
+            )
+            market_state_bucket["candidate_count"] += 1
+            if approved:
+                market_state_bucket["approved_count"] += 1
+
         candidate_count = int(stats.get("candidate_count", 0) or 0)
         approved_count = int(stats.get("approved_count", 0) or 0)
         stats["approval_rate_pct"] = round((approved_count / candidate_count) * 100, 2) if candidate_count else 0.0
@@ -388,6 +529,15 @@ class BacktestEngine:
                 else 0.0,
             }
             for regime, bucket in approval_by_regime.items()
+        }
+        stats["approval_by_market_state"] = {
+            market_state: {
+                **bucket,
+                "approval_rate_pct": round((bucket["approved_count"] / bucket["candidate_count"]) * 100, 2)
+                if bucket["candidate_count"]
+                else 0.0,
+            }
+            for market_state, bucket in approval_by_market_state.items()
         }
         return stats
 
@@ -443,8 +593,8 @@ class BacktestEngine:
         end_date: datetime,
         initial_balance: int = 10_000,
         rsi_period: int = 14,
-        rsi_min: int = 20,
-        rsi_max: int = 80,
+        rsi_min: int = 54,
+        rsi_max: int = 47,
         stop_loss_pct: float = 0.0,
         take_profit_pct: float = 0.0,
         fee_rate: float = 0.001,
@@ -471,7 +621,11 @@ class BacktestEngine:
         normalized_position_size = min(max(self._normalize_position_size(position_size_pct), 0.0), 1.0)
         normalized_validation_split = min(max(self._normalize_ratio(validation_split_pct), 0.0), 0.5)
         normalized_walk_forward_windows = max(int(walk_forward_windows or 0), 0)
-        resolved_context_timeframe = context_timeframe or AppConfig.get_context_timeframe(timeframe)
+        resolved_context_timeframe = (
+            str(context_timeframe).strip()
+            if context_timeframe and str(context_timeframe).strip() != timeframe
+            else None
+        )
         strategy_version = build_strategy_version(
             symbol=symbol,
             timeframe=timeframe,
@@ -554,8 +708,8 @@ class BacktestEngine:
         end_date: Optional[datetime] = None,
         initial_balance: int = 10_000,
         rsi_period: int = 14,
-        rsi_min: int = 20,
-        rsi_max: int = 80,
+        rsi_min: int = 54,
+        rsi_max: int = 47,
         stop_loss_pct: float = 0.0,
         take_profit_pct: float = 0.0,
         fee_rate: float = 0.001,
@@ -586,7 +740,11 @@ class BacktestEngine:
         normalized_position_size = min(max(self._normalize_position_size(position_size_pct), 0.0), 1.0)
         normalized_validation_split = min(max(self._normalize_ratio(validation_split_pct), 0.0), 0.5)
         normalized_walk_forward_windows = max(int(walk_forward_windows or 0), 0)
-        resolved_context_timeframe = context_timeframe or AppConfig.get_context_timeframe(timeframe)
+        resolved_context_timeframe = (
+            str(context_timeframe).strip()
+            if context_timeframe and str(context_timeframe).strip() != timeframe
+            else None
+        )
         strategy_version = build_strategy_version(
             symbol=symbol,
             timeframe=timeframe,
@@ -866,6 +1024,8 @@ class BacktestEngine:
             "benchmark_values": benchmark_history,
             "regime_summary": stats.get("regime_breakdown", []),
             "setup_type_summary": stats.get("setup_type_breakdown", []),
+            "market_state_summary": stats.get("market_state_breakdown", []),
+            "execution_mode_summary": stats.get("execution_mode_breakdown", []),
             "exit_type_summary": stats.get("exit_type_breakdown", []),
             "entry_quality_summary": stats.get("entry_quality_breakdown", []),
             "risk_mode_summary": stats.get("risk_mode_breakdown", []),
@@ -948,6 +1108,10 @@ class BacktestEngine:
             signal_pipeline_stats=signal_pipeline_stats,
             risk_engine_summary=risk_engine_stats,
             setup_type_summary=results.get("setup_type_summary") or [],
+            market_state_summary=results.get("market_state_summary") or [],
+            allowed_execution_setups=allowed_execution_setups,
+            start_date=start_date,
+            end_date=end_date,
         )
         results["objective_check"] = objective_check
 
@@ -973,6 +1137,7 @@ class BacktestEngine:
                 avoid_ranging=avoid_ranging,
                 validation=validation,
                 walk_forward=walk_forward,
+                objective_check=objective_check,
             )
         return results
 
@@ -996,7 +1161,7 @@ class BacktestEngine:
             (rsi_min, rsi_max)
             for rsi_min in min_values
             for rsi_max in max_values
-            if rsi_min + 10 <= rsi_max
+            if (rsi_min + 10 <= rsi_max) or (rsi_min >= rsi_max + 2)
         ]
 
         if len(candidates) <= max_tests:
@@ -1109,6 +1274,10 @@ class BacktestEngine:
         signal_pipeline_stats: Optional[Dict[str, object]],
         risk_engine_summary: Optional[Dict[str, object]],
         setup_type_summary: Optional[List[Dict[str, object]]],
+        market_state_summary: Optional[List[Dict[str, object]]] = None,
+        allowed_execution_setups: Optional[Iterable[str]] = None,
+        start_date: Optional[datetime] = None,
+        end_date: Optional[datetime] = None,
     ) -> Dict[str, object]:
         checks: List[Dict[str, object]] = []
         blockers: List[str] = []
@@ -1125,6 +1294,17 @@ class BacktestEngine:
                 return int(value if value is not None else default)
             except (TypeError, ValueError):
                 return int(default)
+
+        def _period_days() -> float:
+            if start_date is None or end_date is None:
+                return 0.0
+            try:
+                return max(
+                    (pd.Timestamp(end_date) - pd.Timestamp(start_date)).total_seconds() / 86400.0,
+                    0.0,
+                )
+            except Exception:
+                return 0.0
 
         def _add_check(
             name: str,
@@ -1151,6 +1331,12 @@ class BacktestEngine:
                 elif fail_message:
                     warnings.append(str(fail_message))
 
+        min_backtest_trades = max(int(ProductionConfig.MIN_BACKTEST_TRADES_FOR_PROMOTION), 1)
+        min_identity_trades = max(int(ProductionConfig.MIN_PROMOTION_SETUP_TRADES), 1)
+        min_period_days = max(int(ProductionConfig.MIN_PROMOTION_PERIOD_DAYS), 1)
+        min_oos_trades = max(int(ProductionConfig.MIN_PROMOTION_OOS_TRADES), 1)
+        period_days = _period_days()
+
         total_trades = _as_int(stats.get("total_trades", 0))
         total_return_pct = _as_float(stats.get("total_return_pct", 0.0))
         profit_factor = _as_float(stats.get("profit_factor", 0.0))
@@ -1160,14 +1346,36 @@ class BacktestEngine:
         candidate_count = _as_int((signal_pipeline_stats or {}).get("candidate_count", 0))
         risk_blocked_count = _as_int((risk_engine_summary or {}).get("risk_blocked_count", 0))
 
+        if start_date is not None and end_date is not None:
+            _add_check(
+                name="Janela avaliada",
+                value=round(period_days, 1),
+                target=f">= {min_period_days} dias",
+                passed=period_days >= float(min_period_days),
+                weight=8.0,
+                hard=True,
+                fail_message="Periodo muito curto para validar consistencia operacional.",
+            )
+        else:
+            warnings.append("Periodo avaliado nao informado no check objetivo.")
+
         _add_check(
             name="Amostra de trades",
             value=total_trades,
-            target=">= 120",
-            passed=total_trades >= 120,
+            target=f">= {min_backtest_trades}",
+            passed=total_trades >= min_backtest_trades,
             weight=15.0,
             hard=True,
             fail_message="Amostra insuficiente para declarar robustez.",
+        )
+        _add_check(
+            name="Amostra expandida",
+            value=total_trades,
+            target=">= 120",
+            passed=total_trades >= 120,
+            weight=4.0,
+            hard=False,
+            fail_message="A amostra ainda nao atingiu robustez ampliada de longo prazo.",
         )
         _add_check(
             name="Retorno total",
@@ -1181,8 +1389,8 @@ class BacktestEngine:
         _add_check(
             name="Profit factor",
             value=round(profit_factor, 2),
-            target=">= 1.15",
-            passed=profit_factor >= 1.15,
+            target=f">= {ProductionConfig.MIN_PROMOTION_PROFIT_FACTOR:.2f}",
+            passed=profit_factor >= float(ProductionConfig.MIN_PROMOTION_PROFIT_FACTOR),
             weight=15.0,
             hard=True,
             fail_message="Profit factor abaixo do mínimo de robustez.",
@@ -1190,8 +1398,8 @@ class BacktestEngine:
         _add_check(
             name="Expectancy",
             value=round(expectancy_pct, 3),
-            target=">= 0.03%",
-            passed=expectancy_pct >= 0.03,
+            target=f">= {ProductionConfig.MIN_PROMOTION_EXPECTANCY_PCT:.2f}%",
+            passed=expectancy_pct >= float(ProductionConfig.MIN_PROMOTION_EXPECTANCY_PCT),
             weight=8.0,
             hard=False,
             fail_message="Expectancy ainda fraca para consistência de longo prazo.",
@@ -1199,8 +1407,8 @@ class BacktestEngine:
         _add_check(
             name="Drawdown máximo",
             value=round(max_drawdown, 2),
-            target="<= 18%",
-            passed=max_drawdown <= 18.0,
+            target=f"<= {ProductionConfig.MAX_PROMOTION_DRAWDOWN:.0f}%",
+            passed=max_drawdown <= float(ProductionConfig.MAX_PROMOTION_DRAWDOWN),
             weight=10.0,
             hard=True,
             fail_message="Drawdown acima do limite objetivo.",
@@ -1237,8 +1445,8 @@ class BacktestEngine:
             _add_check(
                 name="OOS amostra",
                 value=oos_trades,
-                target=">= 30",
-                passed=oos_trades >= 30,
+                target=f">= {min_oos_trades}",
+                passed=oos_trades >= min_oos_trades,
                 weight=6.0,
                 hard=True,
                 fail_message="Amostra OOS insuficiente para validação de sobrevivência.",
@@ -1255,8 +1463,8 @@ class BacktestEngine:
             _add_check(
                 name="OOS PF",
                 value=round(oos_pf, 2),
-                target=">= 1.05",
-                passed=oos_pf >= 1.05,
+                target=f">= {ProductionConfig.MIN_PROMOTION_OOS_PROFIT_FACTOR:.2f}",
+                passed=oos_pf >= float(ProductionConfig.MIN_PROMOTION_OOS_PROFIT_FACTOR),
                 weight=8.0,
                 hard=True,
                 fail_message="OOS profit factor abaixo do mínimo.",
@@ -1264,8 +1472,8 @@ class BacktestEngine:
             _add_check(
                 name="OOS expectancy",
                 value=round(oos_expectancy, 3),
-                target=">= 0%",
-                passed=oos_expectancy >= 0.0,
+                target=f">= {ProductionConfig.MIN_PROMOTION_OOS_EXPECTANCY_PCT:.2f}%",
+                passed=oos_expectancy >= float(ProductionConfig.MIN_PROMOTION_OOS_EXPECTANCY_PCT),
                 weight=4.0,
                 hard=False,
                 fail_message="Expectancy OOS negativa.",
@@ -1292,8 +1500,8 @@ class BacktestEngine:
             _add_check(
                 name="WF pass rate",
                 value=round(wf_pass_rate, 2),
-                target=">= 55%",
-                passed=wf_pass_rate >= 55.0,
+                target=f">= {ProductionConfig.MIN_WALK_FORWARD_PASS_RATE_PCT:.0f}%",
+                passed=wf_pass_rate >= float(ProductionConfig.MIN_WALK_FORWARD_PASS_RATE_PCT),
                 weight=6.0,
                 hard=True,
                 fail_message="Walk-forward inconsistente.",
@@ -1301,8 +1509,8 @@ class BacktestEngine:
             _add_check(
                 name="WF OOS PF médio",
                 value=round(wf_pf, 2),
-                target=">= 1.0",
-                passed=wf_pf >= 1.0,
+                target=f">= {ProductionConfig.MIN_WALK_FORWARD_OOS_PROFIT_FACTOR:.2f}",
+                passed=wf_pf >= float(ProductionConfig.MIN_WALK_FORWARD_OOS_PROFIT_FACTOR),
                 weight=5.0,
                 hard=False,
                 fail_message="Walk-forward com PF médio fraco.",
@@ -1328,37 +1536,225 @@ class BacktestEngine:
         else:
             warnings.append("Sem walk-forward nesta execução.")
 
-        setup_candidates: List[Dict[str, object]] = []
-        for row in (setup_type_summary or []):
-            setup_name = str(row.get("setup_type") or row.get("setup_name") or "unknown")
-            setup_trades = _as_int(row.get("total_trades", 0))
-            setup_pf = _as_float(row.get("profit_factor", 0.0))
-            setup_wr = _as_float(row.get("win_rate", 0.0))
-            setup_net = _as_float(row.get("net_profit", 0.0))
-            setup_score = (
-                min(max(setup_pf - 1.0, 0.0), 1.5) * 35.0
-                + min(max(setup_wr, 0.0), 100.0) * 0.25
-                + (10.0 if setup_net > 0 else -6.0)
-                + min(setup_trades, 120) * 0.10
+        def _build_candidate_ranking(
+            summary_rows: Optional[List[Dict[str, object]]],
+            output_key: str,
+        ) -> List[Dict[str, object]]:
+            candidates: List[Dict[str, object]] = []
+            for row in (summary_rows or []):
+                if output_key == "setup_type":
+                    identity_value = str(row.get("setup_type") or row.get("setup_name") or "").strip().lower()
+                else:
+                    identity_value = str(row.get("market_state") or row.get("state") or "").strip().lower()
+                if not identity_value:
+                    continue
+
+                total_trades_for_identity = _as_int(row.get("total_trades", 0))
+                profit_factor_for_identity = _as_float(row.get("profit_factor", 0.0))
+                win_rate_for_identity = _as_float(row.get("win_rate", 0.0))
+                net_profit_for_identity = _as_float(row.get("net_profit", 0.0))
+                identity_score = (
+                    min(max(profit_factor_for_identity - 1.0, 0.0), 1.5) * 35.0
+                    + min(max(win_rate_for_identity, 0.0), 100.0) * 0.25
+                    + (10.0 if net_profit_for_identity > 0 else -6.0)
+                    + min(total_trades_for_identity, 120) * 0.10
+                )
+                candidates.append(
+                    {
+                        output_key: identity_value,
+                        "total_trades": total_trades_for_identity,
+                        "profit_factor": round(profit_factor_for_identity, 2),
+                        "win_rate": round(win_rate_for_identity, 2),
+                        "net_profit": round(net_profit_for_identity, 2),
+                        "setup_score": round(max(identity_score, 0.0), 2),
+                        "meets_min_sample": total_trades_for_identity >= min_identity_trades,
+                        "meets_min_pf": profit_factor_for_identity >= float(ProductionConfig.MIN_PROMOTION_PROFIT_FACTOR),
+                    }
+                )
+
+            candidates.sort(
+                key=lambda item: (
+                    bool(item.get("meets_min_sample")),
+                    bool(item.get("meets_min_pf")),
+                    float(item.get("net_profit", 0.0) or 0.0) > 0,
+                    float(item.get("setup_score", 0.0) or 0.0),
+                    int(item.get("total_trades", 0) or 0),
+                ),
+                reverse=True,
             )
-            setup_candidates.append(
-                {
-                    "setup_type": setup_name,
-                    "total_trades": setup_trades,
-                    "profit_factor": round(setup_pf, 2),
-                    "win_rate": round(setup_wr, 2),
-                    "net_profit": round(setup_net, 2),
-                    "setup_score": round(max(setup_score, 0.0), 2),
-                }
+            return candidates
+
+        market_state_candidates = _build_candidate_ranking(market_state_summary, "market_state")
+        setup_candidates = _build_candidate_ranking(setup_type_summary, "setup_type")
+        recommended_market_state = market_state_candidates[0]["market_state"] if market_state_candidates else None
+        recommended_setup = (
+            setup_candidates[0]["setup_type"]
+            if setup_candidates
+            else (market_states_to_setup_allowlist([recommended_market_state]) or [None])[0]
+        )
+        requested_setup_allowlist = normalize_setup_collection(allowed_execution_setups)
+        requested_market_state_allowlist = list(
+            dict.fromkeys(
+                candidate["market_state"]
+                for candidate in market_state_candidates
+                if any(
+                    setup_name in requested_setup_allowlist
+                    for setup_name in market_states_to_setup_allowlist([candidate["market_state"]])
+                )
             )
-        setup_candidates.sort(key=lambda item: item.get("setup_score", 0.0), reverse=True)
-        recommended_setup = setup_candidates[0]["setup_type"] if setup_candidates else None
+        )
+        observed_market_states = {
+            str(item.get("market_state") or "").strip().lower()
+            for item in market_state_candidates
+            if str(item.get("market_state") or "").strip()
+        }
+        approved_market_states = (
+            [state for state in requested_market_state_allowlist if state in observed_market_states]
+            if requested_market_state_allowlist
+            else []
+        )
+        if requested_setup_allowlist and not approved_market_states:
+            approved_market_states = [
+                candidate["market_state"]
+                for candidate in market_state_candidates
+                if any(
+                    setup_name in requested_setup_allowlist
+                    for setup_name in market_states_to_setup_allowlist([candidate["market_state"]])
+                )
+            ]
+        if not approved_market_states and recommended_market_state:
+            approved_market_states = [recommended_market_state]
+        approved_market_state_mode = "basket" if len(approved_market_states) > 1 else "single"
+        approved_market_state = (
+            recommended_market_state
+            if recommended_market_state and recommended_market_state in approved_market_states
+            else approved_market_states[0]
+            if approved_market_states
+            else recommended_market_state
+        )
+        approved_market_state_trades = 0
+        approved_market_state_profit_factor = 0.0
+        if market_state_candidates:
+            best_market_state = market_state_candidates[0]
+            if approved_market_state_mode == "basket":
+                approved_market_state_trades = total_trades
+                approved_market_state_profit_factor = profit_factor
+                _add_check(
+                    name="Cesta de estados de mercado trades",
+                    value=approved_market_state_trades,
+                    target=f">= {min_backtest_trades}",
+                    passed=approved_market_state_trades >= min_backtest_trades,
+                    weight=10.0,
+                    hard=True,
+                    fail_message="Cesta de estados de mercado ainda nao tem amostra suficiente para ativacao real.",
+                )
+                _add_check(
+                    name="Cesta de estados de mercado PF",
+                    value=round(approved_market_state_profit_factor, 2),
+                    target=f">= {ProductionConfig.MIN_PROMOTION_PROFIT_FACTOR:.2f}",
+                    passed=approved_market_state_profit_factor >= float(ProductionConfig.MIN_PROMOTION_PROFIT_FACTOR),
+                    weight=8.0,
+                    hard=True,
+                    fail_message="Cesta de estados de mercado ainda nao tem edge suficiente para promocao.",
+                )
+            else:
+                approved_market_state_trades = _as_int(best_market_state.get("total_trades", 0))
+                approved_market_state_profit_factor = _as_float(best_market_state.get("profit_factor", 0.0))
+                _add_check(
+                    name="Estado de mercado foco trades",
+                    value=approved_market_state_trades,
+                    target=f">= {min_identity_trades}",
+                    passed=approved_market_state_trades >= min_identity_trades,
+                    weight=10.0,
+                    hard=True,
+                    fail_message="Estado de mercado lider ainda nao tem amostra suficiente para ativacao real.",
+                )
+                _add_check(
+                    name="Estado de mercado foco PF",
+                    value=round(approved_market_state_profit_factor, 2),
+                    target=f">= {ProductionConfig.MIN_PROMOTION_PROFIT_FACTOR:.2f}",
+                    passed=approved_market_state_profit_factor >= float(ProductionConfig.MIN_PROMOTION_PROFIT_FACTOR),
+                    weight=8.0,
+                    hard=True,
+                    fail_message="Estado de mercado lider ainda nao tem edge suficiente para promocao.",
+                )
+            if best_market_state.get("profit_factor", 0.0) < 1.0:
+                warnings.append("Nenhum estado de mercado com PF >= 1.0 na amostra atual.")
+            if approved_market_state_trades < 120:
+                warnings.append("Estado de mercado lider ainda tem amostra pequena.")
+        observed_setup_types = {
+            str(item.get("setup_type") or "").strip().lower()
+            for item in setup_candidates
+            if str(item.get("setup_type") or "").strip()
+        }
+        approved_setup_types = market_states_to_setup_allowlist(approved_market_states)
+        if requested_setup_allowlist:
+            approved_setup_types = [setup for setup in requested_setup_allowlist if setup in observed_setup_types] or approved_setup_types
+        if requested_setup_allowlist and not approved_setup_types:
+            approved_setup_types = requested_setup_allowlist
+        if not approved_setup_types and recommended_setup:
+            approved_setup_types = [recommended_setup]
+        approved_setup_mode = "basket" if len(approved_setup_types) > 1 else "single"
+        approved_setup_type = (
+            recommended_setup
+            if recommended_setup and recommended_setup in approved_setup_types
+            else approved_setup_types[0]
+            if approved_setup_types
+            else recommended_setup
+        )
+        approved_setup_trades = approved_market_state_trades
+        approved_setup_profit_factor = approved_market_state_profit_factor
         if setup_candidates:
             best_setup = setup_candidates[0]
+            if approved_setup_mode == "basket":
+                approved_setup_trades = total_trades
+                approved_setup_profit_factor = profit_factor
+                _add_check(
+                    name="Cesta de setups trades",
+                    value=approved_setup_trades,
+                    target=f">= {min_backtest_trades}",
+                    passed=approved_setup_trades >= min_backtest_trades,
+                    weight=10.0,
+                    hard=True,
+                    fail_message="Cesta de setups ainda nao tem amostra suficiente para ativacao real.",
+                )
+                _add_check(
+                    name="Cesta de setups PF",
+                    value=round(approved_setup_profit_factor, 2),
+                    target=f">= {ProductionConfig.MIN_PROMOTION_PROFIT_FACTOR:.2f}",
+                    passed=approved_setup_profit_factor >= float(ProductionConfig.MIN_PROMOTION_PROFIT_FACTOR),
+                    weight=8.0,
+                    hard=True,
+                    fail_message="Cesta de setups ainda nao tem edge suficiente para promocao.",
+                )
+            else:
+                approved_setup_trades = _as_int(best_setup.get("total_trades", 0))
+                approved_setup_profit_factor = _as_float(best_setup.get("profit_factor", 0.0))
+                _add_check(
+                    name="Setup foco trades",
+                    value=approved_setup_trades,
+                    target=f">= {min_identity_trades}",
+                    passed=approved_setup_trades >= min_identity_trades,
+                    weight=10.0,
+                    hard=True,
+                    fail_message="Setup lider ainda nao tem amostra suficiente para ativacao real.",
+                )
+                _add_check(
+                    name="Setup foco PF",
+                    value=round(approved_setup_profit_factor, 2),
+                    target=f">= {ProductionConfig.MIN_PROMOTION_PROFIT_FACTOR:.2f}",
+                    passed=approved_setup_profit_factor >= float(ProductionConfig.MIN_PROMOTION_PROFIT_FACTOR),
+                    weight=8.0,
+                    hard=True,
+                    fail_message="Setup lider ainda nao tem edge suficiente para promocao.",
+                )
             if best_setup.get("profit_factor", 0.0) < 1.0:
                 warnings.append("Nenhum setup com PF >= 1.0 na amostra atual.")
-            if _as_int(best_setup.get("total_trades", 0)) < 30:
+            if approved_setup_trades < 120:
                 warnings.append("Setup líder ainda tem amostra pequena.")
+
+        if not market_state_candidates:
+            blockers.append("Nenhum estado de mercado com edge identificavel na amostra.")
 
         weighted_total = sum(float(item.get("weight", 0.0) or 0.0) for item in checks)
         weighted_pass = sum(
@@ -1386,14 +1782,26 @@ class BacktestEngine:
 
         next_actions: List[str] = []
         if any("Amostra insuficiente" in blocker for blocker in blockers):
-            next_actions.append("Aumentar amostra de trades antes de promover o setup.")
+            next_actions.append("Aumentar amostra de trades antes de promover o estado de mercado.")
         if any("Profit factor" in blocker for blocker in blockers) or any("Retorno total" in blocker for blocker in blockers):
             next_actions.append("Recalibrar entrada/saída (RR, filtros de contexto e quality gates).")
         if any("OOS" in blocker for blocker in blockers):
             next_actions.append("Priorizar robustez OOS antes de qualquer ativação operacional.")
         if any("Walk-forward" in blocker for blocker in blockers):
             next_actions.append("Ajustar lógica para manter consistência entre janelas temporais.")
-        if recommended_setup:
+        if approved_market_state_mode == "basket" and approved_market_states:
+            next_actions.append(
+                f"Validar a cesta aprovada de estados de mercado: {', '.join(approved_market_states)}."
+            )
+        elif recommended_market_state:
+            next_actions.append(
+                f"Focar iterações no estado de mercado com maior score atual: {recommended_market_state}."
+            )
+        if approved_setup_mode == "basket" and approved_setup_types:
+            next_actions.append(
+                f"Mapear a cesta legada de setups derivada do runtime: {', '.join(approved_setup_types)}."
+            )
+        elif recommended_setup:
             next_actions.append(f"Focar iterações no setup com maior score atual: {recommended_setup}.")
 
         if not next_actions:
@@ -1406,7 +1814,20 @@ class BacktestEngine:
             "checks": checks,
             "blockers": list(dict.fromkeys(blockers)),
             "warnings": list(dict.fromkeys(warnings)),
+            "recommended_market_state": recommended_market_state,
+            "approved_market_state": approved_market_state,
+            "approved_market_states": approved_market_states,
+            "approved_market_state_mode": approved_market_state_mode,
+            "approved_market_state_trades": approved_market_state_trades,
+            "approved_market_state_profit_factor": round(approved_market_state_profit_factor, 2),
             "recommended_setup": recommended_setup,
+            "approved_setup_type": approved_setup_type,
+            "approved_setup_types": approved_setup_types,
+            "approved_setup_mode": approved_setup_mode,
+            "approved_setup_trades": approved_setup_trades,
+            "approved_setup_profit_factor": round(approved_setup_profit_factor, 2),
+            "evaluation_period_days": round(period_days, 2),
+            "market_state_candidates": market_state_candidates[:5],
             "setup_candidates": setup_candidates[:5],
             "next_actions": list(dict.fromkeys(next_actions)),
         }
@@ -1550,8 +1971,10 @@ class BacktestEngine:
         initial_balance: float,
         warmup_candles: int,
     ) -> List[Dict[str, object]]:
-        start_idx = max(warmup_candles, int(df.index.searchsorted(pd.Timestamp(start_date), side="left")))
-        end_idx = min(int(df.index.searchsorted(pd.Timestamp(end_date), side="right")) - 1, len(df) - 1)
+        aligned_start = self._align_timestamp_to_index(start_date, df.index)
+        aligned_end = self._align_timestamp_to_index(end_date, df.index)
+        start_idx = max(warmup_candles, int(df.index.searchsorted(aligned_start, side="left")))
+        end_idx = min(int(df.index.searchsorted(aligned_end, side="right")) - 1, len(df) - 1)
         if start_idx >= len(df) or end_idx < start_idx:
             return []
 
@@ -1600,8 +2023,10 @@ class BacktestEngine:
         allowed_execution_setups: Optional[Set[str]],
     ) -> Tuple[List[Dict], List[Dict], float, Dict[str, object], Dict[str, object], List[Dict[str, object]]]:
         warmup_candles = max(210, int(getattr(self.trading_bot, "rsi_period", 14)) + 5)
-        start_idx = max(warmup_candles, int(df.index.searchsorted(pd.Timestamp(start_date), side="left")))
-        end_idx = min(int(df.index.searchsorted(pd.Timestamp(end_date), side="right")) - 1, len(df) - 1)
+        aligned_start = self._align_timestamp_to_index(start_date, df.index)
+        aligned_end = self._align_timestamp_to_index(end_date, df.index)
+        start_idx = max(warmup_candles, int(df.index.searchsorted(aligned_start, side="left")))
+        end_idx = min(int(df.index.searchsorted(aligned_end, side="right")) - 1, len(df) - 1)
         effective_context_timeframe = context_timeframe if context_df is not None else None
         signal_window_candles = max(320, warmup_candles + 40)
         context_window_candles = max(220, signal_window_candles // 2)
@@ -1631,71 +2056,86 @@ class BacktestEngine:
 
             current_context_slice = None
             if context_df is not None and not context_df.empty:
-                context_end = int(context_df.index.searchsorted(pd.Timestamp(current_row.name), side="right"))
+                aligned_context_timestamp = self._align_timestamp_to_index(current_row.name, context_df.index)
+                context_end = int(context_df.index.searchsorted(aligned_context_timestamp, side="right"))
                 if context_end > 0:
                     context_start = max(0, context_end - context_window_candles)
                     current_context_slice = context_df.iloc[context_start:context_end]
 
             if open_position is not None:
+                close_execution_position = self._uses_close_to_close_execution(open_position=open_position)
                 open_position.age_candles += 1
-                self._update_position_excursions(open_position, current_row)
-                intrabar_trade = self._close_if_stop_or_take_hit(
-                    open_position=open_position,
-                    candle=current_row,
-                    fee_rate=fee_rate,
-                    slippage=slippage,
+                self._update_position_excursions(
+                    open_position,
+                    current_row,
+                    close_only=close_execution_position,
                 )
-                if intrabar_trade is not None:
-                    balance += intrabar_trade["net_pnl"]
-                    trade_history.append(intrabar_trade)
-                    open_position = None
-                else:
+                if close_execution_position:
                     management = self._evaluate_position_management(
                         open_position=open_position,
                         current_slice=current_slice,
                         timeframe=timeframe,
                     )
-                    open_position.stop_loss_price = management.get("stop_price")
-                    open_position.take_profit_price = management.get("take_price")
-                    open_position.break_even_active = bool(management.get("break_even_active", open_position.break_even_active))
-                    open_position.trailing_active = bool(management.get("trailing_active", open_position.trailing_active))
-                    open_position.protection_level = str(management.get("protection_level") or open_position.protection_level)
-                    open_position.regime_exit_flag = bool(management.get("regime_exit_flag", False))
-                    open_position.structure_exit_flag = bool(management.get("structure_exit_flag", False))
-                    open_position.post_pump_protection = bool(
-                        management.get("post_pump_protection", open_position.post_pump_protection)
+                    self._apply_management_updates(open_position, management)
+                    close_trade = self._close_if_stop_or_take_hit_on_close(
+                        open_position=open_position,
+                        candle=current_row,
+                        fee_rate=fee_rate,
+                        slippage=slippage,
                     )
-                    open_position.mfe_pct = max(open_position.mfe_pct, float(management.get("mfe_pct", 0.0) or 0.0))
-                    open_position.mae_pct = max(open_position.mae_pct, float(management.get("mae_pct", 0.0) or 0.0))
-                    open_position.max_unrealized_rr = max(
-                        open_position.max_unrealized_rr,
-                        float(management.get("unrealized_rr", 0.0) or 0.0),
+                    if close_trade is not None:
+                        balance += close_trade["net_pnl"]
+                        trade_history.append(close_trade)
+                        open_position = None
+                    else:
+                        management_reason = self._management_action_to_reason(
+                            str(management.get("action") or "hold")
+                        )
+                        if management_reason:
+                            signal_trade = self._close_position(
+                                open_position=open_position,
+                                raw_exit_price=float(current_row["close"]),
+                                exit_timestamp=pd.Timestamp(current_row.name),
+                                fee_rate=fee_rate,
+                                slippage=slippage,
+                                reason=management_reason,
+                            )
+                            balance += signal_trade["net_pnl"]
+                            trade_history.append(signal_trade)
+                            open_position = None
+                else:
+                    intrabar_trade = self._close_if_stop_or_take_hit(
+                        open_position=open_position,
+                        candle=current_row,
+                        fee_rate=fee_rate,
+                        slippage=slippage,
                     )
-                    management_action = str(management.get("action") or "hold")
-                    if management_action == "exit_on_structure_failure":
-                        signal_trade = self._close_position(
-                            open_position=open_position,
-                            raw_exit_price=float(next_row["open"]),
-                            exit_timestamp=pd.Timestamp(next_row.name),
-                            fee_rate=fee_rate,
-                            slippage=slippage,
-                            reason="STRUCTURE_FAILURE",
-                        )
-                        balance += signal_trade["net_pnl"]
-                        trade_history.append(signal_trade)
+                    if intrabar_trade is not None:
+                        balance += intrabar_trade["net_pnl"]
+                        trade_history.append(intrabar_trade)
                         open_position = None
-                    elif management_action == "exit_on_regime_shift":
-                        signal_trade = self._close_position(
+                    else:
+                        management = self._evaluate_position_management(
                             open_position=open_position,
-                            raw_exit_price=float(next_row["open"]),
-                            exit_timestamp=pd.Timestamp(next_row.name),
-                            fee_rate=fee_rate,
-                            slippage=slippage,
-                            reason="REGIME_SHIFT",
+                            current_slice=current_slice,
+                            timeframe=timeframe,
                         )
-                        balance += signal_trade["net_pnl"]
-                        trade_history.append(signal_trade)
-                        open_position = None
+                        self._apply_management_updates(open_position, management)
+                        management_reason = self._management_action_to_reason(
+                            str(management.get("action") or "hold")
+                        )
+                        if management_reason:
+                            signal_trade = self._close_position(
+                                open_position=open_position,
+                                raw_exit_price=float(next_row["open"]),
+                                exit_timestamp=pd.Timestamp(next_row.name),
+                                fee_rate=fee_rate,
+                                slippage=slippage,
+                                reason=management_reason,
+                            )
+                            balance += signal_trade["net_pnl"]
+                            trade_history.append(signal_trade)
+                            open_position = None
 
             signal_pipeline = self._evaluate_signal_pipeline_with_optional_context(
                 current_slice=current_slice,
@@ -1720,10 +2160,28 @@ class BacktestEngine:
                 signal_pipeline=signal_pipeline,
                 analytical_signal=signal,
             ):
+                close_execution_position = self._uses_close_to_close_execution(open_position=open_position)
+                exit_row = current_row if close_execution_position else next_row
+                exit_price = float(exit_row["close"] if close_execution_position else exit_row["open"])
                 signal_trade = self._close_position(
                     open_position=open_position,
-                    raw_exit_price=float(next_row["open"]),
-                    exit_timestamp=pd.Timestamp(next_row.name),
+                    raw_exit_price=exit_price,
+                    exit_timestamp=pd.Timestamp(exit_row.name),
+                    fee_rate=fee_rate,
+                    slippage=slippage,
+                    reason="OPPOSITE_SIGNAL",
+                )
+                balance += signal_trade["net_pnl"]
+                trade_history.append(signal_trade)
+                open_position = None
+            elif open_position is not None and self._uses_close_to_close_execution(open_position=open_position) and self._is_opposite_signal(
+                open_position.side,
+                signal,
+            ):
+                signal_trade = self._close_position(
+                    open_position=open_position,
+                    raw_exit_price=float(current_row["close"]),
+                    exit_timestamp=pd.Timestamp(current_row.name),
                     fee_rate=fee_rate,
                     slippage=slippage,
                     reason="OPPOSITE_SIGNAL",
@@ -1743,6 +2201,12 @@ class BacktestEngine:
                 _queue_audit(audit_entry)
 
             if open_position is None and signal in LONG_SIGNALS.union(SHORT_SIGNALS):
+                close_execution_signal = self._uses_close_to_close_execution(
+                    signal_pipeline=signal_pipeline,
+                    setup_name=setup_name,
+                )
+                entry_row = current_row if close_execution_signal else next_row
+                entry_price = float(entry_row["close"] if close_execution_signal else entry_row["open"])
                 risk_plan = None
                 if stop_loss_pct > 0:
                     portfolio_summary = self._build_backtest_portfolio_summary(open_position)
@@ -1758,7 +2222,7 @@ class BacktestEngine:
                         initial_balance=initial_balance,
                     )
                     risk_plan = self.risk_management_service.evaluate_risk_engine(
-                        entry_price=float(next_row["open"]),
+                        entry_price=entry_price,
                         stop_loss_pct=stop_loss_pct,
                         symbol=None,
                         timeframe=timeframe,
@@ -1806,13 +2270,14 @@ class BacktestEngine:
                     signal_pipeline=signal_pipeline,
                     risk_plan=risk_plan,
                     current_row=current_row,
-                    next_row=next_row,
+                    execution_row=entry_row,
                     balance=balance,
                     position_size_pct=position_size_pct,
                     fee_rate=fee_rate,
                     slippage=slippage,
                     stop_loss_pct=stop_loss_pct,
                     take_profit_pct=take_profit_pct,
+                    close_execution=close_execution_signal,
                     strategy_version=strategy_version,
                     context_timeframe=effective_context_timeframe,
                     setup_name=setup_name,
@@ -1848,14 +2313,44 @@ class BacktestEngine:
 
         final_row = df.iloc[end_idx]
         if open_position is not None:
-            closing_trade = self._close_position(
-                open_position=open_position,
-                raw_exit_price=float(final_row["close"]),
-                exit_timestamp=pd.Timestamp(final_row.name),
-                fee_rate=fee_rate,
-                slippage=slippage,
-                reason="END_OF_TEST",
-            )
+            if self._uses_close_to_close_execution(open_position=open_position):
+                final_slice_start = max(0, (end_idx + 1) - signal_window_candles)
+                final_slice = df.iloc[final_slice_start : end_idx + 1]
+                open_position.age_candles += 1
+                self._update_position_excursions(open_position, final_row, close_only=True)
+                management = self._evaluate_position_management(
+                    open_position=open_position,
+                    current_slice=final_slice,
+                    timeframe=timeframe,
+                )
+                self._apply_management_updates(open_position, management)
+                closing_trade = self._close_if_stop_or_take_hit_on_close(
+                    open_position=open_position,
+                    candle=final_row,
+                    fee_rate=fee_rate,
+                    slippage=slippage,
+                )
+                if closing_trade is None:
+                    management_reason = self._management_action_to_reason(
+                        str(management.get("action") or "hold")
+                    )
+                    closing_trade = self._close_position(
+                        open_position=open_position,
+                        raw_exit_price=float(final_row["close"]),
+                        exit_timestamp=pd.Timestamp(final_row.name),
+                        fee_rate=fee_rate,
+                        slippage=slippage,
+                        reason=management_reason or "END_OF_TEST",
+                    )
+            else:
+                closing_trade = self._close_position(
+                    open_position=open_position,
+                    raw_exit_price=float(final_row["close"]),
+                    exit_timestamp=pd.Timestamp(final_row.name),
+                    fee_rate=fee_rate,
+                    slippage=slippage,
+                    reason="END_OF_TEST",
+                )
             balance += closing_trade["net_pnl"]
             trade_history.append(closing_trade)
 
@@ -2073,13 +2568,14 @@ class BacktestEngine:
         signal_pipeline: Optional[Dict[str, object]],
         risk_plan: Optional[Dict[str, object]],
         current_row: pd.Series,
-        next_row: pd.Series,
+        execution_row: pd.Series,
         balance: float,
         position_size_pct: float,
         fee_rate: float,
         slippage: float,
         stop_loss_pct: float,
         take_profit_pct: float,
+        close_execution: bool,
         strategy_version: Optional[str],
         context_timeframe: Optional[str],
         setup_name: Optional[str],
@@ -2089,7 +2585,7 @@ class BacktestEngine:
             return None
 
         side = "long" if signal in LONG_SIGNALS else "short"
-        raw_entry_price = float(next_row["open"])
+        raw_entry_price = float(execution_row["close"] if close_execution else execution_row["open"])
         entry_price = self._apply_slippage(raw_entry_price, side=side, is_entry=True, slippage=slippage)
         notional = float((risk_plan or {}).get("position_notional", 0.0) or 0.0)
         quantity = float((risk_plan or {}).get("quantity", 0.0) or 0.0)
@@ -2103,19 +2599,15 @@ class BacktestEngine:
         if quantity <= 0:
             return None
 
-        stop_loss_price = None
-        take_profit_price = None
-        if stop_loss_pct > 0:
-            stop_loss_price = entry_price * (1 - stop_loss_pct if side == "long" else 1 + stop_loss_pct)
-        if take_profit_pct > 0:
-            take_profit_price = entry_price * (1 + take_profit_pct if side == "long" else 1 - take_profit_pct)
-
         entry_evaluation = (signal_pipeline or {}).get("entry_quality_evaluation") or {}
         context_evaluation = (signal_pipeline or {}).get("context_evaluation") or {}
         structure_evaluation = (signal_pipeline or {}).get("structure_evaluation") or {}
         confirmation_evaluation = (signal_pipeline or {}).get("confirmation_evaluation") or {}
         scenario_evaluation = (signal_pipeline or {}).get("scenario_evaluation") or {}
-        trade_decision = getattr(self.trading_bot, "_last_trade_decision", None)
+        market_state_evaluation = (signal_pipeline or {}).get("market_state_evaluation") or {}
+        trade_decision = (signal_pipeline or {}).get("trade_decision")
+        if not isinstance(trade_decision, dict):
+            trade_decision = getattr(self.trading_bot, "_last_trade_decision", None)
         setup_name = (
             entry_evaluation.get("setup_type")
             or (trade_decision.get("setup_type") if isinstance(trade_decision, dict) else None)
@@ -2123,13 +2615,37 @@ class BacktestEngine:
             or strategy_version
             or signal
         )
+        stop_loss_price = None
+        take_profit_price = None
+        if stop_loss_pct > 0:
+            stop_loss_price = entry_price * (1 - stop_loss_pct if side == "long" else 1 + stop_loss_pct)
+        if take_profit_pct > 0:
+            take_profit_price = entry_price * (1 + take_profit_pct if side == "long" else 1 - take_profit_pct)
+        market_state = (
+            market_state_evaluation.get("market_state")
+            or (trade_decision.get("market_state") if isinstance(trade_decision, dict) else None)
+        )
+        execution_mode = (
+            market_state_evaluation.get("execution_mode")
+            or (trade_decision.get("execution_mode") if isinstance(trade_decision, dict) else None)
+        )
         regime_evaluation = (signal_pipeline or {}).get("regime_evaluation") or {}
+        fallback_signal_score = current_row.get("signal_confidence")
+        if fallback_signal_score is None or pd.isna(fallback_signal_score):
+            signal_with_confidence = getattr(self.trading_bot, "get_signal_with_confidence", None)
+            if callable(signal_with_confidence):
+                current_slice = pd.DataFrame([current_row.to_dict()])
+                fallback_signal_score = signal_with_confidence(current_slice).get("confidence", 0.0)
+            elif isinstance(trade_decision, dict) and trade_decision.get("confidence") is not None:
+                fallback_signal_score = trade_decision.get("confidence", 0.0)
+            else:
+                fallback_signal_score = 0.0
         signal_score = (
             entry_evaluation.get("entry_score")
             if entry_evaluation.get("entry_score") is not None
             else trade_decision.get("confidence")
             if isinstance(trade_decision, dict) and trade_decision.get("confidence") is not None
-            else current_row.get("signal_confidence", 0.0)
+            else fallback_signal_score
         )
         if pd.isna(signal_score):
             signal_score = 0.0
@@ -2154,6 +2670,8 @@ class BacktestEngine:
             side=side,
             signal=signal,
             setup_name=setup_name,
+            market_state=market_state,
+            execution_mode=execution_mode,
             strategy_version=strategy_version,
             context_timeframe=context_timeframe,
             regime=regime_evaluation.get("regime") or current_row.get("market_regime"),
@@ -2176,7 +2694,7 @@ class BacktestEngine:
             risk_amount=float(risk_amount or 0.0),
             size_reduced=size_reduced,
             risk_reason=risk_reason,
-            entry_timestamp=pd.Timestamp(next_row.name),
+            entry_timestamp=pd.Timestamp(execution_row.name),
             entry_price=entry_price,
             quantity=quantity,
             notional=notional,
@@ -2187,13 +2705,23 @@ class BacktestEngine:
             initial_take_profit_price=take_profit_price,
         )
 
-    def _update_position_excursions(self, open_position: Position, candle: pd.Series) -> None:
+    def _update_position_excursions(
+        self,
+        open_position: Position,
+        candle: pd.Series,
+        close_only: bool = False,
+    ) -> None:
         entry_price = float(open_position.entry_price or 0.0)
         if entry_price <= 0:
             return
 
-        high_price = float(candle.get("high", candle.get("close", entry_price)))
-        low_price = float(candle.get("low", candle.get("close", entry_price)))
+        close_price = float(candle.get("close", entry_price))
+        if close_only:
+            high_price = close_price
+            low_price = close_price
+        else:
+            high_price = float(candle.get("high", close_price))
+            low_price = float(candle.get("low", close_price))
         if open_position.side == "long":
             favorable_move = max(high_price - entry_price, 0.0)
             adverse_move = max(entry_price - low_price, 0.0)
@@ -2249,6 +2777,9 @@ class BacktestEngine:
             mfe_pct=open_position.mfe_pct,
             mae_pct=open_position.mae_pct,
             position_age_candles=open_position.age_candles,
+            timeframe=timeframe,
+            setup_name=open_position.setup_name,
+            entry_quality=open_position.entry_quality,
         )
 
     def _close_if_stop_or_take_hit(
@@ -2306,6 +2837,44 @@ class BacktestEngine:
             )
         return None
 
+    def _close_if_stop_or_take_hit_on_close(
+        self,
+        open_position: Position,
+        candle: pd.Series,
+        fee_rate: float,
+        slippage: float,
+    ) -> Optional[Dict]:
+        close_price = float(candle["close"])
+        exit_timestamp = pd.Timestamp(candle.name)
+
+        if open_position.side == "long":
+            stop_hit = open_position.stop_loss_price is not None and close_price <= open_position.stop_loss_price
+            take_hit = open_position.take_profit_price is not None and close_price >= open_position.take_profit_price
+        else:
+            stop_hit = open_position.stop_loss_price is not None and close_price >= open_position.stop_loss_price
+            take_hit = open_position.take_profit_price is not None and close_price <= open_position.take_profit_price
+
+        if stop_hit:
+            reason = "TRAILING_STOP" if self._is_trailing_stop_exit(open_position) else "STOP_LOSS"
+            return self._close_position(
+                open_position=open_position,
+                raw_exit_price=close_price,
+                exit_timestamp=exit_timestamp,
+                fee_rate=fee_rate,
+                slippage=slippage,
+                reason=reason,
+            )
+        if take_hit:
+            return self._close_position(
+                open_position=open_position,
+                raw_exit_price=close_price,
+                exit_timestamp=exit_timestamp,
+                fee_rate=fee_rate,
+                slippage=slippage,
+                reason="TAKE_PROFIT",
+            )
+        return None
+
     def _apply_slippage(self, price: float, side: str, is_entry: bool, slippage: float) -> float:
         if side == "long":
             return price * (1 + slippage) if is_entry else price * (1 - slippage)
@@ -2352,6 +2921,8 @@ class BacktestEngine:
             "entry_timestamp": open_position.entry_timestamp,
             "setup_name": open_position.setup_name,
             "setup_type": open_position.setup_name,
+            "market_state": open_position.market_state,
+            "execution_mode": open_position.execution_mode,
             "strategy_version": open_position.strategy_version,
             "context_timeframe": open_position.context_timeframe,
             "regime": open_position.regime,
@@ -2576,9 +3147,10 @@ class BacktestEngine:
         )
 
         oos_passed = (
-            out_sample_stats["total_trades"] > 0
+            out_sample_stats["total_trades"] >= max(int(ProductionConfig.MIN_PROMOTION_OOS_TRADES), 1)
             and out_sample_stats["total_return_pct"] > 0
-            and out_sample_stats["profit_factor"] >= 1.2
+            and out_sample_stats["profit_factor"] >= float(ProductionConfig.MIN_PROMOTION_OOS_PROFIT_FACTOR)
+            and out_sample_stats["expectancy_pct"] >= float(ProductionConfig.MIN_PROMOTION_OOS_EXPECTANCY_PCT)
         )
 
         return {
@@ -2634,6 +3206,10 @@ class BacktestEngine:
 
         window_seconds = total_seconds / (walk_forward_windows + 1)
         timeframe_delta = pd.to_timedelta(self._timeframe_to_milliseconds(timeframe), unit="ms")
+        min_window_trades = max(
+            1,
+            int(np.ceil(max(int(ProductionConfig.MIN_PROMOTION_OOS_TRADES), 1) / max(walk_forward_windows, 1))),
+        )
         windows = []
 
         for window_index in range(1, walk_forward_windows + 1):
@@ -2711,9 +3287,10 @@ class BacktestEngine:
                 portfolio_history=out_sample_portfolio,
             )
             passed = (
-                out_sample_stats["total_trades"] > 0
+                out_sample_stats["total_trades"] >= min_window_trades
                 and out_sample_stats["total_return_pct"] > 0
-                and out_sample_stats["profit_factor"] >= 1.2
+                and out_sample_stats["profit_factor"] >= float(ProductionConfig.MIN_PROMOTION_OOS_PROFIT_FACTOR)
+                and out_sample_stats["expectancy_pct"] >= float(ProductionConfig.MIN_PROMOTION_OOS_EXPECTANCY_PCT)
             )
             windows.append(
                 {
@@ -2748,9 +3325,10 @@ class BacktestEngine:
         avg_oos_expectancy_pct = float(np.mean([w["out_of_sample"]["stats"]["expectancy_pct"] for w in windows]))
         pass_rate_pct = (passed_windows / total_windows) * 100
         overall_passed = (
-            pass_rate_pct >= 60
+            pass_rate_pct >= float(ProductionConfig.MIN_WALK_FORWARD_PASS_RATE_PCT)
             and avg_oos_return_pct > 0
-            and avg_oos_profit_factor >= 1.2
+            and avg_oos_profit_factor >= float(ProductionConfig.MIN_WALK_FORWARD_OOS_PROFIT_FACTOR)
+            and avg_oos_expectancy_pct >= float(ProductionConfig.MIN_PROMOTION_OOS_EXPECTANCY_PCT)
         )
 
         return {
@@ -2786,10 +3364,12 @@ class BacktestEngine:
         avoid_ranging: bool,
         validation: Optional[Dict],
         walk_forward: Optional[Dict],
+        objective_check: Optional[Dict],
     ) -> Optional[int]:
         if self.database is None:
             return None
 
+        objective_check = objective_check or {}
         run_data = {
             "symbol": symbol,
             "timeframe": timeframe,
@@ -2841,6 +3421,17 @@ class BacktestEngine:
             "walk_forward_avg_oos_return_pct": walk_forward["avg_oos_return_pct"] if walk_forward else 0.0,
             "walk_forward_avg_oos_profit_factor": walk_forward["avg_oos_profit_factor"] if walk_forward else 0.0,
             "walk_forward_avg_oos_expectancy_pct": walk_forward["avg_oos_expectancy_pct"] if walk_forward else 0.0,
+            "objective_status": objective_check.get("status"),
+            "objective_score": objective_check.get("objective_score", 0.0),
+            "approved_market_state": objective_check.get("approved_market_state"),
+            "approved_market_states": objective_check.get("approved_market_states"),
+            "approved_market_state_trades": objective_check.get("approved_market_state_trades", 0),
+            "approved_market_state_profit_factor": objective_check.get("approved_market_state_profit_factor", 0.0),
+            "approved_setup_type": objective_check.get("approved_setup_type"),
+            "approved_setup_types": objective_check.get("approved_setup_types"),
+            "approved_setup_trades": objective_check.get("approved_setup_trades", 0),
+            "approved_setup_profit_factor": objective_check.get("approved_setup_profit_factor", 0.0),
+            "evaluation_period_days": objective_check.get("evaluation_period_days", 0.0),
         }
 
         try:
@@ -2996,7 +3587,12 @@ class BacktestEngine:
         if total_trades:
             gross_profit = float(trade_df.loc[trade_df["profit_loss"] > 0, "profit_loss"].sum())
             gross_loss = float(trade_df.loc[trade_df["profit_loss"] < 0, "profit_loss"].sum())
-            profit_factor = gross_profit / abs(gross_loss) if gross_loss < 0 else (gross_profit if gross_profit > 0 else 0.0)
+            if gross_loss < 0:
+                profit_factor = gross_profit / abs(gross_loss)
+            else:
+                profit_factor = gross_profit if gross_profit > 0 else 0.0
+            if profit_factor > 0:
+                profit_factor = min(float(ProductionConfig.MAX_STATISTICAL_PROFIT_FACTOR), float(profit_factor))
             avg_profit = float(trade_df.loc[trade_df["profit_loss"] > 0, "profit_loss_pct"].mean()) if winning_trades else 0.0
             avg_loss = abs(float(trade_df.loc[trade_df["profit_loss"] < 0, "profit_loss_pct"].mean())) if losing_trades else 0.0
             win_rate_fraction = winning_trades / total_trades
@@ -3017,6 +3613,8 @@ class BacktestEngine:
 
         regime_breakdown = self._build_group_breakdown(trade_df, "regime", "regime")
         setup_type_breakdown = self._build_group_breakdown(trade_df, "setup_name", "setup_type")
+        market_state_breakdown = self._build_group_breakdown(trade_df, "market_state", "market_state")
+        execution_mode_breakdown = self._build_group_breakdown(trade_df, "execution_mode", "execution_mode")
         exit_type_breakdown = self._build_group_breakdown(trade_df.rename(columns={"exit_reason": "exit_reason_group"}), "exit_reason_group", "exit_reason")
         entry_quality_breakdown = self._build_group_breakdown(trade_df, "entry_quality", "entry_quality")
         risk_mode_breakdown = self._build_group_breakdown(trade_df, "risk_mode", "risk_mode")
@@ -3084,6 +3682,8 @@ class BacktestEngine:
             "expectancy_pct": round(expectancy_pct, 2),
             "regime_breakdown": regime_breakdown,
             "setup_type_breakdown": setup_type_breakdown,
+            "market_state_breakdown": market_state_breakdown,
+            "execution_mode_breakdown": execution_mode_breakdown,
             "exit_reason_counts": exit_reason_counts,
             "exit_type_breakdown": exit_type_breakdown,
             "entry_quality_breakdown": entry_quality_breakdown,

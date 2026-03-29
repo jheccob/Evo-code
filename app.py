@@ -1,11 +1,13 @@
 ﻿import streamlit as st
 import pandas as pd
+import numpy as np
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import time
 import os
 from datetime import datetime, timedelta, date
 import asyncio
+import hmac
 import logging
 
 # Importar funções de fuso horário brasileiro
@@ -63,7 +65,7 @@ from services.paper_trade_service import PaperTradeService
 from services.risk_management_service import RiskManagementService
 
 logger = logging.getLogger(__name__)
-ACTIONABLE_SIGNALS = {"COMPRA", "VENDA", "COMPRA_FRACA", "VENDA_FRACA"}
+ACTIONABLE_SIGNALS = {"COMPRA", "VENDA"}
 MAX_SIGNAL_DATA_AGE_SECONDS = int(os.getenv("MAX_SIGNAL_DATA_AGE_SECONDS", "180").strip() or "180")
 
 
@@ -105,12 +107,148 @@ def get_user_manager():
         return _FallbackUserManager()
 
 
+@st.cache_data(ttl=15, show_spinner=False)
+def get_cached_active_strategy_profile(symbol: str, timeframe: str):
+    return db.get_active_strategy_profile(symbol=symbol, timeframe=timeframe)
+
+
+@st.cache_data(ttl=15, show_spinner=False)
+def get_cached_edge_monitor_summary(symbol: str, timeframe: str, strategy_version: str | None = None):
+    return db.get_edge_monitor_summary(
+        symbol=symbol,
+        timeframe=timeframe,
+        strategy_version=strategy_version,
+    )
+
+
+@st.cache_data(ttl=15, show_spinner=False)
+def get_cached_governance_evaluation(
+    symbol: str,
+    timeframe: str,
+    strategy_version: str | None = None,
+    current_regime: str | None = None,
+):
+    return db.evaluate_strategy_governance(
+        symbol=symbol,
+        timeframe=timeframe,
+        strategy_version=strategy_version,
+        current_regime=current_regime,
+        persist=False,
+    )
+
+
+@st.cache_data(ttl=15, show_spinner=False)
+def get_cached_backtest_run_promotion_readiness(run_id: int):
+    return db.get_backtest_run_promotion_readiness(run_id)
+
+
+@st.cache_data(ttl=15, show_spinner=False)
+def get_cached_strategy_governance_summary(symbol: str, timeframe: str, active_only: bool = False, limit: int = 10):
+    return db.get_strategy_governance_summary(
+        symbol=symbol,
+        timeframe=timeframe,
+        active_only=active_only,
+        limit=limit,
+    )
+
+
+@st.cache_data(ttl=15, show_spinner=False)
+def get_cached_setup_regime_baselines(symbol: str, timeframe: str, strategy_version: str | None = None):
+    return db.get_setup_regime_baselines(
+        symbol=symbol,
+        timeframe=timeframe,
+        strategy_version=strategy_version,
+    )
+
+
+@st.cache_data(ttl=15, show_spinner=False)
+def get_cached_alignment_metrics(symbol: str, timeframe: str, strategy_version: str | None = None, limit: int = 5):
+    return db.get_alignment_metrics(
+        symbol=symbol,
+        timeframe=timeframe,
+        strategy_version=strategy_version,
+        limit=limit,
+    )
+
+
+@st.cache_data(ttl=15, show_spinner=False)
+def get_cached_governance_history(symbol: str, timeframe: str, strategy_version: str | None = None, limit: int = 10):
+    return db.get_governance_history(
+        symbol=symbol,
+        timeframe=timeframe,
+        strategy_version=strategy_version,
+        limit=limit,
+    )
+
+
+@st.cache_data(ttl=15, show_spinner=False)
+def get_cached_strategy_evaluations(
+    symbol: str,
+    timeframe: str,
+    strategy_version: str | None = None,
+    limit: int = 5,
+):
+    return db.get_strategy_evaluations(
+        symbol=symbol,
+        timeframe=timeframe,
+        strategy_version=strategy_version,
+        limit=limit,
+    )
+
+
+@st.cache_data(ttl=15, show_spinner=False)
+def get_cached_strategy_evaluation_overview(
+    symbol: str | None = None,
+    timeframe: str | None = None,
+    limit: int = 10,
+):
+    return db.get_strategy_evaluation_overview(
+        symbol=symbol,
+        timeframe=timeframe,
+        limit=limit,
+    )
+
+
+def clear_dashboard_data_caches() -> None:
+    st.cache_data.clear()
+
+
+def clear_dashboard_user_session():
+    st.session_state.dashboard_user_auth = None
+    st.session_state.dashboard_user_login = ""
+    st.session_state.dashboard_user_password = ""
+    st.session_state.dashboard_user_auth_error = ""
+
+
+def get_authenticated_dashboard_user():
+    auth_payload = st.session_state.get("dashboard_user_auth")
+    if not auth_payload:
+        return None
+
+    expires_at_raw = auth_payload.get("expires_at")
+    if not expires_at_raw:
+        clear_dashboard_user_session()
+        return None
+
+    try:
+        expires_at = datetime.fromisoformat(str(expires_at_raw))
+    except ValueError:
+        clear_dashboard_user_session()
+        return None
+
+    current_time = now_brazil()
+    if expires_at <= current_time:
+        clear_dashboard_user_session()
+        return None
+
+    return auth_payload
+
+
 def get_or_init_admin_telegram_bot():
     if 'telegram_trading_bot' not in st.session_state:
         try:
             from telegram_bot import TelegramTradingBot
             st.session_state.telegram_trading_bot = TelegramTradingBot(
-                allow_simulated_data=False,
                 auto_configure_from_env=False,
             )
         except Exception as exc:
@@ -125,7 +263,7 @@ def apply_edge_guardrail(signal: str, symbol: str, timeframe: str, strategy_vers
         return signal, None
 
     try:
-        edge_summary = db.get_edge_monitor_summary(
+        edge_summary = get_cached_edge_monitor_summary(
             symbol=symbol,
             timeframe=timeframe,
             strategy_version=strategy_version,
@@ -235,12 +373,11 @@ def build_operational_signal_state(
         operational_block_source = "runtime_governance"
 
     try:
-        governance_summary = db.evaluate_strategy_governance(
+        governance_summary = get_cached_governance_evaluation(
             symbol=strategy_settings.get("symbol"),
             timeframe=strategy_settings.get("timeframe"),
             strategy_version=strategy_settings.get("strategy_version"),
             current_regime=current_regime,
-            persist=False,
         )
     except Exception as exc:
         logger.warning("Falha ao avaliar governanca adaptativa: %s", exc)
@@ -275,15 +412,21 @@ def build_operational_signal_state(
 def get_effective_strategy_settings(
     symbol: str,
     timeframe: str,
-    require_volume: bool = True,
+    require_volume: bool = False,
     require_trend: bool = False,
-    avoid_ranging: bool = True,
+    avoid_ranging: bool = False,
 ) -> dict:
-    active_profile = db.get_active_strategy_profile(symbol=symbol, timeframe=timeframe)
+    active_profile = get_cached_active_strategy_profile(symbol=symbol, timeframe=timeframe)
     trading_bot = st.session_state.get("trading_bot")
-    default_context_timeframe = AppConfig.get_context_timeframe(timeframe)
+    default_context_timeframe = None
 
     if active_profile:
+        runtime_allowed_execution_setups = AppConfig.get_runtime_allowed_execution_setups(
+            timeframe,
+            active_profile.get("setup_type"),
+            active_profile.get("allowed_setup_types"),
+            active_profile.get("allowed_market_states"),
+        )
         settings = {
             "symbol": symbol,
             "timeframe": timeframe,
@@ -296,12 +439,18 @@ def get_effective_strategy_settings(
             "require_volume": bool(active_profile.get("require_volume", False)),
             "require_trend": bool(active_profile.get("require_trend", False)),
             "avoid_ranging": bool(active_profile.get("avoid_ranging", False)),
+            "market_state": active_profile.get("market_state"),
+            "allowed_market_states": active_profile.get("allowed_market_states") or [],
+            "setup_type": active_profile.get("setup_type"),
+            "allowed_setup_types": active_profile.get("allowed_setup_types") or [],
             "active_profile": active_profile,
             "source": "active_profile",
             "runtime_allowed": True,
             "runtime_block_reason": "",
+            "allowed_execution_setups": runtime_allowed_execution_setups,
         }
     else:
+        runtime_allowed_execution_setups = AppConfig.get_runtime_allowed_execution_setups(timeframe)
         runtime_block_reason = ""
         runtime_allowed = True
         runtime_source = "session"
@@ -324,10 +473,15 @@ def get_effective_strategy_settings(
             "require_volume": require_volume,
             "require_trend": require_trend,
             "avoid_ranging": avoid_ranging,
+            "market_state": None,
+            "allowed_market_states": [],
+            "setup_type": None,
+            "allowed_setup_types": [],
             "active_profile": None,
             "source": runtime_source,
             "runtime_allowed": runtime_allowed,
             "runtime_block_reason": runtime_block_reason,
+            "allowed_execution_setups": runtime_allowed_execution_setups,
         }
 
     settings["strategy_version"] = build_strategy_version(
@@ -441,6 +595,756 @@ def build_strategy_evaluation_display_df(evaluations):
 
     return pd.DataFrame(rows)
 
+
+def render_backtest_portfolio_section(results, stats, result_symbol, result_timeframe):
+    portfolio_values = results.get("portfolio_values") or []
+    if not portfolio_values:
+        return
+
+    portfolio_df = pd.DataFrame(portfolio_values)
+    if portfolio_df.empty or not {"timestamp", "portfolio_value"}.issubset(portfolio_df.columns):
+        return
+
+    portfolio_df["timestamp"] = pd.to_datetime(portfolio_df["timestamp"])
+    portfolio_df["portfolio_value"] = pd.to_numeric(portfolio_df["portfolio_value"], errors="coerce")
+    portfolio_df = (
+        portfolio_df
+        .dropna(subset=["timestamp", "portfolio_value"])
+        .sort_values("timestamp")
+        .reset_index(drop=True)
+    )
+    if portfolio_df.empty:
+        return
+
+    running_max = portfolio_df["portfolio_value"].cummax()
+    portfolio_df["drawdown_pct"] = (
+        (running_max - portfolio_df["portfolio_value"]) / running_max.replace(0, np.nan)
+    ) * 100
+    equity_diagnostics = results.get("equity_diagnostics") or {}
+
+    st.markdown("---")
+    st.subheader("📈 Evolução do Portfólio")
+    st.caption(
+        "Curva do capital ao longo do backtest para visualizar aceleração, devolução de lucro e pontos de estresse."
+    )
+
+    fig_portfolio = go.Figure()
+    fig_portfolio.add_trace(
+        go.Scatter(
+            x=portfolio_df["timestamp"],
+            y=portfolio_df["portfolio_value"],
+            mode="lines",
+            name="Portfólio",
+            line=dict(color="#0f766e", width=2.5),
+        )
+    )
+
+    benchmark_values = results.get("benchmark_values") or []
+    if benchmark_values:
+        benchmark_df = pd.DataFrame(benchmark_values)
+        if not benchmark_df.empty and {"timestamp", "benchmark_value"}.issubset(benchmark_df.columns):
+            benchmark_df["timestamp"] = pd.to_datetime(benchmark_df["timestamp"])
+            benchmark_df["benchmark_value"] = pd.to_numeric(benchmark_df["benchmark_value"], errors="coerce")
+            benchmark_df = benchmark_df.dropna(subset=["timestamp", "benchmark_value"]).sort_values("timestamp")
+            if not benchmark_df.empty:
+                fig_portfolio.add_trace(
+                    go.Scatter(
+                        x=benchmark_df["timestamp"],
+                        y=benchmark_df["benchmark_value"],
+                        mode="lines",
+                        name="Buy & Hold",
+                        line=dict(color="#f59e0b", width=2, dash="dot"),
+                    )
+                )
+
+    fig_portfolio.add_hline(
+        y=stats["initial_balance"],
+        line_dash="dash",
+        line_color="#6b7280",
+        annotation_text="Capital inicial",
+    )
+    fig_portfolio.update_layout(
+        title=f"Evolução do Portfólio - {result_symbol} {result_timeframe}",
+        xaxis_title="Data",
+        yaxis_title="Valor do portfólio ($)",
+        height=430,
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        margin=dict(l=10, r=10, t=60, b=10),
+    )
+    st.plotly_chart(fig_portfolio, width="stretch")
+
+    drawdown_col1, drawdown_col2, drawdown_col3, drawdown_col4 = st.columns(4)
+    with drawdown_col1:
+        st.metric("Drawdown Médio", f"{float(equity_diagnostics.get('average_drawdown_pct', 0.0) or 0.0):.2f}%")
+    with drawdown_col2:
+        st.metric("Recuperação Máx.", int(equity_diagnostics.get("max_recovery_periods", 0) or 0))
+    with drawdown_col3:
+        st.metric("Payoff Ratio", f"{float(stats.get('payoff_ratio', 0.0) or 0.0):.2f}")
+    with drawdown_col4:
+        st.metric("Giveback no Topo", f"{float(equity_diagnostics.get('profit_giveback_pct', 0.0) or 0.0):.2f}%")
+
+    fig_drawdown = go.Figure()
+    fig_drawdown.add_trace(
+        go.Scatter(
+            x=portfolio_df["timestamp"],
+            y=portfolio_df["drawdown_pct"].fillna(0.0),
+            mode="lines",
+            name="Drawdown %",
+            line=dict(color="#dc2626", width=2),
+            fill="tozeroy",
+            fillcolor="rgba(220, 38, 38, 0.12)",
+        )
+    )
+    fig_drawdown.update_layout(
+        title=f"Curva de Drawdown - {result_symbol} {result_timeframe}",
+        xaxis_title="Data",
+        yaxis_title="Drawdown %",
+        height=280,
+        margin=dict(l=10, r=10, t=50, b=10),
+    )
+    st.plotly_chart(fig_drawdown, width="stretch")
+
+
+def _get_realtime_chart_snapshot(symbol, timeframe, fallback_data, limit=200):
+    trading_bot = st.session_state.get("trading_bot")
+    if trading_bot is None:
+        return fallback_data, None
+
+    try:
+        stream_client = trading_bot._get_realtime_stream_client(symbol=symbol, timeframe=timeframe)
+        chart_data = stream_client.get_market_data(
+            limit=limit,
+            timeout=2.0,
+            include_current_candle=True,
+        )
+        return chart_data, stream_client.get_current_status()
+    except Exception as exc:
+        logger.warning(
+            "Falha ao obter snapshot realtime do grafico %s %s: %s",
+            symbol,
+            timeframe,
+            exc,
+        )
+        return fallback_data, None
+
+
+@st.fragment(run_every=2)
+def render_live_market_chart(symbol, timeframe, fallback_data):
+    chart_limit = 200
+    if fallback_data is not None and not fallback_data.empty:
+        chart_limit = max(len(fallback_data.index), 200)
+
+    chart_data, stream_status = _get_realtime_chart_snapshot(
+        symbol=symbol,
+        timeframe=timeframe,
+        fallback_data=fallback_data,
+        limit=chart_limit,
+    )
+
+    if chart_data is None or chart_data.empty:
+        st.warning("Grafico realtime indisponivel no momento.")
+        return
+
+    fig = make_subplots(
+        rows=1, cols=1,
+        shared_xaxes=True,
+        subplot_titles=("Preço",),
+    )
+
+    fig.add_trace(
+        go.Candlestick(
+            x=chart_data.index,
+            open=chart_data["open"],
+            high=chart_data["high"],
+            low=chart_data["low"],
+            close=chart_data["close"],
+            name="Preço",
+        ),
+        row=1, col=1
+    )
+
+    chart_signals = pd.DataFrame(st.session_state.signals_history) if st.session_state.signals_history else pd.DataFrame()
+    if not chart_signals.empty:
+        chart_signals = chart_signals.copy()
+        chart_signals["timestamp"] = pd.to_datetime(chart_signals["timestamp"], errors="coerce")
+        chart_signals = chart_signals.dropna(subset=["timestamp"])
+        if "timeframe" not in chart_signals.columns:
+            chart_signals["timeframe"] = timeframe
+        for signal_column in ["candidate_signal", "approved_signal", "blocked_signal", "block_reason"]:
+            if signal_column not in chart_signals.columns:
+                chart_signals[signal_column] = None
+        chart_signals = chart_signals[
+            (chart_signals["symbol"] == symbol)
+            & (chart_signals["timeframe"] == timeframe)
+        ]
+
+        def _add_signal_trace(signal_df, expected_signal, marker_symbol, marker_color, marker_size, name, blocked=False):
+            filtered = signal_df[signal_df["signal_value"] == expected_signal]
+            if filtered.empty:
+                return
+            hover_text = (
+                filtered.get("block_reason", pd.Series([""] * len(filtered))).fillna("-")
+                if blocked else
+                filtered.get("candidate_signal", pd.Series([""] * len(filtered))).fillna("-")
+            )
+            fig.add_trace(
+                go.Scatter(
+                    x=filtered["timestamp"],
+                    y=filtered["price"],
+                    mode="markers",
+                    marker=dict(symbol=marker_symbol, size=marker_size, color=marker_color),
+                    name=name,
+                    text=hover_text,
+                    hovertemplate="%{x}<br>Preco %{y:.6f}<br>%{text}<extra></extra>",
+                    showlegend=True,
+                ),
+                row=1, col=1
+            )
+
+        candidate_markers = chart_signals[
+            chart_signals["candidate_signal"].isin(list(ACTIONABLE_SIGNALS))
+        ].copy()
+        if not candidate_markers.empty:
+            candidate_markers["signal_value"] = candidate_markers["candidate_signal"]
+            _add_signal_trace(candidate_markers, "COMPRA", "triangle-up-open", "rgba(0, 160, 0, 0.7)", 15, "Candidato Compra")
+            _add_signal_trace(candidate_markers, "VENDA", "triangle-down-open", "rgba(190, 0, 0, 0.7)", 15, "Candidato Venda")
+
+        approved_markers = chart_signals[
+            chart_signals["approved_signal"].isin(list(ACTIONABLE_SIGNALS))
+        ].copy()
+        if not approved_markers.empty:
+            approved_markers["signal_value"] = approved_markers["approved_signal"]
+            _add_signal_trace(approved_markers, "COMPRA", "triangle-up", "green", 18, "Aprovado Compra")
+            _add_signal_trace(approved_markers, "VENDA", "triangle-down", "red", 18, "Aprovado Venda")
+
+        blocked_markers = chart_signals[
+            chart_signals["blocked_signal"].isin(list(ACTIONABLE_SIGNALS))
+        ].copy()
+        if not blocked_markers.empty:
+            blocked_markers["signal_value"] = blocked_markers["blocked_signal"]
+            _add_signal_trace(blocked_markers, "COMPRA", "x", "orange", 13, "Bloqueado Compra", blocked=True)
+            _add_signal_trace(blocked_markers, "VENDA", "x", "orange", 13, "Bloqueado Venda", blocked=True)
+
+    if "is_closed" in chart_data.columns and not bool(chart_data["is_closed"].iloc[-1]):
+        current_row = chart_data.iloc[-1]
+        fig.add_annotation(
+            x=chart_data.index[-1],
+            y=float(current_row["close"]),
+            text="Tempo real",
+            showarrow=True,
+            arrowhead=1,
+            ax=35,
+            ay=-35,
+            bgcolor="rgba(15, 118, 110, 0.15)",
+        )
+
+    fig.update_layout(
+        title=f"{symbol} - {timeframe}",
+        height=520,
+        xaxis_rangeslider_visible=False,
+        showlegend=True,
+    )
+    fig.update_yaxes(title_text="Preço ($)", row=1, col=1)
+
+    st.plotly_chart(fig, width="stretch")
+
+    if stream_status and stream_status.get("connected"):
+        provider = stream_status.get("provider") or "stream"
+        message_age = stream_status.get("last_message_age_sec")
+        age_label = f"{message_age}s" if message_age is not None else "agora"
+        mode_label = "inclui vela em formação" if "is_closed" in chart_data.columns and not bool(chart_data["is_closed"].iloc[-1]) else "somente candles fechados"
+        st.caption(f"Mercado em tempo real via {provider} | ultima mensagem ha {age_label} | {mode_label}.")
+    else:
+        st.caption("Grafico exibido com snapshot fallback; stream realtime nao confirmou conexao neste ciclo.")
+
+
+def render_multiuser_workspace_tab():
+    workspace_user = get_authenticated_dashboard_user()
+    st.subheader("👤 Meu Workspace")
+    st.caption("Área isolada por usuário para contas, risco, credenciais e monitoramento operacional.")
+
+    if not workspace_user:
+        st.info("Faça login na barra lateral para acessar seu workspace multiusuário.")
+        st.markdown(
+            """
+            Este espaço foi preparado para o modelo multiusuário:
+            - cada usuário enxerga apenas as próprias contas
+            - credenciais ficam protegidas no vault
+            - risco, permissões e governança são acompanhados por conta
+            """
+        )
+        return
+
+    user_id = int(workspace_user["user_id"])
+    user_label = (
+        workspace_user.get("first_name")
+        or workspace_user.get("username")
+        or workspace_user.get("login_name")
+        or str(user_id)
+    )
+    st.success(f"Sessão ativa: {user_label} | User ID {user_id}")
+    if workspace_user.get("require_password_change"):
+        st.warning("Sua conta exige troca de senha antes de uso recorrente. Atualize abaixo.")
+
+    workspace_accounts = db.get_user_workspace_accounts(user_id=user_id, limit=100)
+
+    summary_col1, summary_col2, summary_col3, summary_col4 = st.columns(4)
+    with summary_col1:
+        st.metric("Contas", len(workspace_accounts))
+    with summary_col2:
+        st.metric("Live Habilitado", sum(1 for item in workspace_accounts if bool(item.get("live_enabled"))))
+    with summary_col3:
+        st.metric("Paper Habilitado", sum(1 for item in workspace_accounts if bool(item.get("paper_enabled"))))
+    with summary_col4:
+        st.metric("Risk Profiles Válidos", sum(1 for item in workspace_accounts if bool(item.get("risk_profile_valid"))))
+
+    if workspace_accounts:
+        account_lookup = {
+            f"{row.get('account_alias') or row.get('account_id')} | {row.get('exchange')} | {row.get('account_id')}": row
+            for row in workspace_accounts
+        }
+        selected_account_label = st.selectbox(
+            "Selecionar Conta",
+            options=list(account_lookup.keys()),
+            key="workspace_account_selector",
+        )
+        selected_account = account_lookup[selected_account_label]
+        selected_account_id = str(selected_account["account_id"])
+        selected_exchange = str(selected_account.get("exchange") or "")
+        try:
+            execution_context = db.build_account_execution_context(
+                user_id=user_id,
+                account_id=selected_account_id,
+                exchange=selected_exchange,
+            )
+        except Exception:
+            risk_profile_fallback = db.get_user_risk_profile(user_id=user_id, account_id=selected_account_id) or {}
+            credential_fallback = db.get_user_exchange_credential(
+                user_id=user_id,
+                account_id=selected_account_id,
+                exchange=selected_exchange,
+                include_encrypted=False,
+            ) or {}
+            governance_fallback = db.get_user_governance_state(
+                user_id=user_id,
+                account_id=selected_account_id,
+                exchange=selected_exchange,
+            ) or {}
+            execution_context = {
+                "user_id": user_id,
+                "account_id": selected_account_id,
+                "account_alias": selected_account.get("account_alias") or selected_account_id,
+                "exchange_name": selected_exchange,
+                "api_key_ref": credential_fallback.get("api_key_ref"),
+                "token_ref": credential_fallback.get("token_ref"),
+                "live_enabled": bool(selected_account.get("live_enabled")),
+                "paper_enabled": bool(selected_account.get("paper_enabled")),
+                "governance_status": governance_fallback.get("governance_status") or "unknown",
+                "governance_mode": governance_fallback.get("governance_mode") or "blocked",
+                "governance_blocked": bool(governance_fallback.get("blocked", False)),
+                "governance_block_reason": governance_fallback.get("block_reason"),
+                "risk_profile": risk_profile_fallback,
+                "allowed_symbols": selected_account.get("allowed_symbols") or [],
+                "allowed_timeframes": selected_account.get("allowed_timeframes") or [],
+                "capital_base": float(selected_account.get("capital_base", 0.0) or 0.0),
+                "risk_mode": selected_account.get("risk_mode") or "normal",
+                "notes": selected_account.get("notes"),
+                "permission_status": credential_fallback.get("permission_status") or selected_account.get("permission_status") or "unknown",
+                "token_status": credential_fallback.get("token_status") or selected_account.get("token_status") or "unknown",
+                "reconciliation_status": credential_fallback.get("reconciliation_status") or selected_account.get("reconciliation_status") or "unknown",
+            }
+
+        st.markdown("### Estado da Conta")
+        account_col1, account_col2, account_col3, account_col4, account_col5 = st.columns(5)
+        with account_col1:
+            st.metric("Status", selected_account.get("status", "-"))
+        with account_col2:
+            st.metric("Live", "ON" if bool(selected_account.get("live_enabled")) else "OFF")
+        with account_col3:
+            st.metric("Paper", "ON" if bool(selected_account.get("paper_enabled")) else "OFF")
+        with account_col4:
+            st.metric("Governança", execution_context.get("governance_status", "-"))
+        with account_col5:
+            st.metric("Modo de Risco", execution_context.get("risk_mode", selected_account.get("risk_mode", "-")))
+
+        ops_col1, ops_col2, ops_col3, ops_col4 = st.columns(4)
+        with ops_col1:
+            st.metric("Capital Base", f"${float(selected_account.get('capital_base', 0.0) or 0.0):,.2f}")
+        with ops_col2:
+            st.metric("Posições Abertas", int(selected_account.get("open_positions", 0) or 0))
+        with ops_col3:
+            st.metric("Ordens Pendentes", int(selected_account.get("pending_orders", 0) or 0))
+        with ops_col4:
+            st.metric("Credencial", "OK" if execution_context.get("api_key_ref") else "PENDENTE")
+
+        st.caption(
+            f"Símbolos permitidos: {', '.join(execution_context.get('allowed_symbols', [])) or '-'} | "
+            f"Timeframes permitidos: {', '.join(execution_context.get('allowed_timeframes', [])) or '-'} | "
+            f"Permissões: {execution_context.get('permission_status', 'unknown')} | "
+            f"Token: {execution_context.get('token_status', 'unknown')} | "
+            f"Reconciliação: {execution_context.get('reconciliation_status', 'unknown')}"
+        )
+        if execution_context.get("governance_block_reason"):
+            st.warning(f"Bloqueio operacional: {execution_context.get('governance_block_reason')}")
+
+        detail_tab1, detail_tab2, detail_tab3, detail_tab4 = st.tabs(
+            ["⚙️ Conta", "🛡️ Risco", "🔑 Credenciais", "📜 Eventos"]
+        )
+
+        with detail_tab1:
+            with st.form(f"workspace_account_form_{selected_account_id}"):
+                acc_col1, acc_col2, acc_col3 = st.columns(3)
+                with acc_col1:
+                    account_alias = st.text_input(
+                        "Alias",
+                        value=str(selected_account.get("account_alias") or selected_account_id),
+                        key=f"workspace_alias_{selected_account_id}",
+                    )
+                    account_status = st.selectbox(
+                        "Status",
+                        options=["active", "disabled"],
+                        index=0 if str(selected_account.get("status") or "active").lower() == "active" else 1,
+                        key=f"workspace_status_{selected_account_id}",
+                    )
+                with acc_col2:
+                    live_enabled = st.checkbox(
+                        "Live Enabled",
+                        value=bool(selected_account.get("live_enabled")),
+                        key=f"workspace_live_{selected_account_id}",
+                    )
+                    paper_enabled = st.checkbox(
+                        "Paper Enabled",
+                        value=bool(selected_account.get("paper_enabled")),
+                        key=f"workspace_paper_{selected_account_id}",
+                    )
+                with acc_col3:
+                    capital_base = st.number_input(
+                        "Capital Base",
+                        min_value=0.0,
+                        value=float(selected_account.get("capital_base", 0.0) or 0.0),
+                        step=100.0,
+                        key=f"workspace_capital_{selected_account_id}",
+                    )
+                    risk_mode = st.selectbox(
+                        "Risk Mode",
+                        options=["normal", "reduced", "blocked"],
+                        index=["normal", "reduced", "blocked"].index(
+                            str(selected_account.get("risk_mode") or "normal")
+                            if str(selected_account.get("risk_mode") or "normal") in {"normal", "reduced", "blocked"}
+                            else "normal"
+                        ),
+                        key=f"workspace_risk_mode_{selected_account_id}",
+                    )
+
+                allowed_symbols_raw = st.text_input(
+                    "Símbolos Permitidos",
+                    value=",".join(execution_context.get("allowed_symbols", [])),
+                    key=f"workspace_symbols_{selected_account_id}",
+                )
+                allowed_timeframes = st.multiselect(
+                    "Timeframes Permitidos",
+                    options=["1m", "5m", "15m", "30m", "1h", "4h", "1d"],
+                    default=execution_context.get("allowed_timeframes", []),
+                    key=f"workspace_timeframes_{selected_account_id}",
+                )
+                account_notes = st.text_area(
+                    "Notas da Conta",
+                    value=str(selected_account.get("notes") or ""),
+                    key=f"workspace_notes_{selected_account_id}",
+                )
+
+                if st.form_submit_button("Salvar Conta"):
+                    db.upsert_user_account(
+                        {
+                            "user_id": user_id,
+                            "account_id": selected_account_id,
+                            "account_alias": account_alias.strip() or selected_account_id,
+                            "exchange": selected_exchange,
+                            "status": account_status,
+                            "live_enabled": bool(live_enabled),
+                            "paper_enabled": bool(paper_enabled),
+                            "capital_base": float(capital_base),
+                            "risk_mode": risk_mode,
+                            "allowed_symbols": [item.strip() for item in allowed_symbols_raw.split(",") if item.strip()],
+                            "allowed_timeframes": list(allowed_timeframes),
+                            "notes": account_notes,
+                        }
+                    )
+                    st.success("Conta atualizada com sucesso.")
+                    st.rerun()
+
+            with st.expander("Adicionar Nova Conta", expanded=False):
+                with st.form(f"workspace_new_account_form_{user_id}"):
+                    new_col1, new_col2, new_col3 = st.columns(3)
+                    with new_col1:
+                        new_account_id = st.text_input("Novo Account ID", key=f"workspace_new_account_id_{user_id}")
+                        new_account_alias = st.text_input("Alias da Nova Conta", key=f"workspace_new_account_alias_{user_id}")
+                    with new_col2:
+                        new_exchange = st.selectbox(
+                            "Exchange",
+                            options=AppConfig.BRAZIL_SUPPORTED_EXCHANGES or ["binance"],
+                            key=f"workspace_new_exchange_{user_id}",
+                        )
+                        new_status = st.selectbox(
+                            "Status da Conta",
+                            options=["active", "disabled"],
+                            key=f"workspace_new_status_{user_id}",
+                        )
+                    with new_col3:
+                        new_capital_base = st.number_input(
+                            "Capital Base Inicial",
+                            min_value=0.0,
+                            value=10000.0,
+                            step=100.0,
+                            key=f"workspace_new_capital_{user_id}",
+                        )
+                        new_live_enabled = st.checkbox("Live Enabled", value=False, key=f"workspace_new_live_{user_id}")
+                        new_paper_enabled = st.checkbox("Paper Enabled", value=True, key=f"workspace_new_paper_{user_id}")
+
+                    new_symbols = st.text_input(
+                        "Símbolos Permitidos",
+                        value="BTC/USDT,ETH/USDT",
+                        key=f"workspace_new_symbols_{user_id}",
+                    )
+                    new_timeframes = st.multiselect(
+                        "Timeframes Permitidos",
+                        options=["1m", "5m", "15m", "30m", "1h", "4h", "1d"],
+                        default=["15m", "1h"],
+                        key=f"workspace_new_timeframes_{user_id}",
+                    )
+                    new_notes = st.text_area("Notas", key=f"workspace_new_notes_{user_id}")
+
+                    if st.form_submit_button("Adicionar Conta"):
+                        if not str(new_account_id).strip():
+                            st.error("Informe um account_id válido.")
+                        else:
+                            db.upsert_user_account(
+                                {
+                                    "user_id": user_id,
+                                    "account_id": str(new_account_id).strip(),
+                                    "account_alias": str(new_account_alias or new_account_id).strip(),
+                                    "exchange": new_exchange,
+                                    "status": new_status,
+                                    "live_enabled": bool(new_live_enabled),
+                                    "paper_enabled": bool(new_paper_enabled),
+                                    "capital_base": float(new_capital_base),
+                                    "risk_mode": "normal",
+                                    "allowed_symbols": [item.strip() for item in str(new_symbols).split(",") if item.strip()],
+                                    "allowed_timeframes": list(new_timeframes),
+                                    "notes": new_notes,
+                                }
+                            )
+                            st.success("Nova conta criada com sucesso.")
+                            st.rerun()
+
+        with detail_tab2:
+            risk_profile = execution_context.get("risk_profile") or {}
+            with st.form(f"workspace_risk_form_{selected_account_id}"):
+                risk_col1, risk_col2, risk_col3 = st.columns(3)
+                with risk_col1:
+                    max_risk_per_trade = st.number_input(
+                        "Risco por Trade %",
+                        min_value=0.0,
+                        value=float(risk_profile.get("max_risk_per_trade", 0.5) or 0.5),
+                        step=0.1,
+                        key=f"workspace_risk_trade_{selected_account_id}",
+                    )
+                    max_daily_loss = st.number_input(
+                        "Loss Diário %",
+                        min_value=0.0,
+                        value=float(risk_profile.get("max_daily_loss", 2.0) or 2.0),
+                        step=0.1,
+                        key=f"workspace_daily_loss_{selected_account_id}",
+                    )
+                with risk_col2:
+                    max_drawdown = st.number_input(
+                        "Drawdown Máx %",
+                        min_value=0.0,
+                        value=float(risk_profile.get("max_drawdown", 10.0) or 10.0),
+                        step=0.5,
+                        key=f"workspace_drawdown_{selected_account_id}",
+                    )
+                    max_portfolio_open_risk_pct = st.number_input(
+                        "Risco Aberto Máx %",
+                        min_value=0.0,
+                        value=float(risk_profile.get("max_portfolio_open_risk_pct", 2.0) or 2.0),
+                        step=0.1,
+                        key=f"workspace_open_risk_{selected_account_id}",
+                    )
+                with risk_col3:
+                    allowed_position_count = st.number_input(
+                        "Máx Posições",
+                        min_value=0,
+                        value=int(risk_profile.get("allowed_position_count", 3) or 3),
+                        step=1,
+                        key=f"workspace_positions_{selected_account_id}",
+                    )
+                    leverage_cap = st.number_input(
+                        "Leverage Cap",
+                        min_value=0.0,
+                        value=float(risk_profile.get("leverage_cap", 5.0) or 5.0),
+                        step=0.5,
+                        key=f"workspace_leverage_{selected_account_id}",
+                    )
+
+                preferred_symbols = st.text_input(
+                    "Símbolos Preferidos",
+                    value=",".join(risk_profile.get("preferred_symbols", execution_context.get("allowed_symbols", []))),
+                    key=f"workspace_pref_symbols_{selected_account_id}",
+                )
+                risk_mode_profile = st.selectbox(
+                    "Modo do Perfil",
+                    options=["normal", "reduced", "blocked"],
+                    index=["normal", "reduced", "blocked"].index(
+                        str(risk_profile.get("risk_mode") or "normal")
+                        if str(risk_profile.get("risk_mode") or "normal") in {"normal", "reduced", "blocked"}
+                        else "normal"
+                    ),
+                    key=f"workspace_profile_mode_{selected_account_id}",
+                )
+                risk_is_valid = st.checkbox(
+                    "Perfil Válido",
+                    value=bool(risk_profile.get("is_valid", True)),
+                    key=f"workspace_profile_valid_{selected_account_id}",
+                )
+                risk_live_enabled = st.checkbox(
+                    "Live liberado no risco",
+                    value=bool(risk_profile.get("live_enabled", True)),
+                    key=f"workspace_risk_live_{selected_account_id}",
+                )
+                risk_paper_enabled = st.checkbox(
+                    "Paper liberado no risco",
+                    value=bool(risk_profile.get("paper_enabled", True)),
+                    key=f"workspace_risk_paper_{selected_account_id}",
+                )
+
+                if st.form_submit_button("Salvar Perfil de Risco"):
+                    db.upsert_user_risk_profile(
+                        {
+                            "user_id": user_id,
+                            "account_id": selected_account_id,
+                            "max_risk_per_trade": float(max_risk_per_trade),
+                            "max_daily_loss": float(max_daily_loss),
+                            "max_drawdown": float(max_drawdown),
+                            "max_portfolio_open_risk_pct": float(max_portfolio_open_risk_pct),
+                            "allowed_position_count": int(allowed_position_count),
+                            "preferred_symbols": [item.strip() for item in preferred_symbols.split(",") if item.strip()],
+                            "leverage_cap": float(leverage_cap),
+                            "risk_mode": risk_mode_profile,
+                            "is_valid": bool(risk_is_valid),
+                            "live_enabled": bool(risk_live_enabled),
+                            "paper_enabled": bool(risk_paper_enabled),
+                        }
+                    )
+                    st.success("Perfil de risco atualizado com sucesso.")
+                    st.rerun()
+
+        with detail_tab3:
+            vault = None
+            vault_error = ""
+            try:
+                from services.credential_vault import CredentialVault
+
+                vault = CredentialVault(strict=False)
+            except Exception as exc:
+                vault_error = str(exc)
+
+            if vault_error:
+                st.error(f"Vault indisponível: {vault_error}")
+            elif not vault or not vault.is_configured():
+                st.warning("Configure CREDENTIAL_ENCRYPTION_KEY para liberar o armazenamento seguro das credenciais.")
+            else:
+                st.success(
+                    f"Credencial atual: {execution_context.get('api_key_ref') or 'não cadastrada'} | "
+                    f"Token ref: {execution_context.get('token_ref') or 'não cadastrado'}"
+                )
+                with st.form(f"workspace_credentials_form_{selected_account_id}"):
+                    credential_alias = st.text_input(
+                        "Alias da Credencial",
+                        value=str(selected_account.get("account_alias") or selected_account_id),
+                        key=f"workspace_cred_alias_{selected_account_id}",
+                    )
+                    api_key = st.text_input("API Key", type="password", key=f"workspace_api_key_{selected_account_id}")
+                    api_secret = st.text_input("API Secret", type="password", key=f"workspace_api_secret_{selected_account_id}")
+                    credential_notes = st.text_area("Notas da Credencial", key=f"workspace_cred_notes_{selected_account_id}")
+
+                    if st.form_submit_button("Salvar Credenciais"):
+                        if not api_key or not api_secret:
+                            st.error("Informe API Key e API Secret para atualizar as credenciais.")
+                        else:
+                            vault.store_exchange_credentials(
+                                db,
+                                user_id=user_id,
+                                account_id=selected_account_id,
+                                exchange=selected_exchange,
+                                api_key=api_key,
+                                api_secret=api_secret,
+                                credential_alias=credential_alias,
+                                permissions_read=True,
+                                permissions_trade=True,
+                                permissions_withdraw=False,
+                                permission_status=selected_account.get("permission_status", "unknown"),
+                                token_status=selected_account.get("token_status", "unknown"),
+                                reconciliation_status=selected_account.get("reconciliation_status", "unknown"),
+                                notes=credential_notes,
+                            )
+                            st.success("Credenciais atualizadas com criptografia.")
+                            st.rerun()
+
+        with detail_tab4:
+            events = db.get_user_execution_events(user_id=user_id, account_id=selected_account_id, limit=20)
+            positions = db.get_user_live_positions(user_id=user_id, account_id=selected_account_id)
+            orders = db.get_user_live_orders(user_id=user_id, account_id=selected_account_id)
+
+            if positions:
+                st.caption("Posições Live")
+                st.dataframe(pd.DataFrame(positions), width="stretch", hide_index=True)
+            else:
+                st.info("Nenhuma posição live registrada para esta conta.")
+
+            if orders:
+                st.caption("Ordens Live")
+                st.dataframe(pd.DataFrame(orders), width="stretch", hide_index=True)
+            else:
+                st.info("Nenhuma ordem live pendente para esta conta.")
+
+            if events:
+                events_df = pd.DataFrame(events)
+                st.caption("Eventos Operacionais Recentes")
+                st.dataframe(events_df, width="stretch", hide_index=True)
+            else:
+                st.info("Nenhum evento operacional recente para esta conta.")
+    else:
+        st.info("Nenhuma conta cadastrada para este usuário. Use o admin panel ou a abertura inicial de conta para começar.")
+
+    st.markdown("---")
+    st.subheader("🔒 Segurança da Sessão")
+    with st.form(f"workspace_password_change_{user_id}"):
+        pwd_col1, pwd_col2, pwd_col3 = st.columns(3)
+        with pwd_col1:
+            current_password = st.text_input("Senha Atual", type="password", key=f"workspace_current_password_{user_id}")
+        with pwd_col2:
+            new_password = st.text_input("Nova Senha", type="password", key=f"workspace_new_password_{user_id}")
+        with pwd_col3:
+            confirm_password = st.text_input("Confirmar Nova Senha", type="password", key=f"workspace_confirm_password_{user_id}")
+
+        if st.form_submit_button("Atualizar Senha"):
+            if new_password != confirm_password:
+                st.error("A confirmação da nova senha não confere.")
+            else:
+                changed = db.change_dashboard_user_password(
+                    user_id=user_id,
+                    current_password=current_password,
+                    new_password=new_password,
+                )
+                if changed:
+                    refreshed_auth = dict(workspace_user)
+                    refreshed_auth["require_password_change"] = False
+                    st.session_state.dashboard_user_auth = refreshed_auth
+                    st.success("Senha atualizada com sucesso.")
+                else:
+                    st.error("Não foi possível atualizar a senha. Verifique a senha atual.")
+
 # Configure page
 
 def main():
@@ -513,7 +1417,7 @@ def main():
 
     # Initialize session state com cache inteligente
     if 'trading_bot' not in st.session_state:
-        st.session_state.trading_bot = TradingBot(allow_simulated_data=False)
+        st.session_state.trading_bot = TradingBot()
 
     # Cache inteligente para evitar reloads desnecessários
     if 'data_cache' not in st.session_state:
@@ -525,6 +1429,7 @@ def main():
     # Update exchange if changed
     if 'current_exchange' not in st.session_state or st.session_state.current_exchange != selected_exchange:
         try:
+            st.session_state.trading_bot.exchange_name = selected_exchange
             st.session_state.trading_bot.exchange = ExchangeConfig.get_exchange_instance(selected_exchange, testnet=False)
             st.session_state.current_exchange = selected_exchange
             # Clear cached data when exchange changes
@@ -570,6 +1475,59 @@ def main():
 
     if 'backtest_optimization_results' not in st.session_state:
         st.session_state.backtest_optimization_results = None
+
+    if 'dashboard_user_auth' not in st.session_state:
+        st.session_state.dashboard_user_auth = None
+    if 'dashboard_user_login' not in st.session_state:
+        st.session_state.dashboard_user_login = ""
+    if 'dashboard_user_password' not in st.session_state:
+        st.session_state.dashboard_user_password = ""
+    if 'dashboard_user_auth_error' not in st.session_state:
+        st.session_state.dashboard_user_auth_error = ""
+
+    st.sidebar.markdown("---")
+    st.sidebar.subheader("👤 Workspace Multiusuário")
+    dashboard_user = get_authenticated_dashboard_user()
+    if dashboard_user:
+        dashboard_user_label = (
+            dashboard_user.get("first_name")
+            or dashboard_user.get("username")
+            or dashboard_user.get("login_name")
+            or str(dashboard_user.get("user_id"))
+        )
+        expires_at_label = str(dashboard_user.get("expires_at") or "")
+        st.sidebar.success(f"Sessão ativa: {dashboard_user_label}")
+        if expires_at_label:
+            st.sidebar.caption(f"Sessão válida até: {expires_at_label}")
+        if dashboard_user.get("require_password_change"):
+            st.sidebar.warning("Troque sua senha no workspace antes de operar regularmente.")
+        if st.sidebar.button("Sair do Workspace", key="dashboard_user_logout"):
+            clear_dashboard_user_session()
+            st.rerun()
+    else:
+        with st.sidebar.form("dashboard_user_login_form"):
+            st.text_input("Login do Workspace", key="dashboard_user_login")
+            st.text_input("Senha do Workspace", type="password", key="dashboard_user_password")
+            if st.form_submit_button("Entrar no Workspace"):
+                authenticated_user = db.authenticate_dashboard_user(
+                    login_name=st.session_state.get("dashboard_user_login"),
+                    password=st.session_state.get("dashboard_user_password"),
+                )
+                if authenticated_user:
+                    authenticated_user["expires_at"] = (
+                        now_brazil() + timedelta(hours=ProductionConfig.DASHBOARD_USER_SESSION_TIMEOUT_HOURS)
+                    ).isoformat()
+                    st.session_state.dashboard_user_auth = authenticated_user
+                    st.session_state.dashboard_user_password = ""
+                    st.session_state.dashboard_user_auth_error = ""
+                    st.rerun()
+                else:
+                    st.session_state.dashboard_user_auth_error = "❌ Login ou senha inválidos."
+        if st.session_state.get("dashboard_user_auth_error"):
+            st.sidebar.error(st.session_state.dashboard_user_auth_error)
+        st.sidebar.caption(
+            "Acesso isolado por usuário. Cada conta enxerga apenas risco, credenciais e eventos próprios."
+        )
 
     # Continue with sidebar configuration
 
@@ -687,10 +1645,10 @@ def main():
     )
 
     # RSI Parameters - Otimizado para máxima acurácia
-    st.sidebar.subheader("📊 Parâmetros RSI (Otimizados)")
+    st.sidebar.subheader("📊 Gatilhos RSI do Motor EMA/RSI")
     rsi_period = st.sidebar.slider("Período RSI", 5, 50, AppConfig.DEFAULT_RSI_PERIOD, help="14 períodos é o padrão mais testado")
-    rsi_min = st.sidebar.slider("RSI Mínimo (Compra)", 10, 40, AppConfig.DEFAULT_RSI_MIN, help="Faixa base da estratégia ativa")
-    rsi_max = st.sidebar.slider("RSI Máximo (Venda)", 60, 90, AppConfig.DEFAULT_RSI_MAX, help="Faixa base da estratégia ativa")
+    rsi_min = st.sidebar.slider("RSI Gatilho Compra", 45, 60, AppConfig.DEFAULT_RSI_MIN, help="RSI precisa cruzar acima deste nivel para compra")
+    rsi_max = st.sidebar.slider("RSI Gatilho Venda", 40, 55, AppConfig.DEFAULT_RSI_MAX, help="RSI precisa cruzar abaixo deste nivel para venda")
 
     # Configurações Avançadas para Day Trading
     with st.sidebar.expander("📈 Day Trading Otimizado", expanded=True):
@@ -749,9 +1707,9 @@ def main():
             # Day Trading mode já configurou tudo
             st.markdown("**✅ Day Trading: Configurações Otimizadas Ativas**")
 
-        require_volume = st.checkbox("Exigir Volume Alto", value=True, help="Volume 80%+ acima da média")
-        require_trend = st.checkbox("Exigir Tendência Clara", value=True, help="ADX > 28")
-        avoid_ranging = st.checkbox("Evitar Mercados Laterais", value=True, help="Filtro anti-ranging")
+        require_volume = st.checkbox("Exigir Volume Alto", value=False, help="Volume 80%+ acima da média")
+        require_trend = st.checkbox("Exigir Tendência Clara", value=False, help="ADX > 28")
+        avoid_ranging = st.checkbox("Evitar Mercados Laterais", value=False, help="Filtro anti-ranging")
 
         # Filtros adicionais - ajustados para day trading
         if day_trading_mode:
@@ -811,7 +1769,7 @@ def main():
 
         if config_status['configured'] or has_secrets:
             if has_secrets:
-                st.sidebar.success("✅ Telegram configurado via Replit Secrets!")
+                st.sidebar.success("✅ Telegram configurado via variaveis de ambiente!")
             else:
                 st.sidebar.success("✅ Telegram configurado!")
 
@@ -847,7 +1805,7 @@ def main():
 
         else:
             # Interface de configuração
-            st.sidebar.info("🔧 Configure seu bot do Telegram:")
+            st.sidebar.info("🔧 Configure seu bot do Telegram para esta sessao:")
 
             with st.sidebar.form("telegram_config"):
                 st.markdown("""
@@ -869,7 +1827,9 @@ def main():
                     placeholder="123456789"
                 )
 
-                submitted = st.form_submit_button("💾 Salvar Configuração")
+                st.caption("Esses dados valem apenas nesta sessao do dashboard. Para persistir, use TELEGRAM_BOT_TOKEN e TELEGRAM_CHAT_ID no ambiente.")
+
+                submitted = st.form_submit_button("Aplicar nesta sessao")
 
                 if submitted:
                     if bot_token and chat_id:
@@ -959,11 +1919,38 @@ def main():
         else:
             st.session_state.futures_trading = None
 
-    # Create tabs for different sections
-    tab1, tab2, tab3, tab4, tab5 = st.tabs(["📡 WebSocket Binance", "🚀 Análise Mercado Futuro", "🔬 Backtesting", "⚙️ Exportar Dados", "👑 Admin Panel"])
+    dashboard_sections = [
+        ("workspace", "👤 Meu Workspace"),
+        ("websocket", "📡 WebSocket Binance"),
+        ("futures", "🚀 Análise Mercado Futuro"),
+        ("backtest", "🔬 Backtesting"),
+        ("export", "⚙️ Exportar Dados"),
+        ("admin", "👑 Admin Panel"),
+    ]
+    dashboard_section_labels = [label for _, label in dashboard_sections]
+    dashboard_section_by_label = {label: section_id for section_id, label in dashboard_sections}
+    default_dashboard_section = str(st.session_state.get("default_tab") or "backtest").strip().lower()
+    default_dashboard_index = next(
+        (index for index, (section_id, _) in enumerate(dashboard_sections) if section_id == default_dashboard_section),
+        3,
+    )
+
+    selected_dashboard_label = st.radio(
+        "Seção da Dashboard",
+        dashboard_section_labels,
+        index=default_dashboard_index,
+        horizontal=True,
+        key="dashboard_main_section",
+        label_visibility="collapsed",
+    )
+    active_dashboard_section = dashboard_section_by_label[selected_dashboard_label]
+    st.session_state.default_tab = active_dashboard_section
+
+    if active_dashboard_section == "workspace":
+        render_multiuser_workspace_tab()
 
     # Nova aba para WebSocket Binance Futures
-    with tab1:
+    if active_dashboard_section == "websocket":
         st.subheader("📡 Binance Futures WebSocket - Dados em Tempo Real")
         st.markdown("**Análise otimizada com streaming de dados em tempo real da Binance**")
         
@@ -974,48 +1961,54 @@ def main():
             st.success(f"📊 **Auto-Conectado:** {symbol} | **Timeframe:** {timeframe}")
             st.info("🚀 *WebSocket conecta automaticamente com as configurações da sidebar*")
             
-            # Configurações WebSocket usando valores centralizados
-            ws_symbol = symbol.replace('/', '')  # BTC/USDT -> BTCUSDT
+            # Configurações WebSocket usando o stream compartilhado do TradingBot
+            ws_display_symbol = symbol.replace('/', '')  # BTC/USDT -> BTCUSDT
             ws_timeframe = timeframe
-            
-            # Auto-inicializar WebSocket
-            if 'ws_bot' not in st.session_state:
-                st.session_state.ws_bot = None
-                st.session_state.ws_data = None
-                st.session_state.ws_signals = []
+            ws_key = f"{symbol}_{ws_timeframe}"
+            stream_client = None
+            stream_status = None
+
+            if 'ws_auto_connected' not in st.session_state:
                 st.session_state.ws_auto_connected = False
-                
-            # Auto-conectar se ainda não foi conectado ou se o símbolo mudou
-            ws_key = f"{ws_symbol}_{ws_timeframe}"
-            if not st.session_state.get('ws_auto_connected') or st.session_state.get('ws_current_key') != ws_key:
-                if WEBSOCKET_AVAILABLE:
-                    try:
-                        st.session_state.ws_bot = StreamlinedTradingBot(ws_symbol, ws_timeframe)
-                        st.session_state.ws_auto_connected = True
-                        st.session_state.ws_current_key = ws_key
-                        st.success(f"✅ WebSocket auto-conectado para {ws_symbol}")
-                    except Exception as e:
-                        st.error(f"❌ Erro na auto-conexão: {e}")
-                        st.session_state.ws_auto_connected = False
+            if 'ws_current_key' not in st.session_state:
+                st.session_state.ws_current_key = None
+
+            try:
+                stream_client = st.session_state.trading_bot._get_realtime_stream_client(
+                    symbol=symbol,
+                    timeframe=ws_timeframe,
+                )
+                stream_status = stream_client.get_current_status()
+                st.session_state.ws_auto_connected = True
+                if st.session_state.get('ws_current_key') != ws_key:
+                    st.session_state.ws_current_key = ws_key
+                    st.success(f"✅ Stream compartilhado pronto para {ws_display_symbol}")
+            except Exception as e:
+                st.session_state.ws_auto_connected = False
+                stream_client = None
+                stream_status = None
+                st.error(f"❌ Erro ao inicializar stream compartilhado: {e}")
             
             # Status e controles do WebSocket
             col1, col2, col3 = st.columns(3)
             
             with col1:
-                if st.session_state.get('ws_auto_connected'):
+                if stream_status and stream_status.get("connected"):
                     st.success("🟢 **Conectado**")
                     if enable_multi_symbol:
                         st.info(f"📊 Modo: {len(selected_symbols)} pares")
                     else:
                         st.info(f"📈 Foco: {symbol}")
+                elif stream_client:
+                    st.warning("🟡 **Conectando**")
                 else:
                     st.error("🔴 **Desconectado**")
                         
             with col2:
                 if st.button("📊 Status Detalhado"):
-                    if st.session_state.ws_bot:
+                    if stream_client:
                         try:
-                            status = st.session_state.ws_bot.get_current_status()
+                            status = stream_client.get_current_status()
                             st.json(status)
                         except:
                             st.info("📊 Bot ativo - Status em tempo real")
@@ -1025,16 +2018,24 @@ def main():
             with col3:
                 if st.button("🔄 Reconectar"):
                     try:
-                        if st.session_state.ws_bot:
-                            st.session_state.ws_bot.stop()
-                        st.session_state.ws_bot = StreamlinedTradingBot(ws_symbol, ws_timeframe)
+                        st.session_state.trading_bot.reset_stream_client(
+                            symbol=symbol,
+                            timeframe=ws_timeframe,
+                        )
+                        stream_client = st.session_state.trading_bot._get_realtime_stream_client(
+                            symbol=symbol,
+                            timeframe=ws_timeframe,
+                        )
+                        stream_status = stream_client.get_current_status()
                         st.session_state.ws_auto_connected = True
+                        st.session_state.ws_current_key = ws_key
                         st.success("✅ WebSocket reconectado")
                     except Exception as e:
+                        st.session_state.ws_auto_connected = False
                         st.error(f"❌ Erro na reconexão: {e}")
             
             # Área de dados em tempo real 
-            if st.session_state.get('ws_auto_connected') and st.session_state.ws_bot:
+            if stream_client:
                 st.markdown("---")
                 st.subheader("📈 Dados em Tempo Real - Streaming WebSocket")
                 
@@ -1042,16 +2043,20 @@ def main():
                 st.success("🔗 **WebSocket ativo** - Dados atualizados automaticamente")
                 
                 # Informações de conexão
-                import time
-                connection_time = int(time.time()) % 60
-                st.info(f"📡 Streaming para {ws_symbol} no timeframe {ws_timeframe}")
+                st.info(f"📡 Streaming para {ws_display_symbol} no timeframe {ws_timeframe}")
                 
                 # Métricas em tempo real
                 col1, col2, col3, col4 = st.columns(4)
+                market_data = st.session_state.get("current_data")
+                latest_market_row = None
+                if isinstance(market_data, pd.DataFrame) and not market_data.empty:
+                    latest_market_row = market_data.iloc[-1]
                 
                 with col1:
                     try:
-                        price = getattr(st.session_state.ws_bot, 'last_price', 0)
+                        price = float((stream_status or {}).get("last_price") or 0)
+                        if price <= 0 and latest_market_row is not None:
+                            price = float(latest_market_row.get("close", 0) or 0)
                         if price > 0:
                             st.metric(
                                 label="💰 Preço",
@@ -1072,26 +2077,36 @@ def main():
                         )
                         
                 with col2:
+                    rsi_value = None
+                    if latest_market_row is not None:
+                        rsi_value = latest_market_row.get("rsi")
                     st.metric(
                         label="📊 RSI",
-                        value="Stream ativo",
-                        delta="Tempo real"
+                        value=f"{float(rsi_value):.2f}" if pd.notna(rsi_value) else "Aguardando",
+                        delta="Indicadores"
                     )
                     
                 with col3:
+                    macd_value = None
+                    if latest_market_row is not None:
+                        macd_value = latest_market_row.get("macd")
                     st.metric(
                         label="📈 MACD",
-                        value="Stream ativo", 
-                        delta="Tempo real"
+                        value=f"{float(macd_value):.4f}" if pd.notna(macd_value) else "Aguardando",
+                        delta="Indicadores"
                     )
                     
                 with col4:
                     try:
-                        signal = getattr(st.session_state.ws_bot, 'current_signal', 'STREAM')
+                        signal = "AGUARDANDO"
+                        if latest_market_row is not None:
+                            signal = latest_market_row.get("signal") or signal
+                        elif stream_status and stream_status.get("connected"):
+                            signal = "STREAMING"
                         st.metric(
                             label="🎯 Sinal",
                             value=signal,
-                            delta="Live"
+                            delta="Compartilhado"
                         )
                     except:
                         st.metric(
@@ -1100,7 +2115,7 @@ def main():
                             delta="WebSocket"
                         )
                 
-                st.success("✅ **WebSocket conectado automaticamente** - Análises em tempo real")
+                st.success("✅ **Stream compartilhado ativo** - UI e analise usam a mesma conexao")
                     
             # Informações sobre dados públicos
             with st.expander("ℹ️ Sobre WebSocket Público Binance Futures", expanded=False):
@@ -1150,9 +2165,13 @@ def main():
     if 'default_tab' not in st.session_state:
         st.session_state.default_tab = 'backtest'
 
-    with tab2:
+    if active_dashboard_section == "futures":
         st.subheader("🚀 Trading de Mercado Futuro")
         st.markdown("**Trade com alavancagem, posições long/short e gerenciamento avançado de risco**")
+        st.info(
+            "Escopo desta aba: análise operacional em tempo real (preço, contexto, sinais e risco). "
+            "Não usa curva histórica de backtest para decisão."
+        )
 
         # Warning banner
         st.warning("⚠️ **ATENÇÃO:** Mercado futuro envolve alto risco. Nunca arrisque mais do que pode perder!")
@@ -1266,6 +2285,7 @@ def main():
                                         context_timeframe=symbol_strategy_settings.get("context_timeframe"),
                                         stop_loss_pct=symbol_strategy_settings.get("stop_loss_pct"),
                                         take_profit_pct=symbol_strategy_settings.get("take_profit_pct"),
+                                        allowed_execution_setups=symbol_strategy_settings.get("allowed_execution_setups"),
                                     )
                                     analytical_signal = signal_pipeline["analytical_signal"]
                                     data_last_update = current_time
@@ -1445,10 +2465,6 @@ def main():
                             return 'background-color: #90EE90'
                         elif val == 'VENDA':
                             return 'background-color: #FFB6C1'
-                        elif val == 'COMPRA_FRACA':
-                            return 'background-color: #FFFF99'
-                        elif val == 'VENDA_FRACA':
-                            return 'background-color: #FFD4A3'
                     elif isinstance(val, (int, float)):
                         if val >= 70:
                             return 'background-color: #90EE90'
@@ -1654,6 +2670,7 @@ def main():
             context_timeframe=live_strategy_settings.get("context_timeframe"),
             stop_loss_pct=live_strategy_settings.get("stop_loss_pct"),
             take_profit_pct=live_strategy_settings.get("take_profit_pct"),
+            allowed_execution_setups=live_strategy_settings.get("allowed_execution_setups"),
         )
         candidate_signal = signal_pipeline["candidate_signal"]
         analytical_signal = signal_pipeline["analytical_signal"]
@@ -1825,6 +2842,12 @@ def main():
 
             try:
                 if risk_plan and risk_plan.get("allowed"):
+                    fallback_signal_score = last_candle.get("signal_confidence")
+                    if fallback_signal_score is None or pd.isna(fallback_signal_score):
+                        fallback_signal_score = st.session_state.trading_bot.get_signal_with_confidence(data).get(
+                            "confidence",
+                            0.0,
+                        )
                     get_paper_trade_service().register_signal(
                         symbol=symbol,
                         timeframe=timeframe,
@@ -1839,7 +2862,7 @@ def main():
                         risk_plan=risk_plan,
                         setup_name=(entry_quality_evaluation or {}).get("setup_type") or runtime_strategy_version,
                         regime=(regime_evaluation or {}).get("regime") or last_candle.get("market_regime"),
-                        signal_score=(entry_quality_evaluation or {}).get("entry_score", last_candle.get("signal_confidence", 0.0)),
+                        signal_score=(entry_quality_evaluation or {}).get("entry_score", fallback_signal_score),
                         atr=last_candle.get("atr", 0.0),
                         entry_reason=entry_reason,
                         entry_quality=(entry_quality_evaluation or {}).get("entry_quality"),
@@ -1881,8 +2904,7 @@ def main():
 
         with col3:
             signal_emoji = {
-                "COMPRA": "🟢", "VENDA": "🔴", "NEUTRO": "⚪",
-                "COMPRA_FRACA": "🟡", "VENDA_FRACA": "🟠"
+                "COMPRA": "🟢", "VENDA": "🔴", "NEUTRO": "⚪"
             }
             st.metric(
                 label="🚨 Sinal Operacional",
@@ -1934,182 +2956,8 @@ def main():
                 delta=delta_text
             )
 
-        # Price, RSI and MACD Charts
-        st.subheader("📈 Gráficos")
-
-        # Create subplots with 3 rows now
-        fig = make_subplots(
-            rows=3, cols=1,
-            shared_xaxes=True,
-            vertical_spacing=0.08,
-            subplot_titles=('Preço', 'RSI', 'MACD'),
-            row_heights=[0.5, 0.25, 0.25]
-        )
-
-        # Candlestick chart
-        fig.add_trace(
-            go.Candlestick(
-                x=data.index,
-                open=data['open'],
-                high=data['high'],
-                low=data['low'],
-                close=data['close'],
-                name="Preço"
-            ),
-            row=1, col=1
-        )
-
-        # RSI chart
-        fig.add_trace(
-            go.Scatter(
-                x=data.index,
-                y=data['rsi'],
-                mode='lines',
-                name='RSI',
-                line=dict(color='purple', width=2)
-            ),
-            row=2, col=1
-        )
-
-        # RSI threshold lines
-        fig.add_shape(
-            type="line", xref="x2", yref="y2",
-            x0=0, x1=1, y0=rsi_max, y1=rsi_max,
-            line=dict(color="red", width=2, dash="dash")
-        )
-        fig.add_shape(
-            type="line", xref="x2", yref="y2", 
-            x0=0, x1=1, y0=rsi_min, y1=rsi_min,
-            line=dict(color="green", width=2, dash="dash")
-        )
-        fig.add_shape(
-            type="line", xref="x2", yref="y2",
-            x0=0, x1=1, y0=50, y1=50,
-            line=dict(color="gray", width=1, dash="dot")
-        )
-
-        # Add analytical signal markers from the unified signal pipeline history
-        chart_signals = pd.DataFrame(st.session_state.signals_history) if st.session_state.signals_history else pd.DataFrame()
-        if not chart_signals.empty:
-            chart_signals = chart_signals.copy()
-            chart_signals['timestamp'] = pd.to_datetime(chart_signals['timestamp'], errors='coerce')
-            chart_signals = chart_signals.dropna(subset=['timestamp'])
-            if 'timeframe' not in chart_signals.columns:
-                chart_signals['timeframe'] = timeframe
-            for signal_column in ['candidate_signal', 'approved_signal', 'blocked_signal', 'block_reason']:
-                if signal_column not in chart_signals.columns:
-                    chart_signals[signal_column] = None
-            chart_signals = chart_signals[
-                (chart_signals['symbol'] == symbol)
-                & (chart_signals['timeframe'] == timeframe)
-            ]
-
-            def _add_signal_trace(signal_df, expected_signal, marker_symbol, marker_color, marker_size, name, blocked=False):
-                filtered = signal_df[signal_df['signal_value'] == expected_signal]
-                if filtered.empty:
-                    return
-                hover_text = (
-                    filtered.get('block_reason', pd.Series([''] * len(filtered))).fillna('-')
-                    if blocked else
-                    filtered.get('candidate_signal', pd.Series([''] * len(filtered))).fillna('-')
-                )
-                fig.add_trace(
-                    go.Scatter(
-                        x=filtered['timestamp'],
-                        y=filtered['price'],
-                        mode='markers',
-                        marker=dict(symbol=marker_symbol, size=marker_size, color=marker_color),
-                        name=name,
-                        text=hover_text,
-                        hovertemplate="%{x}<br>Preco %{y:.6f}<br>%{text}<extra></extra>",
-                        showlegend=True,
-                    ),
-                    row=1, col=1
-                )
-
-            candidate_markers = chart_signals[
-                chart_signals['candidate_signal'].isin(list(ACTIONABLE_SIGNALS))
-            ].copy()
-            if not candidate_markers.empty:
-                candidate_markers['signal_value'] = candidate_markers['candidate_signal']
-                _add_signal_trace(candidate_markers, 'COMPRA', 'triangle-up-open', 'rgba(0, 160, 0, 0.7)', 15, 'Candidato Compra')
-                _add_signal_trace(candidate_markers, 'COMPRA_FRACA', 'triangle-up-open', 'rgba(80, 180, 80, 0.6)', 12, 'Candidato Compra Fraca')
-                _add_signal_trace(candidate_markers, 'VENDA', 'triangle-down-open', 'rgba(190, 0, 0, 0.7)', 15, 'Candidato Venda')
-                _add_signal_trace(candidate_markers, 'VENDA_FRACA', 'triangle-down-open', 'rgba(210, 120, 120, 0.6)', 12, 'Candidato Venda Fraca')
-
-            approved_markers = chart_signals[
-                chart_signals['approved_signal'].isin(list(ACTIONABLE_SIGNALS))
-            ].copy()
-            if not approved_markers.empty:
-                approved_markers['signal_value'] = approved_markers['approved_signal']
-                _add_signal_trace(approved_markers, 'COMPRA', 'triangle-up', 'green', 18, 'Aprovado Compra')
-                _add_signal_trace(approved_markers, 'COMPRA_FRACA', 'triangle-up', 'lightgreen', 13, 'Aprovado Compra Fraca')
-                _add_signal_trace(approved_markers, 'VENDA', 'triangle-down', 'red', 18, 'Aprovado Venda')
-                _add_signal_trace(approved_markers, 'VENDA_FRACA', 'triangle-down', 'lightcoral', 13, 'Aprovado Venda Fraca')
-
-            blocked_markers = chart_signals[
-                chart_signals['blocked_signal'].isin(list(ACTIONABLE_SIGNALS))
-            ].copy()
-            if not blocked_markers.empty:
-                blocked_markers['signal_value'] = blocked_markers['blocked_signal']
-                _add_signal_trace(blocked_markers, 'COMPRA', 'x', 'orange', 13, 'Bloqueado Compra', blocked=True)
-                _add_signal_trace(blocked_markers, 'COMPRA_FRACA', 'x', 'goldenrod', 11, 'Bloqueado Compra Fraca', blocked=True)
-                _add_signal_trace(blocked_markers, 'VENDA', 'x', 'orange', 13, 'Bloqueado Venda', blocked=True)
-                _add_signal_trace(blocked_markers, 'VENDA_FRACA', 'x', 'goldenrod', 11, 'Bloqueado Venda Fraca', blocked=True)
-
-        # MACD chart
-        fig.add_trace(
-            go.Scatter(
-                x=data.index,
-                y=data['macd'],
-                mode='lines',
-                name='MACD',
-                line=dict(color='blue', width=2)
-            ),
-            row=3, col=1
-        )
-
-        fig.add_trace(
-            go.Scatter(
-                x=data.index,
-                y=data['macd_signal'],
-                mode='lines',
-                name='Signal',
-                line=dict(color='orange', width=2)
-            ),
-            row=3, col=1
-        )
-
-        fig.add_trace(
-            go.Bar(
-                x=data.index,
-                y=data['macd_histogram'],
-                name='Histogram',
-                marker_color=['green' if x >= 0 else 'red' for x in data['macd_histogram']]
-            ),
-            row=3, col=1
-        )
-
-        # Add MACD zero line
-        fig.add_shape(
-            type="line", xref="x3", yref="y3",
-            x0=0, x1=1, y0=0, y1=0,
-            line=dict(color="gray", width=1, dash="dot")
-        )
-
-        # Update layout
-        fig.update_layout(
-            title=f'{symbol} - {timeframe}',
-            height=800,
-            xaxis_rangeslider_visible=False,
-            showlegend=True
-        )
-
-        fig.update_yaxes(title_text="Preço ($)", row=1, col=1)
-        fig.update_yaxes(title_text="RSI", range=[0, 100], row=2, col=1)
-        fig.update_yaxes(title_text="MACD", row=3, col=1)
-
-        st.plotly_chart(fig, width="stretch")
+        st.subheader("📈 Gráfico de Mercado")
+        render_live_market_chart(symbol=symbol, timeframe=timeframe, fallback_data=data)
 
         # Current Analysis
         st.subheader("🔍 Análise Atual")
@@ -2266,26 +3114,14 @@ def main():
             if approved_signal == "COMPRA":
                 st.success(f"""
                 🟢 **SINAL ANALITICO APROVADO - COMPRA FORTE**  
-                RSI abaixo de {rsi_min} e MACD bullish convergem para alta.  
+                RSI cruzou acima de {rsi_min} com tendencia alinhada nas EMAs.  
                 Considere entrada em posição de compra.
                 """)
             elif approved_signal == "VENDA":
                 st.error(f"""
                 🔴 **SINAL ANALITICO APROVADO - VENDA FORTE**  
-                RSI acima de {rsi_max} e MACD bearish convergem para baixa.  
+                RSI cruzou abaixo de {rsi_max} com tendencia alinhada nas EMAs.  
                 Considere saída da posição ou entrada em venda.
-                """)
-            elif approved_signal == "COMPRA_FRACA":
-                st.info(f"""
-                🟡 **SINAL ANALITICO APROVADO - COMPRA FRACA**  
-                Apenas um indicador favorável à compra.  
-                Aguarde confirmação ou entrada parcial.
-                """)
-            elif approved_signal == "VENDA_FRACA":
-                st.info(f"""
-                🟠 **SINAL ANALITICO APROVADO - VENDA FRACA**  
-                Apenas um indicador favorável à venda.  
-                Aguarde confirmação ou saída parcial.
                 """)
             elif blocked_signal in ACTIONABLE_SIGNALS:
                 st.warning(f"""
@@ -2455,7 +3291,7 @@ def main():
                         require_trend=require_trend,
                     )["strategy_version"]
                     paper_summary = get_paper_trade_service().get_summary(symbol=symbol, timeframe=timeframe)
-                    edge_summary = db.get_edge_monitor_summary(
+                    edge_summary = get_cached_edge_monitor_summary(
                         symbol=symbol,
                         timeframe=timeframe,
                         strategy_version=runtime_strategy_version,
@@ -2630,8 +3466,12 @@ def main():
                     st.info("📭 Clique para gerar um cenário teórico com base na configuração atual")
 
     # Backtesting Tab - Otimizado para foco em testes
-    with tab2:
+    if active_dashboard_section == "backtest":
         st.header("🔬 Centro de Backtesting Avançado")
+        st.info(
+            "Escopo desta aba: simulação histórica e validação de estratégia (retorno, drawdown, execução e auditoria). "
+            "Não representa sinal operacional ao vivo."
+        )
         max_backtest_days = 730
 
         # Quick test presets
@@ -2639,31 +3479,247 @@ def main():
         col1, col2, col3, col4 = st.columns(4)
 
         with col1:
-            if st.button("🚀 Teste Agressivo", help="RSI 15-85, 7 dias", width="stretch"):
-                st.session_state.bt_rsi_min = 15
-                st.session_state.bt_rsi_max = 85
+            if st.button("🚀 Teste Agressivo", help="RSI 54/46, 7 dias", width="stretch"):
+                st.session_state.bt_setup_preset = "Leitura Ativa (15m)"
+                st.session_state.bt_last_setup_preset = "Leitura Ativa (15m)"
+                st.session_state.bt_timeframe = "15m"
+                st.session_state.bt_context_mode = "same_timeframe"
+                st.session_state.bt_market_family = "all_states"
+                st.session_state.bt_last_market_family = "all_states"
+                st.session_state.bt_risk_profile = "aggressive"
+                st.session_state.bt_last_risk_profile = "aggressive"
+                st.session_state.bt_rsi_min = 54
+                st.session_state.bt_rsi_max = 46
+                st.session_state.bt_enable_volume_filter = False
+                st.session_state.bt_enable_trend_filter = True
+                st.session_state.bt_enable_avoid_ranging = True
+                st.session_state.bt_stop_loss_pct = 0.7
+                st.session_state.bt_take_profit_pct = 2.2
                 st.session_state.bt_start_date = date.today() - timedelta(days=7)
 
         with col2:
-            if st.button("⚖️ Teste Balanceado", help="RSI 25-75, 14 dias", width="stretch"):
-                st.session_state.bt_rsi_min = 25
-                st.session_state.bt_rsi_max = 75
-                st.session_state.bt_start_date = date.today() - timedelta(days=14)
-
-        with col3:
-            if st.button("🛡️ Teste Conservador", help="RSI 30-70, 30 dias", width="stretch"):
+            if st.button("✅ Preset Validado", help="Aplica o setup EMA/RSI validado em múltiplos horizontes", width="stretch"):
+                st.session_state.bt_setup_preset = AppConfig.DEFAULT_BACKTEST_PRESET
+                st.session_state.bt_rsi_period = AppConfig.DEFAULT_RSI_PERIOD
                 st.session_state.bt_rsi_min = AppConfig.DEFAULT_RSI_MIN
                 st.session_state.bt_rsi_max = AppConfig.DEFAULT_RSI_MAX
+                st.session_state.bt_timeframe = AppConfig.PRIMARY_TIMEFRAME
+                st.session_state.bt_context_mode = AppConfig.PRIMARY_CONTEXT_TIMEFRAME
+                st.session_state.bt_market_family = "all_states"
+                st.session_state.bt_last_market_family = "all_states"
+                st.session_state.bt_risk_profile = "balanced"
+                st.session_state.bt_last_risk_profile = "balanced"
+                st.session_state.bt_enable_volume_filter = False
+                st.session_state.bt_enable_trend_filter = False
+                st.session_state.bt_enable_avoid_ranging = False
+                st.session_state.bt_stop_loss_pct = 0.8
+                st.session_state.bt_take_profit_pct = 1.8
+                st.session_state.bt_start_date = date.today() - timedelta(days=AppConfig.DEFAULT_BACKTEST_WINDOW_DAYS)
+                st.session_state.bt_last_setup_preset = AppConfig.DEFAULT_BACKTEST_PRESET
+
+        with col3:
+            if st.button("🛡️ Teste Conservador", help="RSI 50/50, 30 dias", width="stretch"):
+                st.session_state.bt_setup_preset = "Leitura Conservadora (1h)"
+                st.session_state.bt_last_setup_preset = "Leitura Conservadora (1h)"
+                st.session_state.bt_timeframe = "1h"
+                st.session_state.bt_context_mode = "same_timeframe"
+                st.session_state.bt_market_family = "all_states"
+                st.session_state.bt_last_market_family = "all_states"
+                st.session_state.bt_risk_profile = "conservative"
+                st.session_state.bt_last_risk_profile = "conservative"
+                st.session_state.bt_rsi_period = 14
+                st.session_state.bt_rsi_min = 50
+                st.session_state.bt_rsi_max = 50
+                st.session_state.bt_enable_volume_filter = True
+                st.session_state.bt_enable_trend_filter = True
+                st.session_state.bt_enable_avoid_ranging = True
+                st.session_state.bt_stop_loss_pct = 1.5
+                st.session_state.bt_take_profit_pct = 3.0
                 st.session_state.bt_start_date = date.today() - timedelta(days=30)
 
         with col4:
             if st.button("🔄 Reset Padrão", help="Voltar configurações padrão", width="stretch"):
+                st.session_state.bt_setup_preset = AppConfig.DEFAULT_BACKTEST_PRESET
                 st.session_state.bt_rsi_period = AppConfig.DEFAULT_RSI_PERIOD
                 st.session_state.bt_rsi_min = AppConfig.DEFAULT_RSI_MIN
                 st.session_state.bt_rsi_max = AppConfig.DEFAULT_RSI_MAX
-                st.session_state.bt_start_date = date.today() - timedelta(days=30)
+                st.session_state.bt_timeframe = AppConfig.PRIMARY_TIMEFRAME
+                st.session_state.bt_context_mode = AppConfig.PRIMARY_CONTEXT_TIMEFRAME
+                st.session_state.bt_market_family = "all_states"
+                st.session_state.bt_last_market_family = "all_states"
+                st.session_state.bt_risk_profile = "balanced"
+                st.session_state.bt_last_risk_profile = "balanced"
+                st.session_state.bt_enable_volume_filter = False
+                st.session_state.bt_enable_trend_filter = False
+                st.session_state.bt_enable_avoid_ranging = False
+                st.session_state.bt_stop_loss_pct = 0.8
+                st.session_state.bt_take_profit_pct = 1.8
+                st.session_state.bt_start_date = date.today() - timedelta(days=AppConfig.DEFAULT_BACKTEST_WINDOW_DAYS)
+                st.session_state.bt_last_setup_preset = AppConfig.DEFAULT_BACKTEST_PRESET
 
         st.markdown("---")
+
+        setup_focus_labels = {
+            "ema_rsi_resume_long": "EMA/RSI Long",
+            "ema_rsi_resume_short": "EMA/RSI Short",
+        }
+        market_reading_family_configs = {
+            "all_states": {
+                "label": "Ambos os lados",
+                "description": "Opera compra e venda com o motor mecanico EMA/RSI.",
+                "allowed_setups": list(setup_focus_labels.keys()),
+            },
+            "long_only": {
+                "label": "Somente compra",
+                "description": "Limita o motor mecanico ao lado comprador.",
+                "allowed_setups": ["ema_rsi_resume_long"],
+            },
+            "short_only": {
+                "label": "Somente venda",
+                "description": "Limita o motor mecanico ao lado vendedor.",
+                "allowed_setups": ["ema_rsi_resume_short"],
+            },
+        }
+        risk_profile_configs = {
+            "manual": {
+                "label": "Manual",
+                "description": "Mantém SL/TP exatamente como você definir.",
+            },
+            "conservative": {
+                "label": "Conservador",
+                "description": "Menor frequência e alvo mais estável.",
+                "stop_loss_pct": 1.0,
+                "take_profit_pct": 2.0,
+            },
+            "balanced": {
+                "label": "Balanceado",
+                "description": "Relação risco/retorno padrão para operar continuamente.",
+                "stop_loss_pct": 0.8,
+                "take_profit_pct": 1.8,
+            },
+            "aggressive": {
+                "label": "Agressivo",
+                "description": "Stop mais curto e alvo mais longo para throughput maior.",
+                "stop_loss_pct": 0.7,
+                "take_profit_pct": 2.2,
+            },
+        }
+        setup_preset_configs = {
+            "Manual": None,
+            "Leitura Conservadora (1h)": {
+                "bt_timeframe": "1h",
+                "bt_context_mode": "same_timeframe",
+                "bt_market_family": "all_states",
+                "bt_setup_focus": list(setup_focus_labels.keys()),
+                "bt_risk_profile": "conservative",
+                "bt_rsi_period": 14,
+                "bt_rsi_min": 50,
+                "bt_rsi_max": 50,
+                "bt_enable_volume_filter": True,
+                "bt_enable_trend_filter": True,
+                "bt_enable_avoid_ranging": True,
+                "bt_stop_loss_pct": 1.5,
+                "bt_take_profit_pct": 3.0,
+                "bt_enable_oos_validation": True,
+                "bt_validation_split_pct": 30,
+                "bt_enable_walk_forward": True,
+                "bt_walk_forward_windows": 3,
+            },
+            AppConfig.DEFAULT_BACKTEST_PRESET: {
+                "bt_timeframe": "15m",
+                "bt_context_mode": AppConfig.PRIMARY_CONTEXT_TIMEFRAME,
+                "bt_market_family": "all_states",
+                "bt_setup_focus": list(setup_focus_labels.keys()),
+                "bt_risk_profile": "balanced",
+                "bt_rsi_period": 14,
+                "bt_rsi_min": 54,
+                "bt_rsi_max": 47,
+                "bt_enable_volume_filter": False,
+                "bt_enable_trend_filter": False,
+                "bt_enable_avoid_ranging": False,
+                "bt_stop_loss_pct": 0.8,
+                "bt_take_profit_pct": 1.8,
+                "bt_enable_oos_validation": True,
+                "bt_validation_split_pct": 30,
+                "bt_enable_walk_forward": True,
+                "bt_walk_forward_windows": 3,
+            },
+            "Leitura Ativa (15m)": {
+                "bt_timeframe": "15m",
+                "bt_context_mode": "same_timeframe",
+                "bt_market_family": "all_states",
+                "bt_setup_focus": list(setup_focus_labels.keys()),
+                "bt_risk_profile": "aggressive",
+                "bt_rsi_period": 14,
+                "bt_rsi_min": 54,
+                "bt_rsi_max": 46,
+                "bt_enable_volume_filter": False,
+                "bt_enable_trend_filter": True,
+                "bt_enable_avoid_ranging": True,
+                "bt_stop_loss_pct": 0.7,
+                "bt_take_profit_pct": 2.2,
+                "bt_enable_oos_validation": True,
+                "bt_validation_split_pct": 30,
+                "bt_enable_walk_forward": True,
+                "bt_walk_forward_windows": 3,
+            },
+        }
+        setup_preset_notes = {
+            "Manual": "Sem sobrescrever os campos atuais.",
+            "Leitura Conservadora (1h)": "Prioriza leitura limpa e menor ruído operacional.",
+            AppConfig.DEFAULT_BACKTEST_PRESET: (
+                "Preset oficial do motor EMA/RSI, validado em 30d, 90d, 180d e 1 ano, com filtro de ADX no short."
+            ),
+            "Leitura Ativa (15m)": "Busca mais fluxo operacional, aceitando mais ruído e variação.",
+        }
+
+        default_setup_preset = (
+            AppConfig.DEFAULT_BACKTEST_PRESET
+            if AppConfig.DEFAULT_BACKTEST_PRESET in setup_preset_configs
+            else list(setup_preset_configs.keys())[0]
+        )
+        default_preset_updates = dict(setup_preset_configs.get(default_setup_preset) or {})
+
+        def _apply_bt_preset(preset_name: str, start_days: int | None = None) -> None:
+            preset_updates = dict(setup_preset_configs.get(preset_name) or {})
+            for state_key, state_value in preset_updates.items():
+                st.session_state[state_key] = list(state_value) if isinstance(state_value, list) else state_value
+            if start_days is not None:
+                st.session_state.bt_start_date = date.today() - timedelta(days=start_days)
+            st.session_state.bt_setup_preset = preset_name
+            st.session_state.bt_last_setup_preset = preset_name
+            if "bt_market_family" in preset_updates:
+                st.session_state.bt_last_market_family = preset_updates["bt_market_family"]
+            if "bt_risk_profile" in preset_updates:
+                st.session_state.bt_last_risk_profile = preset_updates["bt_risk_profile"]
+
+        if "bt_setup_preset" not in st.session_state:
+            st.session_state.bt_setup_preset = default_setup_preset
+            for state_key, state_value in default_preset_updates.items():
+                st.session_state[state_key] = list(state_value) if isinstance(state_value, list) else state_value
+            st.session_state.bt_start_date = date.today() - timedelta(days=AppConfig.DEFAULT_BACKTEST_WINDOW_DAYS)
+        if "bt_last_setup_preset" not in st.session_state:
+            st.session_state.bt_last_setup_preset = st.session_state.bt_setup_preset
+        if "bt_market_family" not in st.session_state:
+            st.session_state.bt_market_family = default_preset_updates.get("bt_market_family", "all_states")
+        if "bt_last_market_family" not in st.session_state:
+            st.session_state.bt_last_market_family = st.session_state.bt_market_family
+        if "bt_risk_profile" not in st.session_state:
+            st.session_state.bt_risk_profile = default_preset_updates.get("bt_risk_profile", "manual")
+        if "bt_last_risk_profile" not in st.session_state:
+            st.session_state.bt_last_risk_profile = st.session_state.bt_risk_profile
+
+        selected_setup_preset = st.selectbox(
+            "Preset Operacional",
+            options=list(setup_preset_configs.keys()),
+            help="Aplica um conjunto coerente de leitura de mercado, filtros e política de risco.",
+            key="bt_setup_preset",
+        )
+        if st.session_state.bt_last_setup_preset != selected_setup_preset:
+            _apply_bt_preset(selected_setup_preset)
+        st.caption(setup_preset_notes.get(selected_setup_preset, ""))
+        if selected_setup_preset == AppConfig.DEFAULT_BACKTEST_PRESET:
+            st.success(AppConfig.VALIDATED_BACKTEST_SUMMARY)
 
         # Main configuration in tabs
         config_tab1, config_tab2, config_tab3 = st.tabs(["📊 Básico", "⚙️ Avançado", "📈 Otimização"])
@@ -2683,9 +3739,52 @@ def main():
                     "Timeframe:",
                     ["1m", "5m", "15m", "30m", "1h", "4h", "1d"],
                     index=2,
-                    help="Intervalo dos candles - timeframes menores = mais sinais",
+                    help="O motor lê o mercado exatamente neste timeframe.",
                     key="bt_timeframe"
                 )
+
+                context_timeframe_options = [tf for tf in ["5m", "15m", "30m", "1h", "4h", "1d"] if tf != bt_timeframe]
+                context_mode_options = ["same_timeframe", *context_timeframe_options]
+                if (
+                    "bt_context_mode" not in st.session_state
+                    or st.session_state.bt_context_mode not in context_mode_options
+                ):
+                    st.session_state.bt_context_mode = "same_timeframe"
+
+                bt_context_mode = st.selectbox(
+                    "Contexto Operacional:",
+                    options=context_mode_options,
+                    help="Use o proprio timeframe para leitura pura do mercado. Escolha outro apenas se quiser adicionar um filtro extra manual.",
+                    key="bt_context_mode",
+                    format_func=lambda value: (
+                        f"Mesmo timeframe ({bt_timeframe})"
+                        if value == "same_timeframe"
+                        else value
+                    ),
+                )
+                bt_context_timeframe = (
+                    None
+                    if bt_context_mode == "same_timeframe"
+                    else bt_context_mode
+                )
+                if bt_context_timeframe:
+                    st.caption(f"Contexto extra manual para este teste: {bt_context_timeframe}")
+                else:
+                    st.caption(f"Leitura principal no proprio {bt_timeframe}, sem filtro superior implicito.")
+
+                bt_market_family = st.selectbox(
+                    "Leitura de Mercado:",
+                    options=list(market_reading_family_configs.keys()),
+                    help="Define a família de estados de mercado que o backtest vai privilegiar. Internamente isso vira uma compatibilidade de execução, mas a decisão continua sendo por leitura do mercado.",
+                    key="bt_market_family",
+                    format_func=lambda value: market_reading_family_configs[value]["label"],
+                )
+                if st.session_state.bt_last_market_family != bt_market_family:
+                    st.session_state.bt_setup_focus = list(
+                        market_reading_family_configs[bt_market_family]["allowed_setups"]
+                    )
+                    st.session_state.bt_last_market_family = bt_market_family
+                st.caption(market_reading_family_configs[bt_market_family]["description"])
 
                 bt_initial_balance = st.number_input(
                     "Capital Inicial ($)", 
@@ -2770,7 +3869,7 @@ def main():
             col1, col2 = st.columns(2)
 
             with col1:
-                st.markdown("**🎛️ Indicadores RSI**")
+                st.markdown("**🎛️ Gatilhos RSI**")
 
                 bt_rsi_period = st.slider(
                     "Período RSI", 
@@ -2781,75 +3880,129 @@ def main():
                 )
 
                 bt_rsi_min = st.slider(
-                    "RSI Compra (Sobrevenda)", 
-                    10, 40, 
+                    "RSI Gatilho Compra", 
+                    45, 60, 
                     getattr(st.session_state, 'bt_rsi_min', AppConfig.DEFAULT_RSI_MIN),
-                    help="Nível para sinal de compra",
+                    help="RSI precisa cruzar acima deste nivel para compra",
                     key="bt_rsi_min"
                 )
 
                 bt_rsi_max = st.slider(
-                    "RSI Venda (Sobrecompra)", 
-                    60, 90, 
+                    "RSI Gatilho Venda", 
+                    40, 55, 
                     getattr(st.session_state, 'bt_rsi_max', AppConfig.DEFAULT_RSI_MAX),
-                    help="Nível para sinal de venda",
+                    help="RSI precisa cruzar abaixo deste nivel para venda",
                     key="bt_rsi_max"
                 )
 
             with col2:
                 st.markdown("**⚡ Configurações de Performance**")
 
-                # Opções de filtragem de sinais
+                if "bt_setup_focus" not in st.session_state or not isinstance(st.session_state.bt_setup_focus, list):
+                    st.session_state.bt_setup_focus = list(setup_focus_labels.keys())
+                if "bt_enable_volume_filter" not in st.session_state:
+                    st.session_state.bt_enable_volume_filter = False
+                if "bt_enable_trend_filter" not in st.session_state:
+                    st.session_state.bt_enable_trend_filter = False
+                if "bt_enable_avoid_ranging" not in st.session_state:
+                    st.session_state.bt_enable_avoid_ranging = False
+
+                st.info(
+                    "A leitura do mercado decide direcao e contexto. SL/TP abaixo definem apenas a politica de risco do usuario."
+                )
+
                 enable_volume_filter = st.checkbox(
                     "Filtrar por Volume",
-                    value=True,
-                    help="Apenas trades com volume acima da média"
+                    help="Apenas trades com volume acima da média",
+                    key="bt_enable_volume_filter",
                 )
 
                 enable_trend_filter = st.checkbox(
                     "Filtrar por Tendência",
-                    value=True,
-                    help="Usar MACD como filtro adicional"
+                    help="Usar MACD como filtro adicional",
+                    key="bt_enable_trend_filter",
                 )
 
                 enable_avoid_ranging = st.checkbox(
                     "Evitar Mercado Lateral",
-                    value=True,
-                    help="Bloqueia trades quando o regime estimado for lateralizado"
+                    help="Bloqueia trades quando o regime estimado for lateralizado",
+                    key="bt_enable_avoid_ranging",
                 )
+
+                recommended_stop_loss = 1.0 if bt_timeframe == "1h" else 0.8
+                if "bt_stop_loss_pct" not in st.session_state:
+                    st.session_state.bt_stop_loss_pct = float(recommended_stop_loss)
+                if "bt_take_profit_pct" not in st.session_state:
+                    st.session_state.bt_take_profit_pct = 1.8
+                if "bt_enable_oos_validation" not in st.session_state:
+                    st.session_state.bt_enable_oos_validation = True
+                if "bt_validation_split_pct" not in st.session_state:
+                    st.session_state.bt_validation_split_pct = 30
+                if "bt_risk_profile" not in st.session_state:
+                    st.session_state.bt_risk_profile = "manual"
+
+                selected_risk_profile = st.selectbox(
+                    "Perfil de Risco do Usuário",
+                    options=list(risk_profile_configs.keys()),
+                    help="A leitura continua a mesma. Aqui você define como quer transformar essa leitura em risco e alvo.",
+                    key="bt_risk_profile",
+                    format_func=lambda value: risk_profile_configs[value]["label"],
+                )
+                if st.session_state.bt_last_risk_profile != selected_risk_profile:
+                    risk_profile = risk_profile_configs.get(selected_risk_profile, {})
+                    if "stop_loss_pct" in risk_profile:
+                        st.session_state.bt_stop_loss_pct = float(risk_profile["stop_loss_pct"])
+                    if "take_profit_pct" in risk_profile:
+                        st.session_state.bt_take_profit_pct = float(risk_profile["take_profit_pct"])
+                    st.session_state.bt_last_risk_profile = selected_risk_profile
+                st.caption(risk_profile_configs[selected_risk_profile]["description"])
 
                 stop_loss_pct = st.number_input(
                     "Stop Loss (%)",
                     min_value=0.0,
                     max_value=20.0,
-                    value=2.0,
                     step=0.5,
-                    help="0 = sem stop loss"
+                    help="0 = sem stop loss",
+                    key="bt_stop_loss_pct",
                 )
 
                 take_profit_pct = st.number_input(
                     "Take Profit (%)",
                     min_value=0.0,
                     max_value=50.0,
-                    value=4.0,
                     step=0.5,
-                    help="0 = sem take profit"
+                    help="0 = sem take profit",
+                    key="bt_take_profit_pct",
                 )
 
                 enable_oos_validation = st.checkbox(
                     "Validar Fora da Amostra",
-                    value=True,
-                    help="Reserva a parte final do período para validar a estratégia em dados futuros"
+                    help="Reserva a parte final do período para validar a estratégia em dados futuros",
+                    key="bt_enable_oos_validation",
                 )
 
                 validation_split_pct = st.slider(
                     "Parte Fora da Amostra (%)",
                     10,
                     50,
-                    30,
                     disabled=not enable_oos_validation,
-                    help="Percentual final do período reservado para validação temporal"
+                    help="Percentual final do período reservado para validação temporal",
+                    key="bt_validation_split_pct",
                 )
+
+                with st.expander("Compatibilidade Legada de Execução", expanded=False):
+                    st.caption(
+                        "Este bloco existe apenas para pesquisa fina e compatibilidade com a camada legada. O motor principal continua classificando e decidindo por leitura de mercado."
+                    )
+                    bt_setup_focus = st.multiselect(
+                        "Cesta de Setups",
+                        options=list(setup_focus_labels.keys()),
+                        help="Restrição interna de execução. Use apenas se quiser forçar uma família legada específica.",
+                        key="bt_setup_focus",
+                        format_func=lambda value: setup_focus_labels[value],
+                    )
+                    if not bt_setup_focus:
+                        st.warning("Selecione ao menos um setup legado para manter a compatibilidade do backtest.")
 
         with config_tab3:
             st.markdown("**🔍 Otimização de Parâmetros**")
@@ -2870,15 +4023,15 @@ def main():
 
                 with col1:
                     rsi_min_range = st.slider(
-                        "Range RSI Mínimo",
-                        10, 40, (15, 30),
-                        help="Faixa para testar RSI mínimo"
+                        "Range RSI Compra",
+                        45, 60, (50, 55),
+                        help="Faixa para testar o gatilho comprador"
                     )
 
                     rsi_max_range = st.slider(
-                        "Range RSI Máximo", 
-                        60, 90, (70, 85),
-                        help="Faixa para testar RSI máximo"
+                        "Range RSI Venda", 
+                        40, 55, (45, 50),
+                        help="Faixa para testar o gatilho vendedor"
                     )
 
                 with col2:
@@ -2912,7 +4065,7 @@ def main():
             if not scan_allowed:
                 st.caption("Scan comparativo desativado: foco em um único mercado e timeframe.")
 
-            supported_scan_timeframes = AppConfig.get_supported_timeframes()
+            supported_scan_timeframes = ["1m", "5m", "15m", "30m", "1h", "4h", "1d"]
             default_scan_timeframes = list(dict.fromkeys([bt_timeframe, "15m", "1h"]))
             default_scan_timeframes = [tf for tf in default_scan_timeframes if tf in supported_scan_timeframes]
             comparison_timeframes = [bt_timeframe]
@@ -2947,28 +4100,101 @@ def main():
                     f"{len(comparison_timeframes)} timeframe(s) = {comparison_combo_count} cenário(s)"
                 )
 
+            if "bt_enable_walk_forward" not in st.session_state:
+                st.session_state.bt_enable_walk_forward = True
+            if "bt_walk_forward_windows" not in st.session_state:
+                st.session_state.bt_walk_forward_windows = 3
+
             enable_walk_forward = st.checkbox(
                 "🧭 Walk-Forward",
-                value=True,
-                help="Executa validação sequencial em múltiplas janelas temporais"
+                help="Executa validação sequencial em múltiplas janelas temporais",
+                key="bt_enable_walk_forward",
             )
 
             walk_forward_windows = st.slider(
                 "Janelas Walk-Forward",
                 2,
                 5,
-                3,
                 disabled=not enable_walk_forward,
-                help="Quantidade de janelas out-of-sample sequenciais"
+                help="Quantidade de janelas out-of-sample sequenciais",
+                key="bt_walk_forward_windows",
             )
 
-        # Validation and execution
-        st.markdown("---")
-        st.markdown("### 🚀 Executar Testes")
+        allowed_execution_setups = list(dict.fromkeys(bt_setup_focus)) or None
+        execution_context_timeframe = bt_context_timeframe
 
-        # Validation checks
+        # Validation and execution
         date_valid = bt_start_date < bt_end_date
         period_days = (bt_end_date - bt_start_date).days
+
+        st.markdown("---")
+        st.markdown("### Criterios de Aprovacao Real")
+
+        required_trade_velocity = (
+            ProductionConfig.MIN_BACKTEST_TRADES_FOR_PROMOTION
+            / max(ProductionConfig.MIN_PROMOTION_PERIOD_DAYS, 1)
+        )
+        risk_reward_ratio = (
+            take_profit_pct / stop_loss_pct
+            if stop_loss_pct > 0 and take_profit_pct > 0
+            else None
+        )
+        selected_setup_label = ", ".join(
+            setup_focus_labels[setup_name]
+            for setup_name in (allowed_execution_setups or list(setup_focus_labels.keys()))
+            if setup_name in setup_focus_labels
+        )
+        selected_market_family = market_reading_family_configs.get(
+            st.session_state.get("bt_market_family", "all_states"),
+            market_reading_family_configs["all_states"],
+        )
+        selected_risk_profile_label = risk_profile_configs.get(
+            st.session_state.get("bt_risk_profile", "manual"),
+            risk_profile_configs["manual"],
+        )["label"]
+
+        approval_col1, approval_col2 = st.columns(2)
+        with approval_col1:
+            st.info(
+                "\n".join(
+                    [
+                        f"Leitura em foco: {selected_market_family['label']}",
+                        f"Compatibilidade legada: {selected_setup_label}",
+                        (
+                            f"Contexto operacional: {bt_context_timeframe}"
+                            if bt_context_timeframe
+                            else f"Contexto operacional: somente {bt_timeframe}"
+                        ),
+                        f"Meta minima: {ProductionConfig.MIN_BACKTEST_TRADES_FOR_PROMOTION} trades em {ProductionConfig.MIN_PROMOTION_PERIOD_DAYS} dias",
+                        f"Meta de throughput: {required_trade_velocity:.2f} trades aprovados/dia",
+                    ]
+                )
+            )
+        with approval_col2:
+            st.info(
+                "\n".join(
+                    [
+                        f"Perfil de risco: {selected_risk_profile_label}",
+                        f"OOS minimo: {ProductionConfig.MIN_PROMOTION_OOS_TRADES} trades | PF >= {ProductionConfig.MIN_PROMOTION_OOS_PROFIT_FACTOR:.2f}",
+                        f"Walk-forward minimo: {ProductionConfig.MIN_WALK_FORWARD_PASS_RATE_PCT:.0f}% das janelas",
+                        f"Max drawdown: {ProductionConfig.MAX_PROMOTION_DRAWDOWN:.1f}%",
+                        (
+                            f"RR atual: {risk_reward_ratio:.2f}:1"
+                            if risk_reward_ratio is not None
+                            else "RR atual: defina SL e TP para medir risco/retorno"
+                        ),
+                    ]
+                )
+            )
+
+        if period_days < ProductionConfig.MIN_PROMOTION_PERIOD_DAYS:
+            st.warning(
+                f"Janela curta: a aprovacao real exige pelo menos {ProductionConfig.MIN_PROMOTION_PERIOD_DAYS} dias de dados."
+            )
+        if risk_reward_ratio is not None and risk_reward_ratio < 1.5:
+            st.warning("RR abaixo de 1.5:1. Com essa relacao, a consistencia fica estatisticamente mais dificil.")
+
+        st.markdown("### 🚀 Executar Testes")
 
         # Status da configuração
         col1, col2 = st.columns(2)
@@ -3001,7 +4227,7 @@ def main():
         with col1:
             bt_execute = st.button(
                 "🚀 Executar Backtest", 
-                disabled=not date_valid or period_days < 1 or period_days > max_backtest_days,
+                disabled=not date_valid or period_days < 1 or period_days > max_backtest_days or not allowed_execution_setups,
                 help="Rodar simulação com configurações atuais",
                 width="stretch",
                 key="bt_execute"
@@ -3010,7 +4236,7 @@ def main():
         with col2:
             if enable_optimization and st.button(
                 "⚡ Otimização Automática",
-                disabled=not date_valid or period_days < 1 or period_days > max_backtest_days,
+                disabled=not date_valid or period_days < 1 or period_days > max_backtest_days or not allowed_execution_setups,
                 help="Testar múltiplas combinações automaticamente",
                 width="stretch",
                 key="bt_optimize"
@@ -3021,7 +4247,7 @@ def main():
         with col3:
             if (compare_timeframes or compare_symbols) and st.button(
                 "🧭 Scan Comparativo",
-                disabled=not date_valid or period_days < 1 or period_days > max_backtest_days,
+                disabled=not date_valid or period_days < 1 or period_days > max_backtest_days or not allowed_execution_setups,
                 help="Testar a estratégia em múltiplos pares e/ou timeframes",
                 width="stretch",
                 key="bt_compare"
@@ -3058,6 +4284,7 @@ def main():
                             end_date=end_dt,
                             initial_balance=int(bt_initial_balance),
                             rsi_period=bt_rsi_period,
+                            context_timeframe=execution_context_timeframe,
                             stop_loss_pct=stop_loss_pct,
                             take_profit_pct=take_profit_pct,
                             require_volume=enable_volume_filter,
@@ -3065,6 +4292,7 @@ def main():
                             avoid_ranging=enable_avoid_ranging,
                             validation_split_pct=validation_split_pct if enable_oos_validation else 0.0,
                             walk_forward_windows=walk_forward_windows if enable_walk_forward else 0,
+                            allowed_execution_setups=allowed_execution_setups,
                         )
 
                         if optimization_results and optimization_results.get('rows'):
@@ -3097,6 +4325,7 @@ def main():
                             rsi_period=bt_rsi_period,
                             rsi_min=bt_rsi_min,
                             rsi_max=bt_rsi_max,
+                            context_timeframe=execution_context_timeframe,
                             stop_loss_pct=stop_loss_pct,
                             take_profit_pct=take_profit_pct,
                             require_volume=enable_volume_filter,
@@ -3104,6 +4333,7 @@ def main():
                             avoid_ranging=enable_avoid_ranging,
                             validation_split_pct=validation_split_pct if enable_oos_validation else 0.0,
                             walk_forward_windows=walk_forward_windows if enable_walk_forward else 0,
+                            allowed_execution_setups=allowed_execution_setups,
                         )
 
                         if scan_results and scan_results.get('rows'):
@@ -3132,6 +4362,7 @@ def main():
                             rsi_period=bt_rsi_period,
                             rsi_min=bt_rsi_min,
                             rsi_max=bt_rsi_max,
+                            context_timeframe=execution_context_timeframe,
                             stop_loss_pct=stop_loss_pct,
                             take_profit_pct=take_profit_pct,
                             require_volume=enable_volume_filter,
@@ -3139,6 +4370,7 @@ def main():
                             avoid_ranging=enable_avoid_ranging,
                             validation_split_pct=validation_split_pct if enable_oos_validation else 0.0,
                             walk_forward_windows=walk_forward_windows if enable_walk_forward else 0,
+                            allowed_execution_setups=allowed_execution_setups,
                         )
 
                         if results and 'stats' in results:
@@ -3189,30 +4421,40 @@ def main():
             if result_strategy_version:
                 st.caption(f"Versão da estratégia: {result_strategy_version}")
 
-            active_strategy_profile = db.get_active_strategy_profile(result_symbol, result_timeframe)
+            market_state_summary = results.get('market_state_summary') or stats.get('market_state_breakdown') or []
+            execution_mode_summary = results.get('execution_mode_summary') or stats.get('execution_mode_breakdown') or []
+            active_strategy_profile = get_cached_active_strategy_profile(result_symbol, result_timeframe)
             promotion_readiness = None
             if results.get('saved_run_id'):
-                promotion_readiness = db.get_backtest_run_promotion_readiness(results['saved_run_id'])
+                promotion_readiness = get_cached_backtest_run_promotion_readiness(results['saved_run_id'])
             strategy_col1, strategy_col2 = st.columns(2)
             with strategy_col1:
                 if active_strategy_profile:
+                    active_market_states = active_strategy_profile.get('allowed_market_states') or []
+                    active_market_state_label = ", ".join(active_market_states) or active_strategy_profile.get('market_state') or "-"
                     st.info(
-                        f"Setup ativo em paper: {active_strategy_profile.get('strategy_version')} "
+                        f"Leitura ativa em paper: {active_market_state_label} "
+                        f"| {active_strategy_profile.get('strategy_version')} "
                         f"| RSI {active_strategy_profile.get('rsi_min')}-{active_strategy_profile.get('rsi_max')}"
                     )
                 else:
-                    st.info("Nenhum setup ativo em paper para este mercado/timeframe.")
+                    st.info("Nenhuma leitura ativa em paper para este mercado/timeframe.")
                 if promotion_readiness:
+                    ready_market_states = promotion_readiness.get("approved_market_states") or []
+                    ready_market_state_label = ", ".join(ready_market_states) if ready_market_states else "-"
                     if promotion_readiness.get("ready"):
-                        st.success("Setup apto para ativação em paper com base nos critérios mínimos de backtest.")
+                        st.success(
+                            f"Leitura apta para ativação em paper com base nos critérios mínimos de backtest. "
+                            f"Estados aprovados: {ready_market_state_label}"
+                        )
                     else:
                         reasons_text = "\n".join(f"- {reason}" for reason in promotion_readiness.get("reasons", []))
-                        st.warning(f"Setup ainda não apto para ativação em paper:\n{reasons_text}")
+                        st.warning(f"Leitura ainda não apta para ativação em paper:\n{reasons_text}")
             with strategy_col2:
                 action_col1, action_col2 = st.columns(2)
                 with action_col1:
                     if results.get('saved_run_id') and st.button(
-                        "🚀 Ativar Setup em Paper",
+                        "🚀 Ativar Leitura em Paper",
                         key=f"promote_setup_{results.get('saved_run_id')}",
                         disabled=bool(promotion_readiness and not promotion_readiness.get("ready")),
                     ):
@@ -3221,10 +4463,13 @@ def main():
                             notes="Ativado em paper via dashboard",
                         )
                         if promoted:
-                            st.success(f"Setup ativo em paper: {promoted.get('strategy_version')}")
+                            clear_dashboard_data_caches()
+                            promoted_states = promoted.get('allowed_market_states') or []
+                            state_label = ", ".join(promoted_states) or promoted.get('market_state') or "-"
+                            st.success(f"Leitura ativa em paper: {state_label} | {promoted.get('strategy_version')}")
                             st.rerun()
                         else:
-                            st.error("Não foi possível ativar o setup atual em paper.")
+                            st.error("Não foi possível ativar a leitura atual em paper.")
                 with action_col2:
                     if active_strategy_profile and st.button(
                         "⛔ Desligar Ativo",
@@ -3234,10 +4479,33 @@ def main():
                             active_strategy_profile['id'],
                             reason="Desativado via dashboard",
                         )
-                        st.warning("Setup ativo desativado.")
+                        clear_dashboard_data_caches()
+                        st.warning("Leitura ativa desativada.")
                         st.rerun()
 
+            dominant_market_state = market_state_summary[0] if market_state_summary else {}
+            dominant_execution_mode = execution_mode_summary[0] if execution_mode_summary else {}
             objective_check = results.get("objective_check") or {}
+            approved_market_states = objective_check.get("approved_market_states") or []
+            approved_market_state_label = ", ".join(approved_market_states) if approved_market_states else "-"
+            if market_state_summary or objective_check:
+                st.markdown("### 🧭 Leitura Operacional")
+                market_col1, market_col2, market_col3, market_col4 = st.columns(4)
+                with market_col1:
+                    st.metric("Estado Dominante", dominant_market_state.get("market_state", "-"))
+                with market_col2:
+                    st.metric("Estados Aprovados", approved_market_state_label)
+                with market_col3:
+                    st.metric("Modo Dominante", dominant_execution_mode.get("execution_mode", "-"))
+                with market_col4:
+                    st.metric(
+                        "PF do Estado Líder",
+                        f"{float(dominant_market_state.get('profit_factor', 0.0) or 0.0):.2f}",
+                    )
+
+                st.caption(
+                    "A leitura do mercado mostra o contexto que mais apareceu e o subconjunto que ficou elegível para promoção real."
+                )
             if objective_check:
                 st.markdown("### 🎯 Checagem Objetiva de Sobrevivência")
                 obj_col1, obj_col2, obj_col3, obj_col4 = st.columns(4)
@@ -3248,7 +4516,7 @@ def main():
                 with obj_col3:
                     st.metric("Grade", objective_check.get("objective_grade", "-"))
                 with obj_col4:
-                    st.metric("Setup Foco", objective_check.get("recommended_setup") or "-")
+                    st.metric("Estado Foco", objective_check.get("recommended_market_state") or "-")
 
                 status_value = str(objective_check.get("status", "")).lower()
                 status_message = (
@@ -3301,10 +4569,15 @@ def main():
                         st.caption("Warnings")
                         st.info("Sem alertas adicionais.")
 
+                market_state_candidates = objective_check.get("market_state_candidates") or []
+                if market_state_candidates:
+                    st.caption("Ranking de Estados de Mercado")
+                    st.dataframe(pd.DataFrame(market_state_candidates), width="stretch", hide_index=True)
+
                 setup_candidates = objective_check.get("setup_candidates") or []
                 if setup_candidates:
-                    st.caption("Ranking de Setup")
-                    st.dataframe(pd.DataFrame(setup_candidates), width="stretch", hide_index=True)
+                    with st.expander("Compatibilidade Legada: Ranking de Setup", expanded=False):
+                        st.dataframe(pd.DataFrame(setup_candidates), width="stretch", hide_index=True)
 
                 next_actions = objective_check.get("next_actions") or []
                 if next_actions:
@@ -3312,7 +4585,7 @@ def main():
                     st.write("\n".join(f"- {item}" for item in next_actions))
 
             try:
-                edge_summary = db.get_edge_monitor_summary(
+                edge_summary = get_cached_edge_monitor_summary(
                     symbol=result_symbol,
                     timeframe=result_timeframe,
                     strategy_version=result_strategy_version,
@@ -3344,7 +4617,7 @@ def main():
                 st.info(f"Edge monitor indisponivel: {edge_error}")
 
             try:
-                governance_summary = db.get_strategy_governance_summary(
+                governance_summary = get_cached_strategy_governance_summary(
                     symbol=result_symbol,
                     timeframe=result_timeframe,
                     active_only=False,
@@ -3353,7 +4626,7 @@ def main():
                 governance_counts = governance_summary.get('counts', {})
                 governance_profiles = governance_summary.get('profiles', [])
 
-                st.markdown("### 🧭 Governanca dos Setups")
+                st.markdown("### 🧭 Governança Operacional")
                 gov_col1, gov_col2, gov_col3, gov_col4, gov_col5 = st.columns(5)
                 with gov_col1:
                     st.metric("Aprovados", governance_counts.get('approved', 0))
@@ -3395,31 +4668,30 @@ def main():
                     )
                     st.dataframe(governance_df, width="stretch", hide_index=True)
 
-                adaptive_governance = db.evaluate_strategy_governance(
-                    symbol=result_symbol,
-                    timeframe=result_timeframe,
-                    strategy_version=result_strategy_version,
-                    persist=False,
-                )
-                regime_baselines = db.get_setup_regime_baselines(
+                adaptive_governance = get_cached_governance_evaluation(
                     symbol=result_symbol,
                     timeframe=result_timeframe,
                     strategy_version=result_strategy_version,
                 )
-                alignment_history = db.get_alignment_metrics(
+                regime_baselines = get_cached_setup_regime_baselines(
+                    symbol=result_symbol,
+                    timeframe=result_timeframe,
+                    strategy_version=result_strategy_version,
+                )
+                alignment_history = get_cached_alignment_metrics(
                     symbol=result_symbol,
                     timeframe=result_timeframe,
                     strategy_version=result_strategy_version,
                     limit=5,
                 )
-                governance_history = db.get_governance_history(
+                governance_history = get_cached_governance_history(
                     symbol=result_symbol,
                     timeframe=result_timeframe,
                     strategy_version=result_strategy_version,
                     limit=10,
                 )
 
-                st.markdown("### Governanca Adaptativa")
+                st.markdown("### Governança Adaptativa")
                 adaptive_col1, adaptive_col2, adaptive_col3, adaptive_col4 = st.columns(4)
                 with adaptive_col1:
                     st.metric("Status", adaptive_governance.get("governance_status", "-"))
@@ -3514,22 +4786,22 @@ def main():
                     )
                     st.dataframe(governance_history_df, width="stretch", hide_index=True)
             except Exception as governance_error:
-                st.info(f"Governanca de setups indisponivel: {governance_error}")
+                st.info(f"Governança operacional indisponível: {governance_error}")
 
             try:
-                recent_strategy_evaluations = db.get_strategy_evaluations(
+                recent_strategy_evaluations = get_cached_strategy_evaluations(
                     symbol=result_symbol,
                     timeframe=result_timeframe,
                     strategy_version=result_strategy_version,
                     limit=5,
                 )
                 if not recent_strategy_evaluations:
-                    recent_strategy_evaluations = db.get_strategy_evaluations(
+                    recent_strategy_evaluations = get_cached_strategy_evaluations(
                         symbol=result_symbol,
                         timeframe=result_timeframe,
                         limit=5,
                     )
-                evaluation_overview = db.get_strategy_evaluation_overview(
+                evaluation_overview = get_cached_strategy_evaluation_overview(
                     symbol=result_symbol,
                     timeframe=result_timeframe,
                     limit=10,
@@ -3731,6 +5003,13 @@ def main():
             with col4:
                 st.metric("❌ Trades Perdedores", stats['losing_trades'])
 
+            render_backtest_portfolio_section(
+                results=results,
+                stats=stats,
+                result_symbol=result_symbol,
+                result_timeframe=result_timeframe,
+            )
+
             signal_pipeline_stats = results.get('signal_pipeline_stats') or {
                 'candidate_count': results.get('candidate_count', 0),
                 'approved_count': results.get('approved_count', 0),
@@ -3741,6 +5020,10 @@ def main():
                 'structure_state_counts': results.get('structure_state_counts', {}),
                 'confirmation_state_counts': results.get('confirmation_state_counts', {}),
                 'entry_quality_counts': results.get('entry_quality_counts', {}),
+                'market_state_counts': results.get('market_state_counts', {}),
+                'market_state_approved_counts': results.get('market_state_approved_counts', {}),
+                'market_state_blocked_counts': results.get('market_state_blocked_counts', {}),
+                'execution_mode_counts': results.get('execution_mode_counts', {}),
                 'setup_type_counts': results.get('setup_type_counts', {}),
                 'setup_type_approved_counts': results.get('setup_type_approved_counts', {}),
                 'setup_type_blocked_counts': results.get('setup_type_blocked_counts', {}),
@@ -3859,8 +5142,14 @@ def main():
                         st.info("Sem trades suficientes para agregar por risk mode.")
 
             regime_summary = results.get('regime_summary') or stats.get('regime_breakdown') or []
+            market_state_summary = results.get('market_state_summary') or stats.get('market_state_breakdown') or []
+            execution_mode_summary = results.get('execution_mode_summary') or stats.get('execution_mode_breakdown') or []
             setup_type_summary = results.get('setup_type_summary') or stats.get('setup_type_breakdown') or []
             regime_counts = signal_pipeline_stats.get('regime_counts') or {}
+            market_state_counts = signal_pipeline_stats.get('market_state_counts') or {}
+            market_state_approved_counts = signal_pipeline_stats.get('market_state_approved_counts') or {}
+            market_state_blocked_counts = signal_pipeline_stats.get('market_state_blocked_counts') or {}
+            execution_mode_counts = signal_pipeline_stats.get('execution_mode_counts') or {}
             setup_type_counts = signal_pipeline_stats.get('setup_type_counts') or {}
             setup_type_approved_counts = signal_pipeline_stats.get('setup_type_approved_counts') or {}
             setup_type_blocked_counts = signal_pipeline_stats.get('setup_type_blocked_counts') or {}
@@ -3882,32 +5171,77 @@ def main():
                     width="stretch",
                     hide_index=True,
                 )
-            if setup_type_counts:
-                st.caption("Entradas por Tipo de Setup")
+            if market_state_counts:
+                st.caption("Entradas por Estado de Mercado")
                 st.dataframe(
                     pd.DataFrame(
                         [
                             {
-                                "Setup": setup_type,
+                                "Estado": market_state,
                                 "Candidatos": count,
-                                "Aprovados": int(setup_type_approved_counts.get(setup_type, 0) or 0),
-                                "Bloqueados": int(setup_type_blocked_counts.get(setup_type, 0) or 0),
-                                "Taxa de Aprovação %": float(setup_type_approval_rates.get(setup_type, 0.0) or 0.0),
-                                "Taxa de Bloqueio %": float(setup_type_block_rates.get(setup_type, 0.0) or 0.0),
+                                "Aprovados": int(market_state_approved_counts.get(market_state, 0) or 0),
+                                "Bloqueados": int(market_state_blocked_counts.get(market_state, 0) or 0),
                             }
-                            for setup_type, count in setup_type_counts.items()
+                            for market_state, count in market_state_counts.items()
                         ]
                     ),
                     width="stretch",
                     hide_index=True,
                 )
-            if setup_type_summary:
-                st.caption("Performance por Tipo de Setup")
+            if market_state_summary:
+                st.caption("Performance por Estado de Mercado")
                 st.dataframe(
-                    pd.DataFrame(setup_type_summary),
+                    pd.DataFrame(market_state_summary),
                     width="stretch",
                     hide_index=True,
                 )
+            if execution_mode_counts:
+                st.caption("Execução por Modo Operacional")
+                st.dataframe(
+                    pd.DataFrame(
+                        [
+                            {"Modo": execution_mode, "Qtd": count}
+                            for execution_mode, count in execution_mode_counts.items()
+                        ]
+                    ),
+                    width="stretch",
+                    hide_index=True,
+                )
+            if execution_mode_summary:
+                st.caption("Performance por Modo Operacional")
+                st.dataframe(
+                    pd.DataFrame(execution_mode_summary),
+                    width="stretch",
+                    hide_index=True,
+                )
+            if setup_type_counts or setup_type_summary:
+                with st.expander("Compatibilidade Legada: Analytics por Setup", expanded=False):
+                    if setup_type_counts:
+                        st.caption("Entradas por Tipo de Setup (Legado)")
+                        st.dataframe(
+                            pd.DataFrame(
+                                [
+                                    {
+                                        "Setup": setup_type,
+                                        "Candidatos": count,
+                                        "Aprovados": int(setup_type_approved_counts.get(setup_type, 0) or 0),
+                                        "Bloqueados": int(setup_type_blocked_counts.get(setup_type, 0) or 0),
+                                        "Taxa de Aprovação %": float(setup_type_approval_rates.get(setup_type, 0.0) or 0.0),
+                                        "Taxa de Bloqueio %": float(setup_type_block_rates.get(setup_type, 0.0) or 0.0),
+                                    }
+                                    for setup_type, count in setup_type_counts.items()
+                                ]
+                            ),
+                            width="stretch",
+                            hide_index=True,
+                        )
+                    if setup_type_summary:
+                        st.caption("Performance por Tipo de Setup (Legado)")
+                        st.dataframe(
+                            pd.DataFrame(setup_type_summary),
+                            width="stretch",
+                            hide_index=True,
+                        )
 
             position_management_summary = results.get('position_management_summary') or {}
             exit_type_summary = results.get('exit_type_summary') or stats.get('exit_type_breakdown') or []
@@ -4064,7 +5398,10 @@ def main():
                     st.metric("OOS Win Rate", f"{out_of_sample_stats['win_rate']:.1f}%")
 
                 if validation.get('oos_passed'):
-                    st.success("✅ OOS positivo: retorno > 0 e profit factor >= 1.2")
+                    st.success(
+                        f"✅ OOS aprovado: {ProductionConfig.MIN_PROMOTION_OOS_TRADES}+ trades, "
+                        f"retorno > 0 e profit factor >= {ProductionConfig.MIN_PROMOTION_OOS_PROFIT_FACTOR:.2f}"
+                    )
                 else:
                     st.warning("⚠️ OOS fraco: a estratégia ainda não provou edge suficiente fora da amostra")
 
@@ -4238,9 +5575,9 @@ def main():
             opt_col1, opt_col2 = st.columns(2)
 
             with opt_col1:
-                if st.button("🔧 RSI Mais Restritivo", help="RSI 15-85"):
-                    st.session_state.bt_rsi_min = 15
-                    st.session_state.bt_rsi_max = 85
+                if st.button("🔧 RSI Mais Restritivo", help="RSI 54/46"):
+                    st.session_state.bt_rsi_min = 54
+                    st.session_state.bt_rsi_max = 46
                     st.rerun()
 
                 if st.button("📈 Timeframe Maior", help="Mudar para timeframe superior"):
@@ -4253,9 +5590,23 @@ def main():
                             st.rerun()
 
             with opt_col2:
-                if st.button("⚖️ RSI Balanceado", help="RSI 25-75"):
-                    st.session_state.bt_rsi_min = 25
-                    st.session_state.bt_rsi_max = 75
+                if st.button("✅ Preset Validado", help="Reaplicar setup EMA/RSI validado"):
+                    st.session_state.bt_setup_preset = AppConfig.DEFAULT_BACKTEST_PRESET
+                    st.session_state.bt_rsi_period = AppConfig.DEFAULT_RSI_PERIOD
+                    st.session_state.bt_rsi_min = AppConfig.DEFAULT_RSI_MIN
+                    st.session_state.bt_rsi_max = AppConfig.DEFAULT_RSI_MAX
+                    st.session_state.bt_timeframe = AppConfig.PRIMARY_TIMEFRAME
+                    st.session_state.bt_context_mode = AppConfig.PRIMARY_CONTEXT_TIMEFRAME
+                    st.session_state.bt_market_family = "all_states"
+                    st.session_state.bt_last_market_family = "all_states"
+                    st.session_state.bt_risk_profile = "balanced"
+                    st.session_state.bt_last_risk_profile = "balanced"
+                    st.session_state.bt_enable_volume_filter = False
+                    st.session_state.bt_enable_trend_filter = False
+                    st.session_state.bt_enable_avoid_ranging = False
+                    st.session_state.bt_stop_loss_pct = 0.8
+                    st.session_state.bt_take_profit_pct = 1.8
+                    st.session_state.bt_last_setup_preset = AppConfig.DEFAULT_BACKTEST_PRESET
                     st.rerun()
 
                 if st.button("🔄 Período Maior", help="Dobrar período de teste"):
@@ -4263,82 +5614,6 @@ def main():
                     new_start = st.session_state.bt_end_date - timedelta(days=min(current_days * 2, max_backtest_days))
                     st.session_state.bt_start_date = new_start
                     st.rerun()
-
-            # Portfolio evolution chart
-            if results.get('portfolio_values'):
-                st.markdown("---")
-                st.subheader("📈 Evolução do Portfolio")
-
-                portfolio_df = pd.DataFrame(results['portfolio_values'])
-                portfolio_df['timestamp'] = pd.to_datetime(portfolio_df['timestamp'])
-                running_max = portfolio_df['portfolio_value'].cummax()
-                portfolio_df['drawdown_pct'] = ((running_max - portfolio_df['portfolio_value']) / running_max.replace(0, np.nan)) * 100
-                equity_diagnostics = results.get('equity_diagnostics') or {}
-
-                fig_portfolio = go.Figure()
-                fig_portfolio.add_trace(go.Scatter(
-                    x=portfolio_df['timestamp'],
-                    y=portfolio_df['portfolio_value'],
-                    mode='lines',
-                    name='Valor do Portfolio',
-                    line=dict(color='blue', width=2)
-                ))
-
-                benchmark_values = results.get('benchmark_values') or []
-                if benchmark_values:
-                    benchmark_df = pd.DataFrame(benchmark_values)
-                    if not benchmark_df.empty and {'timestamp', 'benchmark_value'}.issubset(benchmark_df.columns):
-                        benchmark_df['timestamp'] = pd.to_datetime(benchmark_df['timestamp'])
-                        fig_portfolio.add_trace(go.Scatter(
-                            x=benchmark_df['timestamp'],
-                            y=benchmark_df['benchmark_value'],
-                            mode='lines',
-                            name='Mercado (Buy & Hold)',
-                            line=dict(color='orange', width=2, dash='dot')
-                        ))
-
-                # Add initial balance line
-                fig_portfolio.add_hline(
-                    y=stats['initial_balance'], 
-                    line_dash="dash", 
-                    line_color="gray",
-                    annotation_text="Saldo Inicial"
-                )
-
-                fig_portfolio.update_layout(
-                    title=f"Evolução do Portfolio - {result_symbol} {result_timeframe}",
-                    xaxis_title="Data",
-                    yaxis_title="Valor do Portfolio ($)",
-                    height=400
-                )
-
-                st.plotly_chart(fig_portfolio, width="stretch")
-
-                drawdown_col1, drawdown_col2, drawdown_col3, drawdown_col4 = st.columns(4)
-                with drawdown_col1:
-                    st.metric("Drawdown Médio", f"{float(equity_diagnostics.get('average_drawdown_pct', 0.0) or 0.0):.2f}%")
-                with drawdown_col2:
-                    st.metric("Recuperação Máx.", int(equity_diagnostics.get('max_recovery_periods', 0) or 0))
-                with drawdown_col3:
-                    st.metric("Payoff Ratio", f"{float(stats.get('payoff_ratio', 0.0) or 0.0):.2f}")
-                with drawdown_col4:
-                    st.metric("Giveback no Topo", f"{float(equity_diagnostics.get('profit_giveback_pct', 0.0) or 0.0):.2f}%")
-
-                fig_drawdown = go.Figure()
-                fig_drawdown.add_trace(go.Scatter(
-                    x=portfolio_df['timestamp'],
-                    y=portfolio_df['drawdown_pct'].fillna(0.0),
-                    mode='lines',
-                    name='Drawdown %',
-                    line=dict(color='crimson', width=2)
-                ))
-                fig_drawdown.update_layout(
-                    title=f"Drawdown Curve - {result_symbol} {result_timeframe}",
-                    xaxis_title="Data",
-                    yaxis_title="Drawdown %",
-                    height=280
-                )
-                st.plotly_chart(fig_drawdown, width="stretch")
 
             # Trade history table
             if results['trades']:
@@ -4439,7 +5714,7 @@ def main():
                     timeline_df = signal_audit_df.copy()
                     timeline_df['timestamp'] = pd.to_datetime(timeline_df.get('timestamp'), errors='coerce')
                     timeline_df = timeline_df.dropna(subset=['timestamp']).sort_values('timestamp')
-                    actionable_signals = {'COMPRA', 'VENDA', 'COMPRA_FRACA', 'VENDA_FRACA'}
+                    actionable_signals = {'COMPRA', 'VENDA'}
                     if not timeline_df.empty:
                         candidate_col = (
                             timeline_df['candidate_signal']
@@ -4493,82 +5768,10 @@ def main():
                         ).fillna(0.0)
 
                         fig_execution = make_subplots(
-                            rows=2,
+                            rows=1,
                             cols=1,
-                            shared_xaxes=True,
-                            vertical_spacing=0.08,
-                            specs=[[{"secondary_y": False}], [{"secondary_y": True}]],
-                            row_heights=[0.58, 0.42],
+                            specs=[[{"secondary_y": True}]],
                         )
-
-                        portfolio_values = results.get('portfolio_values') or []
-                        if portfolio_values:
-                            portfolio_exec_df = pd.DataFrame(portfolio_values)
-                            if not portfolio_exec_df.empty and {'timestamp', 'portfolio_value'}.issubset(portfolio_exec_df.columns):
-                                portfolio_exec_df['timestamp'] = pd.to_datetime(portfolio_exec_df['timestamp'], errors='coerce')
-                                portfolio_exec_df = portfolio_exec_df.dropna(subset=['timestamp']).sort_values('timestamp')
-                                fig_execution.add_trace(
-                                    go.Scatter(
-                                        x=portfolio_exec_df['timestamp'],
-                                        y=portfolio_exec_df['portfolio_value'],
-                                        mode='lines',
-                                        name='Portfolio',
-                                        line=dict(color='#1f77b4', width=2),
-                                    ),
-                                    row=1,
-                                    col=1,
-                                )
-
-                        benchmark_values = results.get('benchmark_values') or []
-                        if benchmark_values:
-                            benchmark_exec_df = pd.DataFrame(benchmark_values)
-                            if not benchmark_exec_df.empty and {'timestamp', 'benchmark_value'}.issubset(benchmark_exec_df.columns):
-                                benchmark_exec_df['timestamp'] = pd.to_datetime(benchmark_exec_df['timestamp'], errors='coerce')
-                                benchmark_exec_df = benchmark_exec_df.dropna(subset=['timestamp']).sort_values('timestamp')
-                                fig_execution.add_trace(
-                                    go.Scatter(
-                                        x=benchmark_exec_df['timestamp'],
-                                        y=benchmark_exec_df['benchmark_value'],
-                                        mode='lines',
-                                        name='Benchmark',
-                                        line=dict(color='#ff7f0e', width=2, dash='dot'),
-                                    ),
-                                    row=1,
-                                    col=1,
-                                )
-
-                        trades_exec = pd.DataFrame(results.get('trades') or [])
-                        if not trades_exec.empty and {'entry_timestamp', 'entry_price', 'timestamp', 'price'}.issubset(trades_exec.columns):
-                            trades_exec['entry_timestamp'] = pd.to_datetime(trades_exec['entry_timestamp'], errors='coerce')
-                            trades_exec['timestamp'] = pd.to_datetime(trades_exec['timestamp'], errors='coerce')
-                            entry_markers = trades_exec.dropna(subset=['entry_timestamp'])
-                            exit_markers = trades_exec.dropna(subset=['timestamp'])
-
-                            if not entry_markers.empty:
-                                fig_execution.add_trace(
-                                    go.Scatter(
-                                        x=entry_markers['entry_timestamp'],
-                                        y=entry_markers['entry_price'],
-                                        mode='markers',
-                                        name='Entradas',
-                                        marker=dict(color='#2ca02c', size=7, symbol='triangle-up'),
-                                    ),
-                                    row=1,
-                                    col=1,
-                                )
-                            if not exit_markers.empty:
-                                fig_execution.add_trace(
-                                    go.Scatter(
-                                        x=exit_markers['timestamp'],
-                                        y=exit_markers['price'],
-                                        mode='markers',
-                                        name='Saídas',
-                                        marker=dict(color='#d62728', size=7, symbol='triangle-down'),
-                                    ),
-                                    row=1,
-                                    col=1,
-                                )
-
                         fig_execution.add_trace(
                             go.Bar(
                                 x=execution_timeline['timestamp'],
@@ -4577,7 +5780,7 @@ def main():
                                 marker_color='#2ca02c',
                                 opacity=0.75,
                             ),
-                            row=2,
+                            row=1,
                             col=1,
                             secondary_y=False,
                         )
@@ -4589,7 +5792,7 @@ def main():
                                 marker_color='#d62728',
                                 opacity=0.65,
                             ),
-                            row=2,
+                            row=1,
                             col=1,
                             secondary_y=False,
                         )
@@ -4601,7 +5804,7 @@ def main():
                                 name='Taxa Aprovação %',
                                 line=dict(color='#9467bd', width=2),
                             ),
-                            row=2,
+                            row=1,
                             col=1,
                             secondary_y=True,
                         )
@@ -4613,24 +5816,23 @@ def main():
                                 name='Cenário Médio',
                                 line=dict(color='#17becf', width=1.6, dash='dash'),
                             ),
-                            row=2,
+                            row=1,
                             col=1,
                             secondary_y=True,
                         )
 
                         fig_execution.update_layout(
                             barmode='stack',
-                            title=f"Linha do Tempo da Execução - {result_symbol} {result_timeframe}",
-                            height=640,
+                            title=f"Timeline de Sinais (Backtest) - {result_symbol} {result_timeframe}",
+                            height=420,
                             legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='left', x=0),
                             margin=dict(l=30, r=30, t=70, b=30),
                         )
-                        fig_execution.update_yaxes(title_text="Preço / Equity", row=1, col=1)
-                        fig_execution.update_yaxes(title_text="Sinais", row=2, col=1, secondary_y=False)
-                        fig_execution.update_yaxes(title_text="Taxa / Score", row=2, col=1, secondary_y=True)
+                        fig_execution.update_yaxes(title_text="Sinais", row=1, col=1, secondary_y=False)
+                        fig_execution.update_yaxes(title_text="Taxa / Score", row=1, col=1, secondary_y=True)
 
                         st.plotly_chart(fig_execution, width='stretch')
-                        st.caption(f"Agregação temporal automática: {timeline_freq} | mostra execução, sinais e qualidade ao longo do período.")
+                        st.caption(f"Agregação temporal automática: {timeline_freq} | foco em aprovação/bloqueio e qualidade de sinais.")
 
                     preview_columns = [
                         'timestamp', 'candidate_signal', 'approved_signal', 'blocked_signal',
@@ -4736,7 +5938,7 @@ def main():
                 1. **Escolha um par** (ex: BTC-USD para volatilidade)
                 2. **Selecione timeframe** (15m é bom para iniciantes)
                 3. **Configure período** (comece com 1-2 semanas)
-                4. **Ajuste RSI** (20-80 é conservador)
+                4. **Ajuste gatilhos RSI** (52/47 é o padrão mecânico)
                 5. **Execute e analise**
 
                 **💡 Dicas de Performance:**
@@ -4770,7 +5972,7 @@ def main():
                 st.info("""
                 **🔥 Scalping Agressivo**
                 - Timeframe: 5m
-                - RSI: 15-85
+                - RSI: 54/46
                 - Período: 1 semana
                 - Para: traders ativos
                 """)
@@ -4779,7 +5981,7 @@ def main():
                 st.info("""
                 **⚖️ Swing Trading**
                 - Timeframe: 1h
-                - RSI: 25-75
+                - RSI: 52/47
                 - Período: 1 mês
                 - Para: trading moderado
                 """)
@@ -4788,13 +5990,13 @@ def main():
                 st.info("""
                 **🛡️ Posição Longa**
                 - Timeframe: 4h
-                - RSI: 30-70
+                - RSI: 50/50
                 - Período: 3 meses
                 - Para: investidores
                 """)
 
     # Export Data Tab
-    with tab3:
+    if active_dashboard_section == "export":
         st.subheader("⚙️ Exportar Dados")
         st.markdown("Exporte dados e sinais para análise externa")
 
@@ -4859,16 +6061,49 @@ def main():
                     )
 
     # Admin Panel Tab
-    with tab5:
+    if active_dashboard_section == "admin":
         st.subheader("👑 Painel Administrativo")
 
         # Admin authentication
-        admin_password = st.text_input("🔐 Senha de Admin", type="password", key="admin_pass")
         configured_admin_password = ProductionConfig.ADMIN_PANEL_PASSWORD
+        if "admin_authenticated" not in st.session_state:
+            st.session_state.admin_authenticated = False
+        if "admin_auth_error" not in st.session_state:
+            st.session_state.admin_auth_error = ""
 
         if not configured_admin_password:
             st.warning("⚠️ Configure ADMIN_PANEL_PASSWORD para liberar o painel admin.")
-        elif admin_password == configured_admin_password:
+        else:
+            auth_col1, auth_col2 = st.columns([4, 1])
+            with auth_col1:
+                if not st.session_state.admin_authenticated:
+                    st.text_input("🔐 Senha de Admin", type="password", key="admin_pass")
+            with auth_col2:
+                if st.session_state.admin_authenticated:
+                    if st.button("🔒 Sair", key="admin_logout"):
+                        st.session_state.admin_authenticated = False
+                        st.session_state.admin_auth_error = ""
+                        st.session_state.admin_pass = ""
+                        st.rerun()
+                else:
+                    if st.button("🔓 Entrar", key="admin_login"):
+                        provided_password = str(st.session_state.get("admin_pass") or "")
+                        if hmac.compare_digest(provided_password, configured_admin_password):
+                            st.session_state.admin_authenticated = True
+                            st.session_state.admin_auth_error = ""
+                            st.session_state.admin_pass = ""
+                            st.rerun()
+                        else:
+                            st.session_state.admin_auth_error = "❌ Senha incorreta"
+
+            if st.session_state.admin_authenticated:
+                st.success("✅ Sessão administrativa autenticada.")
+            elif st.session_state.admin_auth_error:
+                st.error(st.session_state.admin_auth_error)
+            else:
+                st.info("🔐 Digite a senha de administrador para acessar o painel")
+
+        if st.session_state.get("admin_authenticated") and configured_admin_password:
             st.success("✅ Acesso autorizado!")
 
             user_manager = get_user_manager()
@@ -4887,6 +6122,279 @@ def main():
                 st.metric("💎 Usuários Premium", stats['premium_users'])
             with col4:
                 st.metric("🔥 Ativos Hoje", stats['active_today'])
+
+            st.markdown("---")
+            st.subheader("🧩 Runtime Multiuser")
+            multiuser_summary = db.get_multiuser_dashboard_summary()
+            mu_col1, mu_col2, mu_col3, mu_col4, mu_col5 = st.columns(5)
+            with mu_col1:
+                st.metric("Contas Ativas", int(multiuser_summary.get("active_accounts", 0) or 0))
+            with mu_col2:
+                st.metric("Somente Paper", int(multiuser_summary.get("paper_accounts", 0) or 0))
+            with mu_col3:
+                st.metric("Bloqueadas", int(multiuser_summary.get("blocked_accounts", 0) or 0))
+            with mu_col4:
+                st.metric("Erro Operacional", int(multiuser_summary.get("operational_error_accounts", 0) or 0))
+            with mu_col5:
+                st.metric("Mismatch", int(multiuser_summary.get("mismatch_accounts", 0) or 0))
+
+            st.markdown("---")
+            st.subheader("🔐 Segurança Multiuser")
+            vault = None
+            vault_error = ""
+            try:
+                from services.credential_vault import CredentialVault
+
+                vault = CredentialVault(strict=False)
+            except Exception as exc:
+                vault_error = str(exc)
+
+            sec_col1, sec_col2, sec_col3, sec_col4, sec_col5 = st.columns(5)
+            with sec_col1:
+                st.metric("Runtime", "ON" if ProductionConfig.ENABLE_MULTIUSER_RUNTIME else "OFF")
+            with sec_col2:
+                st.metric("Auto Exec", "ON" if ProductionConfig.ENABLE_MULTIUSER_AUTO_ORDER_EXECUTION else "OFF")
+            with sec_col3:
+                st.metric("Vault", "OK" if vault and vault.is_configured() else "PENDENTE")
+            with sec_col4:
+                st.metric("Token Guard", "ON" if ProductionConfig.REQUIRE_MULTIUSER_VALID_TOKEN else "OFF")
+            with sec_col5:
+                permission_stack = (
+                    ProductionConfig.REQUIRE_MULTIUSER_VALID_PERMISSIONS
+                    and ProductionConfig.REQUIRE_MULTIUSER_RECONCILIATION_OK
+                )
+                st.metric("Perm/Recon", "ON" if permission_stack else "OFF")
+
+            if vault_error:
+                st.error(f"Vault indisponível: {vault_error}")
+            elif not vault or not vault.is_configured():
+                st.warning("Configure CREDENTIAL_ENCRYPTION_KEY para armazenar credenciais de exchange com segurança.")
+            else:
+                st.success("Credenciais multiuser serão persistidas criptografadas com Fernet.")
+
+            st.subheader("👤 Acesso da Dashboard")
+            dashboard_access_rows = db.list_dashboard_user_access(limit=200)
+            if dashboard_access_rows:
+                access_df = pd.DataFrame(dashboard_access_rows)[
+                    [
+                        "user_id",
+                        "login_name",
+                        "is_active",
+                        "require_password_change",
+                        "telegram_username",
+                        "telegram_first_name",
+                        "telegram_plan",
+                        "account_count",
+                        "last_login_at",
+                    ]
+                ].rename(
+                    columns={
+                        "user_id": "User ID",
+                        "login_name": "Login",
+                        "is_active": "Ativo",
+                        "require_password_change": "Troca Senha",
+                        "telegram_username": "Telegram Username",
+                        "telegram_first_name": "Nome",
+                        "telegram_plan": "Plano",
+                        "account_count": "Contas",
+                        "last_login_at": "Último Login",
+                    }
+                )
+                st.dataframe(access_df, width="stretch", hide_index=True)
+            else:
+                st.info("Nenhum acesso de usuário da dashboard provisionado ainda.")
+
+            with st.form("dashboard_user_access_form"):
+                access_col1, access_col2, access_col3 = st.columns(3)
+                with access_col1:
+                    dashboard_access_user_id = st.number_input("User ID (Dashboard)", min_value=1, step=1, key="dashboard_access_user_id")
+                    dashboard_access_login = st.text_input("Login da Dashboard", key="dashboard_access_login")
+                with access_col2:
+                    dashboard_access_password = st.text_input("Senha Inicial", type="password", key="dashboard_access_password")
+                    dashboard_access_active = st.checkbox("Acesso Ativo", value=True, key="dashboard_access_active")
+                with access_col3:
+                    dashboard_force_password_change = st.checkbox(
+                        "Forçar Troca de Senha",
+                        value=True,
+                        key="dashboard_force_password_change",
+                    )
+                    dashboard_access_notes = st.text_area("Notas do Acesso", key="dashboard_access_notes")
+
+                if st.form_submit_button("Salvar Acesso da Dashboard"):
+                    try:
+                        db.upsert_dashboard_user_access(
+                            {
+                                "user_id": int(dashboard_access_user_id),
+                                "login_name": str(dashboard_access_login).strip(),
+                                "password": str(dashboard_access_password),
+                                "is_active": bool(dashboard_access_active),
+                                "require_password_change": bool(dashboard_force_password_change),
+                                "notes": dashboard_access_notes,
+                            }
+                        )
+                        st.success("Acesso da dashboard salvo com sucesso.")
+                        st.rerun()
+                    except Exception as access_error:
+                        st.error(f"Falha ao salvar acesso da dashboard: {access_error}")
+
+            st.subheader("🏦 Contas Multiuser")
+            account_overview = db.get_multiuser_account_overview(limit=200)
+            if account_overview:
+                account_df = pd.DataFrame(account_overview)
+                st.dataframe(account_df, width="stretch", hide_index=True)
+            else:
+                st.info("Nenhuma conta multiuser cadastrada.")
+
+            st.subheader("🧾 Onboarding de Conta")
+            with st.form("multiuser_account_form"):
+                acc_col1, acc_col2, acc_col3 = st.columns(3)
+                with acc_col1:
+                    mu_user_id = st.number_input("User ID", min_value=1, step=1, key="mu_user_id")
+                    mu_account_id = st.text_input("Account ID", key="mu_account_id")
+                    mu_account_alias = st.text_input("Alias", key="mu_account_alias")
+                with acc_col2:
+                    mu_exchange = st.selectbox(
+                        "Exchange",
+                        options=AppConfig.BRAZIL_SUPPORTED_EXCHANGES or ["binance"],
+                        key="mu_exchange",
+                    )
+                    mu_status = st.selectbox("Status", options=["active", "disabled"], key="mu_status")
+                    mu_capital_base = st.number_input("Capital Base", min_value=0.0, value=10000.0, step=100.0, key="mu_capital_base")
+                with acc_col3:
+                    mu_live_enabled = st.checkbox("Live Enabled", value=True, key="mu_live_enabled")
+                    mu_paper_enabled = st.checkbox("Paper Enabled", value=True, key="mu_paper_enabled")
+                    mu_risk_mode = st.selectbox("Risk Mode", options=["normal", "reduced", "blocked"], key="mu_risk_mode")
+
+                mu_allowed_symbols = st.text_input(
+                    "Símbolos Permitidos",
+                    value="BTC/USDT,ETH/USDT",
+                    help="Lista separada por vírgula.",
+                    key="mu_allowed_symbols",
+                )
+                mu_allowed_timeframes = st.multiselect(
+                    "Timeframes Permitidos",
+                    options=["5m", "15m", "30m", "1h", "4h", "1d"],
+                    default=["15m", "1h"],
+                    key="mu_allowed_timeframes",
+                )
+                mu_account_notes = st.text_area("Notas da Conta", key="mu_account_notes")
+                if st.form_submit_button("Salvar Conta Multiuser"):
+                    db.upsert_user_account(
+                        {
+                            "user_id": int(mu_user_id),
+                            "account_id": str(mu_account_id).strip(),
+                            "account_alias": str(mu_account_alias or mu_account_id).strip(),
+                            "exchange": mu_exchange,
+                            "status": mu_status,
+                            "live_enabled": bool(mu_live_enabled),
+                            "paper_enabled": bool(mu_paper_enabled),
+                            "capital_base": float(mu_capital_base),
+                            "risk_mode": mu_risk_mode,
+                            "allowed_symbols": [item.strip() for item in str(mu_allowed_symbols).split(",") if item.strip()],
+                            "allowed_timeframes": list(mu_allowed_timeframes),
+                            "notes": mu_account_notes,
+                        }
+                    )
+                    st.success("Conta multiuser salva com sucesso.")
+
+            st.subheader("🛡️ Perfil de Risco")
+            with st.form("multiuser_risk_profile_form"):
+                risk_col1, risk_col2, risk_col3 = st.columns(3)
+                with risk_col1:
+                    risk_user_id = st.number_input("User ID (Risco)", min_value=1, step=1, key="risk_user_id")
+                    risk_account_id = st.text_input("Account ID (Risco)", key="risk_account_id")
+                    risk_mode_profile = st.selectbox("Modo", options=["normal", "reduced", "blocked"], key="risk_mode_profile")
+                with risk_col2:
+                    max_risk_per_trade = st.number_input("Risco por Trade %", min_value=0.0, value=0.5, step=0.1, key="max_risk_per_trade")
+                    max_daily_loss = st.number_input("Loss Diário %", min_value=0.0, value=2.0, step=0.1, key="max_daily_loss")
+                    max_drawdown = st.number_input("Drawdown Máx %", min_value=0.0, value=10.0, step=0.5, key="max_drawdown")
+                with risk_col3:
+                    max_portfolio_open_risk_pct = st.number_input(
+                        "Risco Aberto Máx %",
+                        min_value=0.0,
+                        value=2.0,
+                        step=0.1,
+                        key="max_portfolio_open_risk_pct",
+                    )
+                    allowed_position_count = st.number_input("Máx Posições", min_value=0, value=3, step=1, key="allowed_position_count")
+                    leverage_cap = st.number_input("Leverage Cap", min_value=0.0, value=5.0, step=0.5, key="leverage_cap")
+
+                preferred_symbols = st.text_input(
+                    "Símbolos Preferidos",
+                    value="BTC/USDT,ETH/USDT",
+                    help="Lista separada por vírgula.",
+                    key="preferred_symbols",
+                )
+                risk_is_valid = st.checkbox("Risk Profile Válido", value=True, key="risk_is_valid")
+                risk_live_enabled = st.checkbox("Live liberado no risco", value=True, key="risk_live_enabled")
+                risk_paper_enabled = st.checkbox("Paper liberado no risco", value=True, key="risk_paper_enabled")
+                if st.form_submit_button("Salvar Perfil de Risco"):
+                    db.upsert_user_risk_profile(
+                        {
+                            "user_id": int(risk_user_id),
+                            "account_id": str(risk_account_id).strip(),
+                            "max_risk_per_trade": float(max_risk_per_trade),
+                            "max_daily_loss": float(max_daily_loss),
+                            "max_drawdown": float(max_drawdown),
+                            "max_portfolio_open_risk_pct": float(max_portfolio_open_risk_pct),
+                            "allowed_position_count": int(allowed_position_count),
+                            "preferred_symbols": [item.strip() for item in str(preferred_symbols).split(",") if item.strip()],
+                            "leverage_cap": float(leverage_cap),
+                            "risk_mode": risk_mode_profile,
+                            "is_valid": bool(risk_is_valid),
+                            "live_enabled": bool(risk_live_enabled),
+                            "paper_enabled": bool(risk_paper_enabled),
+                        }
+                    )
+                    st.success("Perfil de risco salvo com sucesso.")
+
+            st.subheader("🔑 Credenciais Criptografadas")
+            if vault and vault.is_configured():
+                with st.form("multiuser_credentials_form"):
+                    cred_col1, cred_col2, cred_col3 = st.columns(3)
+                    with cred_col1:
+                        cred_user_id = st.number_input("User ID (Credencial)", min_value=1, step=1, key="cred_user_id")
+                        cred_account_id = st.text_input("Account ID (Credencial)", key="cred_account_id")
+                        cred_exchange = st.selectbox(
+                            "Exchange (Credencial)",
+                            options=AppConfig.BRAZIL_SUPPORTED_EXCHANGES or ["binance"],
+                            key="cred_exchange",
+                        )
+                    with cred_col2:
+                        cred_alias = st.text_input("Alias da Credencial", key="cred_alias")
+                        permission_status = st.selectbox("Permission Status", options=["valid", "unknown", "blocked"], key="permission_status")
+                        token_status = st.selectbox("Token Status", options=["valid", "unknown", "expired"], key="token_status")
+                    with cred_col3:
+                        reconciliation_status = st.selectbox("Reconciliation", options=["ok", "unknown", "broken"], key="reconciliation_status")
+                        permissions_trade = st.checkbox("Permissão de Trade", value=True, key="permissions_trade")
+                        permissions_withdraw = st.checkbox("Permissão de Saque", value=False, key="permissions_withdraw")
+
+                    api_key = st.text_input("API Key", type="password", key="cred_api_key")
+                    api_secret = st.text_input("API Secret", type="password", key="cred_api_secret")
+                    credential_notes = st.text_area("Notas da Credencial", key="credential_notes")
+                    if st.form_submit_button("Salvar Credenciais com Vault"):
+                        if api_key and api_secret and cred_account_id:
+                            vault.store_exchange_credentials(
+                                db,
+                                user_id=int(cred_user_id),
+                                account_id=str(cred_account_id).strip(),
+                                exchange=str(cred_exchange).strip(),
+                                api_key=api_key,
+                                api_secret=api_secret,
+                                credential_alias=cred_alias,
+                                permissions_read=True,
+                                permissions_trade=bool(permissions_trade),
+                                permissions_withdraw=bool(permissions_withdraw),
+                                permission_status=permission_status,
+                                token_status=token_status,
+                                reconciliation_status=reconciliation_status,
+                                notes=credential_notes,
+                            )
+                            st.success("Credenciais armazenadas com criptografia.")
+                        else:
+                            st.error("Informe account_id, api_key e api_secret para salvar as credenciais.")
+            else:
+                st.info("Configure o vault para liberar o cadastro seguro de credenciais.")
 
             # User management
             st.markdown("---")
@@ -4909,7 +6417,7 @@ def main():
             st.markdown("---")
             st.subheader("Strategy Evaluations")
 
-            evaluation_overview = db.get_strategy_evaluation_overview(limit=25)
+            evaluation_overview = get_cached_strategy_evaluation_overview(limit=25)
             governance_counts = evaluation_overview.get("governance_counts", {})
             edge_counts = evaluation_overview.get("edge_counts", {})
 
@@ -5004,9 +6512,7 @@ def main():
             if st.button("📤 Enviar para Todos") and broadcast_msg:
                 st.info("Funcionalidade de broadcast disponível via comando /broadcast no Telegram")
 
-        elif admin_password:
-            st.error("❌ Senha incorreta")
-        else:
+        elif configured_admin_password:
             st.info("🔐 Digite a senha de administrador para acessar o painel")
 
     # Footer

@@ -7,9 +7,10 @@ Python-telegram-bot v20+
 import asyncio
 import logging
 from datetime import datetime
-from typing import Optional
+from typing import Dict, List, Optional
 
 logger = logging.getLogger(__name__)
+ACTIONABLE_SIGNALS = {"COMPRA", "VENDA"}
 
 # Verificar se telegram está disponível
 try:
@@ -45,13 +46,20 @@ from services.risk_management_service import RiskManagementService
 class TelegramTradingBot:
     """Bot Telegram para Trading - Versão Consolidada"""
     
-    def __init__(self, allow_simulated_data=False, auto_configure_from_env=True):
-        self.allow_simulated_data = allow_simulated_data
+    def __init__(self, auto_configure_from_env=True):
         self.auto_configure_from_env = auto_configure_from_env
         self.ai_model = AIModel()
         self.paper_trade_service = PaperTradeService()
         self.risk_management_service = RiskManagementService()
         self.logger = logging.getLogger(self.__class__.__name__)
+        self._auto_signal_job = None
+        self.signal_scanner_enabled = bool(ProductionConfig.ENABLE_TELEGRAM_SIGNAL_SCANNER)
+        self.signal_scan_interval_seconds = int(ProductionConfig.TELEGRAM_SIGNAL_SCAN_INTERVAL_SECONDS)
+        self.signal_scan_timeframe = str(
+            ProductionConfig.TELEGRAM_SIGNAL_SCAN_TIMEFRAME or AppConfig.PRIMARY_TIMEFRAME
+        )
+        self.signal_queue_batch_size = int(ProductionConfig.TELEGRAM_SIGNAL_QUEUE_BATCH_SIZE)
+        self.signal_scan_symbols = self._resolve_signal_scan_symbols(ProductionConfig.TELEGRAM_SIGNAL_SCAN_SYMBOLS)
         
         if not TELEGRAM_AVAILABLE:
             self.logger.error("❌ Telegram library not available")
@@ -71,7 +79,7 @@ class TelegramTradingBot:
             from user_manager import UserManager
             from trading_bot import TradingBot
             self.user_manager = UserManager()
-            self.trading_bot = TradingBot(allow_simulated_data=self.allow_simulated_data)
+            self.trading_bot = TradingBot()
         except ImportError as e:
             self.logger.warning(f"⚠️ Erro ao importar dependências: {e}")
             self.user_manager = None
@@ -154,10 +162,97 @@ class TelegramTradingBot:
                 self.application.add_handler(CommandHandler(command, handler))
                 self.logger.debug(f"✅ Handler /{command} adicionado")
 
+            self._setup_auto_signal_scanner()
             self.logger.info("✅ Todos os handlers configurados")
 
         except Exception as e:
             self.logger.error(f"❌ Erro ao configurar handlers: {e}")
+
+    def _setup_auto_signal_scanner(self):
+        if not self.signal_scanner_enabled:
+            self.logger.info("Scanner automatico de sinais desabilitado por configuracao.")
+            return
+        if not self.application or not getattr(self.application, "job_queue", None):
+            self.logger.warning("Job queue indisponivel; scanner automatico nao foi iniciado.")
+            return
+        if self._auto_signal_job is not None:
+            return
+
+        self._auto_signal_job = self.application.job_queue.run_repeating(
+            self._auto_signal_scan_job,
+            interval=self.signal_scan_interval_seconds,
+            first=5,
+            name="telegram_auto_signal_scanner",
+        )
+        self.logger.info(
+            "Scanner automatico ativo: intervalo=%ss timeframe=%s simbolos=%s",
+            self.signal_scan_interval_seconds,
+            self.signal_scan_timeframe,
+            ",".join(self.signal_scan_symbols),
+        )
+
+    async def _auto_signal_scan_job(self, context: ContextTypes.DEFAULT_TYPE):
+        try:
+            await self._dispatch_pending_signal_alerts()
+            await self._scan_symbols_for_new_signals()
+        except Exception as exc:
+            self.logger.warning("Falha no job automatico de sinais: %s", exc)
+
+    def _get_signal_recipients(self) -> List[int]:
+        recipients = []
+        if self.user_manager:
+            try:
+                for user in self.user_manager.list_users(limit=5000):
+                    user_id = user.get("id")
+                    if user_id is None:
+                        continue
+                    is_premium = str(user.get("plan", "")).lower() == "premium"
+                    if is_premium or bool(user.get("is_admin")):
+                        recipients.append(int(user_id))
+            except Exception as exc:
+                self.logger.warning("Falha ao carregar usuarios para alertas: %s", exc)
+
+        for admin_id in getattr(ProductionConfig, "ADMIN_USERS", []) or []:
+            try:
+                recipients.append(int(admin_id))
+            except Exception:
+                continue
+
+        raw_chat_id = getattr(ProductionConfig, "TELEGRAM_CHAT_ID", "")
+        if raw_chat_id:
+            try:
+                recipients.append(int(raw_chat_id))
+            except Exception:
+                self.logger.debug("TELEGRAM_CHAT_ID invalido para envio direto: %s", raw_chat_id)
+
+        deduped = []
+        seen = set()
+        for recipient in recipients:
+            if recipient in seen:
+                continue
+            seen.add(recipient)
+            deduped.append(recipient)
+        return deduped
+
+    async def _send_signal_alert_to_recipients(self, message: str, recipients: List[int]) -> Dict[str, object]:
+        success_count = 0
+        errors: List[str] = []
+        if not self.bot:
+            return {"success_count": 0, "errors": ["Bot nao inicializado"]}
+
+        for recipient in recipients:
+            try:
+                await self.bot.send_message(chat_id=recipient, text=message)
+                success_count += 1
+            except Exception as exc:
+                errors.append(f"{recipient}:{exc}")
+
+        return {
+            "success_count": success_count,
+            "error_count": len(errors),
+            "errors": errors,
+            "error_summary": "; ".join(errors[:3]) if errors else None,
+        }
 
     async def _safe_reply(self, update: Update, text: str, parse_mode: Optional[str] = None):
         try:
@@ -178,15 +273,324 @@ class TelegramTradingBot:
         return "en" if resolved_code.startswith("en") else "pt"
 
     @staticmethod
+    def _resolve_signal_scan_symbols(raw_symbols: Optional[str]) -> List[str]:
+        if raw_symbols:
+            parsed = [
+                symbol.strip().upper()
+                for symbol in str(raw_symbols).split(",")
+                if symbol.strip()
+            ]
+            if parsed:
+                return parsed
+
+        return [str(symbol).upper() for symbol in TelegramBotConfig.SUPPORTED_PAIRS]
+
+    def _build_auto_signal_message(self, payload: Dict[str, object]) -> str:
+        symbol = str(payload.get("symbol", "-"))
+        timeframe = str(payload.get("timeframe", "-"))
+        final_signal = self._display_signal(str(payload.get("final_signal", "NEUTRO")))
+        rule_signal = self._display_signal(str(payload.get("rule_signal", "NEUTRO")))
+        price = float(payload.get("price", 0.0) or 0.0)
+        regime = ((payload.get("regime_evaluation") or {}).get("regime") or "-")
+        setup_type = ((payload.get("entry_quality_evaluation") or {}).get("setup_type") or "-")
+        entry_quality = ((payload.get("entry_quality_evaluation") or {}).get("entry_quality") or "-")
+        entry_score = float(((payload.get("entry_quality_evaluation") or {}).get("entry_score") or 0.0))
+        scenario_score = float(((payload.get("scenario_evaluation") or {}).get("scenario_score") or 0.0))
+        timestamp = str(payload.get("candle_timestamp") or datetime.now().isoformat())
+
+        return "\n".join(
+            [
+                f"Alerta de Sinal - {symbol} {timeframe}",
+                f"Sinal operacional: {final_signal}",
+                f"Sinal analitico: {rule_signal}",
+                f"Preco: ${price:.6f}",
+                f"Regime: {regime}",
+                f"Setup: {setup_type}",
+                f"Entrada: {entry_quality} | score {entry_score:.2f}/10",
+                f"Cenario: {scenario_score:.2f}/10",
+                f"Candle fechado: {timestamp}",
+            ]
+        )
+
+    def _build_pending_signal_message(self, signal_row: Dict[str, object]) -> str:
+        signal = self._display_signal(str(signal_row.get("signal_type", "NEUTRO")))
+        symbol = str(signal_row.get("symbol", "-"))
+        timeframe = str(signal_row.get("timeframe", "-"))
+        price = float(signal_row.get("price", 0.0) or 0.0)
+        candle_timestamp = str(signal_row.get("candle_timestamp") or signal_row.get("created_at_br") or "-")
+        return (
+            f"Alerta de Sinal - {symbol} {timeframe}\n"
+            f"Sinal operacional: {signal}\n"
+            f"Preco: ${price:.6f}\n"
+            f"Candle fechado: {candle_timestamp}"
+        )
+
+    def _evaluate_operational_signal_snapshot(self, symbol: str, timeframe: str) -> Optional[Dict[str, object]]:
+        if not self.trading_bot:
+            return None
+
+        strategy_settings = self._resolve_runtime_strategy_settings(symbol, timeframe)
+        data = self.trading_bot.get_market_data(symbol=symbol, timeframe=timeframe)
+        if data is None or data.empty:
+            return None
+
+        signal_pipeline = self.trading_bot.evaluate_signal_pipeline(
+            data,
+            timeframe=timeframe,
+            require_volume=strategy_settings.get("require_volume", True),
+            require_trend=strategy_settings.get("require_trend", False),
+            avoid_ranging=strategy_settings.get("avoid_ranging", True),
+            context_timeframe=strategy_settings.get("context_timeframe"),
+            stop_loss_pct=strategy_settings.get("stop_loss_pct"),
+            take_profit_pct=strategy_settings.get("take_profit_pct"),
+            allowed_execution_setups=strategy_settings.get("allowed_execution_setups"),
+        )
+        rule_signal = signal_pipeline.get("analytical_signal", "NEUTRO")
+
+        ai_signal = "NEUTRO"
+        try:
+            ai_pred = self.ai_model.predict(data)
+            ai_signal = ai_pred.get("signal", "NEUTRO")
+        except Exception:
+            ai_signal = "NEUTRO"
+
+        last_candle = data.iloc[-1]
+        regime_evaluation = signal_pipeline.get("regime_evaluation")
+        governance_regime = (regime_evaluation or {}).get("regime")
+        if (regime_evaluation or {}).get("parabolic"):
+            governance_regime = "parabolic"
+
+        governance_summary = None
+        try:
+            governance_summary = runtime_db.evaluate_strategy_governance(
+                symbol=symbol,
+                timeframe=timeframe,
+                strategy_version=strategy_settings.get("strategy_version"),
+                current_regime=governance_regime,
+                persist=False,
+            )
+        except Exception as exc:
+            self.logger.warning("Falha na governanca adaptativa durante scan: %s", exc)
+
+        final_signal = rule_signal
+        runtime_allowed = bool(strategy_settings.get("runtime_allowed", True))
+        operational_block_reason = None
+        operational_block_source = None
+        risk_plan = None
+        edge_summary = None
+        edge_allowed = True
+        edge_block_reason = None
+
+        if runtime_allowed:
+            final_signal = self._merge_rule_and_ai_signal(rule_signal, ai_signal)
+            edge_signal, edge_summary = self._apply_edge_guardrail(
+                final_signal,
+                symbol,
+                timeframe,
+                strategy_version=strategy_settings.get("strategy_version"),
+            )
+            edge_allowed = edge_signal in ACTIONABLE_SIGNALS or final_signal == "NEUTRO"
+            if edge_summary and edge_signal == "NEUTRO" and final_signal != "NEUTRO":
+                edge_block_reason = edge_summary.get("status_message") or "Edge guardrail bloqueou o setup."
+
+            final_signal, risk_plan = self._apply_risk_guardrail(
+                final_signal,
+                float(last_candle["close"]),
+                strategy_settings,
+                runtime_allowed=True,
+                system_health_ok=edge_allowed,
+                system_health_reason=edge_block_reason,
+            )
+            if edge_summary and not edge_allowed:
+                runtime_allowed = False
+                operational_block_reason = edge_block_reason
+                operational_block_source = "edge_guardrail"
+            elif risk_plan and not risk_plan.get("allowed"):
+                runtime_allowed = False
+                operational_block_reason = (
+                    risk_plan.get("risk_reason") or risk_plan.get("reason") or "Risco operacional bloqueado."
+                )
+                operational_block_source = "risk_guardrail"
+            elif governance_summary and governance_summary.get("governance_mode") == "blocked":
+                final_signal = "NEUTRO"
+                runtime_allowed = False
+                operational_block_reason = governance_summary.get("action_reason") or "Governanca bloqueou o setup."
+                operational_block_source = "adaptive_governance"
+            elif governance_summary and governance_summary.get("governance_mode") == "reduced" and risk_plan and risk_plan.get("allowed"):
+                risk_plan["governance_mode"] = "reduced"
+                risk_plan["governance_reduction_multiplier"] = governance_summary.get("governance_reduction_multiplier", 1.0)
+        else:
+            final_signal = "NEUTRO"
+            runtime_block_reason = strategy_settings.get("runtime_block_reason", "Runtime bloqueado")
+            _, risk_plan = self._apply_risk_guardrail(
+                rule_signal,
+                float(last_candle["close"]),
+                strategy_settings,
+                runtime_allowed=False,
+                runtime_block_reason=runtime_block_reason,
+            )
+            operational_block_reason = (
+                (risk_plan or {}).get("risk_reason")
+                or (risk_plan or {}).get("reason")
+                or runtime_block_reason
+            )
+            operational_block_source = "runtime_governance"
+
+        candle_timestamp = data.index[-1]
+        candle_timestamp_iso = candle_timestamp.isoformat() if hasattr(candle_timestamp, "isoformat") else str(candle_timestamp)
+        return {
+            "symbol": symbol,
+            "timeframe": timeframe,
+            "strategy_settings": strategy_settings,
+            "rule_signal": rule_signal,
+            "final_signal": final_signal,
+            "runtime_allowed": runtime_allowed,
+            "operational_block_reason": operational_block_reason,
+            "operational_block_source": operational_block_source,
+            "risk_plan": risk_plan,
+            "edge_summary": edge_summary,
+            "signal_pipeline": signal_pipeline,
+            "last_candle": last_candle,
+            "price": float(last_candle["close"]),
+            "candle_timestamp": candle_timestamp_iso,
+            "regime_evaluation": regime_evaluation,
+            "entry_quality_evaluation": signal_pipeline.get("entry_quality_evaluation"),
+            "scenario_evaluation": signal_pipeline.get("scenario_evaluation"),
+        }
+
+    async def _dispatch_pending_signal_alerts(self):
+        recipients = self._get_signal_recipients()
+        if not recipients:
+            return
+
+        pending_rows = await asyncio.to_thread(
+            runtime_db.get_pending_telegram_signals,
+            self.signal_queue_batch_size,
+        )
+        for row in pending_rows:
+            signal = str(row.get("signal_type", "NEUTRO"))
+            if signal not in ACTIONABLE_SIGNALS:
+                await asyncio.to_thread(runtime_db.mark_trading_signal_telegram_sent, int(row["id"]), "Sinal nao acionavel")
+                continue
+
+            message = self._build_pending_signal_message(row)
+            send_result = await self._send_signal_alert_to_recipients(message, recipients)
+            if send_result["success_count"] > 0:
+                await asyncio.to_thread(runtime_db.mark_trading_signal_telegram_sent, int(row["id"]), None)
+            elif send_result.get("error_summary"):
+                await asyncio.to_thread(
+                    runtime_db.mark_trading_signal_telegram_sent,
+                    int(row["id"]),
+                    send_result["error_summary"],
+                )
+
+    async def _scan_symbols_for_new_signals(self):
+        recipients = self._get_signal_recipients()
+        if not recipients:
+            self.logger.debug("Sem destinatarios premium/admin para receber alertas automaticos.")
+            return
+
+        for symbol in self.signal_scan_symbols:
+            try:
+                snapshot = await asyncio.to_thread(
+                    self._evaluate_operational_signal_snapshot,
+                    symbol,
+                    self.signal_scan_timeframe,
+                )
+            except Exception as exc:
+                self.logger.warning("Falha no scan automatico de %s %s: %s", symbol, self.signal_scan_timeframe, exc)
+                continue
+
+            if not snapshot:
+                continue
+
+            final_signal = str(snapshot.get("final_signal", "NEUTRO"))
+            if final_signal not in ACTIONABLE_SIGNALS:
+                continue
+            if not snapshot.get("runtime_allowed"):
+                continue
+
+            candle_timestamp = snapshot.get("candle_timestamp")
+            already_sent = await asyncio.to_thread(
+                runtime_db.has_signal_for_candle,
+                symbol,
+                self.signal_scan_timeframe,
+                final_signal,
+                candle_timestamp,
+            )
+            if already_sent:
+                continue
+
+            signal_pipeline = snapshot.get("signal_pipeline") or {}
+            last_candle = snapshot.get("last_candle")
+            if last_candle is None:
+                continue
+            strategy_settings = snapshot.get("strategy_settings") or {}
+            signal_id = await asyncio.to_thread(
+                runtime_db.save_trading_signal,
+                {
+                    "symbol": symbol,
+                    "timeframe": self.signal_scan_timeframe,
+                    "context_timeframe": strategy_settings.get("context_timeframe"),
+                    "strategy_version": strategy_settings.get("strategy_version"),
+                    "regime": (snapshot.get("regime_evaluation") or {}).get("regime"),
+                    "signal": final_signal,
+                    "price": snapshot.get("price"),
+                    "rsi": last_candle.get("rsi"),
+                    "macd_signal": last_candle.get("macd_signal"),
+                    "macd_value": last_candle.get("macd"),
+                    "signal_strength": abs(float(last_candle.get("rsi", 50.0)) - 50.0) / 50.0,
+                    "volume": last_candle.get("volume", 0),
+                    "candle_timestamp": candle_timestamp,
+                    "sent_telegram": False,
+                },
+            )
+
+            risk_plan = snapshot.get("risk_plan") or {}
+            if risk_plan.get("allowed"):
+                entry_quality_evaluation = signal_pipeline.get("entry_quality_evaluation") or {}
+                await asyncio.to_thread(
+                    self.paper_trade_service.register_signal,
+                    symbol,
+                    self.signal_scan_timeframe,
+                    final_signal,
+                    float(snapshot.get("price", 0.0)),
+                    datetime.now(),
+                    strategy_settings.get("context_timeframe"),
+                    "telegram_auto",
+                    strategy_settings.get("strategy_version"),
+                    strategy_settings.get("stop_loss_pct"),
+                    strategy_settings.get("take_profit_pct"),
+                    risk_plan,
+                    entry_quality_evaluation.get("setup_type") or strategy_settings.get("strategy_version"),
+                    (snapshot.get("regime_evaluation") or {}).get("regime"),
+                    entry_quality_evaluation.get("entry_score", last_candle.get("signal_confidence", 0.0)),
+                    last_candle.get("atr", 0.0),
+                    final_signal,
+                    entry_quality_evaluation.get("entry_quality"),
+                    entry_quality_evaluation.get("rejection_reason"),
+                    "paper",
+                )
+
+            message = self._build_auto_signal_message(snapshot)
+            send_result = await self._send_signal_alert_to_recipients(message, recipients)
+            if send_result["success_count"] > 0:
+                await asyncio.to_thread(runtime_db.mark_trading_signal_telegram_sent, int(signal_id), None)
+            elif send_result.get("error_summary"):
+                await asyncio.to_thread(
+                    runtime_db.mark_trading_signal_telegram_sent,
+                    int(signal_id),
+                    send_result["error_summary"],
+                )
+
+    @staticmethod
     def _display_signal(signal: str, locale: str = "pt") -> str:
         if locale != "en":
             return str(signal or "").replace("_", " ")
 
         mapping = {
             "COMPRA": "BUY",
-            "COMPRA_FRACA": "WEAK BUY",
             "VENDA": "SELL",
-            "VENDA_FRACA": "WEAK SELL",
             "NEUTRO": "WAIT",
             "BUY": "BUY",
             "SELL": "SELL",
@@ -195,7 +599,7 @@ class TelegramTradingBot:
         return mapping.get(str(signal or "").upper(), str(signal or "").replace("_", " "))
 
     def _apply_edge_guardrail(self, signal: str, symbol: str, timeframe: str, strategy_version: Optional[str] = None):
-        if signal not in {"COMPRA", "VENDA", "COMPRA_FRACA", "VENDA_FRACA"}:
+        if signal not in {"COMPRA", "VENDA"}:
             return signal, None
         if not ProductionConfig.ENABLE_EDGE_GUARDRAIL:
             return signal, None
@@ -493,7 +897,8 @@ class TelegramTradingBot:
         )
 
     def _resolve_runtime_strategy_settings(self, symbol: str, timeframe: str) -> dict:
-        default_context_timeframe = AppConfig.get_context_timeframe(timeframe)
+        default_context_timeframe = None
+        runtime_allowed_execution_setups = AppConfig.get_runtime_allowed_execution_setups(timeframe)
         if not self.trading_bot:
             return {
                 "symbol": symbol,
@@ -506,13 +911,22 @@ class TelegramTradingBot:
                 "take_profit_pct": ProductionConfig.DEFAULT_LIVE_TAKE_PROFIT_PCT,
                 "require_volume": True,
                 "require_trend": False,
+                "market_state": None,
+                "allowed_market_states": [],
                 "active_profile": None,
                 "runtime_allowed": False,
                 "runtime_block_reason": "Trading bot indisponivel para resolver setup ativo.",
+                "allowed_execution_setups": runtime_allowed_execution_setups,
             }
 
         active_profile = runtime_db.get_active_strategy_profile(symbol=symbol, timeframe=timeframe)
         if active_profile:
+            runtime_allowed_execution_setups = AppConfig.get_runtime_allowed_execution_setups(
+                timeframe,
+                active_profile.get("setup_type"),
+                active_profile.get("allowed_setup_types"),
+                active_profile.get("allowed_market_states"),
+            )
             self.trading_bot.update_config(
                 symbol=symbol,
                 timeframe=timeframe,
@@ -532,9 +946,14 @@ class TelegramTradingBot:
                 "require_volume": bool(active_profile.get("require_volume", False)),
                 "require_trend": bool(active_profile.get("require_trend", False)),
                 "avoid_ranging": bool(active_profile.get("avoid_ranging", False)),
+                "market_state": active_profile.get("market_state"),
+                "allowed_market_states": active_profile.get("allowed_market_states") or [],
+                "setup_type": active_profile.get("setup_type"),
+                "allowed_setup_types": active_profile.get("allowed_setup_types") or [],
                 "active_profile": active_profile,
                 "runtime_allowed": True,
                 "runtime_block_reason": "",
+                "allowed_execution_setups": runtime_allowed_execution_setups,
             }
         else:
             self.trading_bot.update_config(symbol=symbol, timeframe=timeframe)
@@ -558,9 +977,14 @@ class TelegramTradingBot:
                 "require_volume": True,
                 "require_trend": False,
                 "avoid_ranging": True,
+                "market_state": None,
+                "allowed_market_states": [],
+                "setup_type": None,
+                "allowed_setup_types": [],
                 "active_profile": None,
                 "runtime_allowed": runtime_allowed,
                 "runtime_block_reason": runtime_block_reason,
+                "allowed_execution_setups": runtime_allowed_execution_setups,
             }
 
         settings["strategy_version"] = self._build_runtime_strategy_version(symbol, timeframe, settings)
@@ -570,14 +994,13 @@ class TelegramTradingBot:
         if not ProductionConfig.ENABLE_AI_SIGNAL_INFLUENCE:
             return signal
 
-        final_signal = signal
-        if ai_signal in ["BUY", "SELL"] and signal in ["COMPRA", "VENDA"]:
-            final_signal = signal
-        elif ai_signal == "BUY" and signal in ["NEUTRO", "VENDA", "VENDA_FRACA"]:
-            final_signal = "COMPRA_FRACA"
-        elif ai_signal == "SELL" and signal in ["NEUTRO", "COMPRA", "COMPRA_FRACA"]:
-            final_signal = "VENDA_FRACA"
-        return final_signal
+        if signal in {"COMPRA", "VENDA"}:
+            return signal
+        if signal == "NEUTRO" and ai_signal == "BUY":
+            return "COMPRA"
+        if signal == "NEUTRO" and ai_signal == "SELL":
+            return "VENDA"
+        return signal
 
     def _apply_risk_guardrail(
         self,
@@ -589,7 +1012,7 @@ class TelegramTradingBot:
         system_health_ok: bool = True,
         system_health_reason: str = None,
     ):
-        if signal not in {"COMPRA", "VENDA", "COMPRA_FRACA", "VENDA_FRACA"}:
+        if signal not in {"COMPRA", "VENDA"}:
             return signal, None
 
         risk_plan = self.risk_management_service.evaluate_risk_engine(
@@ -831,6 +1254,7 @@ class TelegramTradingBot:
                 context_timeframe=strategy_settings.get("context_timeframe"),
                 stop_loss_pct=strategy_settings.get("stop_loss_pct"),
                 take_profit_pct=strategy_settings.get("take_profit_pct"),
+                allowed_execution_setups=strategy_settings.get("allowed_execution_setups"),
             )
             signal = signal_pipeline["analytical_signal"]
             context_evaluation = signal_pipeline.get("context_evaluation")
@@ -883,7 +1307,7 @@ class TelegramTradingBot:
                     timeframe,
                     strategy_version=runtime_strategy_version,
                 )
-                edge_allowed = edge_signal in {"COMPRA", "VENDA", "COMPRA_FRACA", "VENDA_FRACA"} or final_signal == "NEUTRO"
+                edge_allowed = edge_signal in {"COMPRA", "VENDA"} or final_signal == "NEUTRO"
                 if edge_summary and edge_signal == "NEUTRO" and final_signal != "NEUTRO":
                     edge_block_reason = edge_summary.get("status_message") or "Edge monitor bloqueou o setup."
                 final_signal, risk_plan = self._apply_risk_guardrail(
@@ -1073,6 +1497,8 @@ class TelegramTradingBot:
                         "macd_value": last_candle["macd"],
                         "signal_strength": abs(last_candle["rsi"] - 50) / 50,
                         "volume": last_candle.get("volume", 0),
+                        "candle_timestamp": data.index[-1].isoformat() if len(data.index) else None,
+                        "sent_telegram": True,
                     }
                 )
                 if risk_plan and risk_plan.get("allowed"):

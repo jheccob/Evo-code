@@ -11,6 +11,10 @@ from telegram_bot import TelegramTradingBot
 
 
 class TelegramTradingBotLogicTests(unittest.TestCase):
+    @staticmethod
+    async def _direct_to_thread(func, *args, **kwargs):
+        return func(*args, **kwargs)
+
     def test_ai_signal_is_comparative_only_by_default(self):
         bot = TelegramTradingBot.__new__(TelegramTradingBot)
 
@@ -22,8 +26,8 @@ class TelegramTradingBotLogicTests(unittest.TestCase):
         bot = TelegramTradingBot.__new__(TelegramTradingBot)
 
         with mock.patch.object(ProductionConfig, "ENABLE_AI_SIGNAL_INFLUENCE", True):
-            self.assertEqual(bot._merge_rule_and_ai_signal("NEUTRO", "BUY"), "COMPRA_FRACA")
-            self.assertEqual(bot._merge_rule_and_ai_signal("NEUTRO", "SELL"), "VENDA_FRACA")
+            self.assertEqual(bot._merge_rule_and_ai_signal("NEUTRO", "BUY"), "COMPRA")
+            self.assertEqual(bot._merge_rule_and_ai_signal("NEUTRO", "SELL"), "VENDA")
 
     def test_runtime_settings_block_session_fallback_without_active_profile(self):
         bot = TelegramTradingBot.__new__(TelegramTradingBot)
@@ -63,9 +67,41 @@ class TelegramTradingBotLogicTests(unittest.TestCase):
 
         self.assertIn("-ctx4h", strategy_version)
 
+    def test_runtime_settings_use_promoted_setup_basket_as_execution_allowlist(self):
+        bot = TelegramTradingBot.__new__(TelegramTradingBot)
+        bot.trading_bot = mock.Mock()
+        bot.trading_bot.rsi_period = 14
+        bot.trading_bot.rsi_min = 30
+        bot.trading_bot.rsi_max = 70
+
+        active_profile = {
+            "strategy_version": "BTCUSDT-1h-runtime-test",
+            "context_timeframe": "4h",
+            "rsi_period": 14,
+            "rsi_min": 30,
+            "rsi_max": 70,
+            "stop_loss_pct": 2.0,
+            "take_profit_pct": 4.0,
+            "require_volume": True,
+            "require_trend": True,
+            "avoid_ranging": True,
+            "market_state": "ema_rsi_resume_bull",
+            "allowed_market_states": ["ema_rsi_resume_bull"],
+            "setup_type": "ema_rsi_resume_long",
+            "allowed_setup_types": ["ema_rsi_resume_long"],
+        }
+
+        with mock.patch("telegram_bot.runtime_db.get_active_strategy_profile", return_value=active_profile):
+            settings = bot._resolve_runtime_strategy_settings("BTC/USDT", "1h")
+
+        self.assertTrue(settings["runtime_allowed"])
+        self.assertEqual(settings["market_state"], "ema_rsi_resume_bull")
+        self.assertEqual(settings["allowed_market_states"], ["ema_rsi_resume_bull"])
+        self.assertEqual(settings["allowed_execution_setups"], ["ema_rsi_resume_long"])
+
     def test_display_signal_translates_known_signals_to_english(self):
         self.assertEqual(TelegramTradingBot._display_signal("COMPRA", locale="en"), "BUY")
-        self.assertEqual(TelegramTradingBot._display_signal("VENDA_FRACA", locale="en"), "WEAK SELL")
+        self.assertEqual(TelegramTradingBot._display_signal("VENDA", locale="en"), "SELL")
         self.assertEqual(TelegramTradingBot._display_signal("NEUTRO", locale="en"), "WAIT")
 
     def test_build_strategy_runtime_note_marks_runtime_as_blocked_without_active_profile(self):
@@ -204,7 +240,7 @@ class TelegramTradingBotLogicTests(unittest.TestCase):
             {
                 "entry_quality": "acceptable",
                 "entry_score": 6.8,
-                "setup_type": "pullback_trend",
+                "setup_type": "ema_rsi_resume_long",
                 "rsi_state": "pullback_recovery",
                 "candle_quality": "acceptable",
                 "momentum_state": "acceptable",
@@ -216,7 +252,7 @@ class TelegramTradingBotLogicTests(unittest.TestCase):
 
         self.assertIn("acceptable", note)
         self.assertIn("6.80/10", note)
-        self.assertIn("pullback_trend", note)
+        self.assertIn("ema_rsi_resume_long", note)
         self.assertIn("RR 1.34", note)
         self.assertIn("pullback_recovery", note)
         self.assertIn("risco retorno aceitavel", note)
@@ -386,7 +422,7 @@ class TelegramTradingBotLogicTests(unittest.TestCase):
             "entry_quality_evaluation": {
                 "entry_quality": "strong",
                 "entry_score": 7.4,
-                "setup_type": "pullback_trend",
+                "setup_type": "ema_rsi_resume_long",
                 "rsi_state": "pullback_recovery",
                 "candle_quality": "acceptable",
                 "momentum_state": "strong",
@@ -460,7 +496,7 @@ class TelegramTradingBotLogicTests(unittest.TestCase):
         self.assertIn("Estrutura: pullback", message)
         self.assertIn("Confirmacao: confirmed", message)
         self.assertIn("Entrada: strong", message)
-        self.assertIn("setup pullback_trend", message)
+        self.assertIn("setup ema_rsi_resume_long", message)
         self.assertIn("Cenario: score 7.45/10", message)
         self.assertIn("Decisao analitica: buy", message)
         self.assertIn("Status operacional: blocked", message)
@@ -470,6 +506,107 @@ class TelegramTradingBotLogicTests(unittest.TestCase):
         self.assertNotIn("Entrada: indisponivel", message)
         self.assertNotIn("Cenario: indisponivel", message)
         self.assertNotIn("Risk guardrail:", message)
+
+    def test_dispatch_pending_signal_alerts_marks_signal_as_sent_on_success(self):
+        bot = TelegramTradingBot.__new__(TelegramTradingBot)
+        bot.logger = mock.Mock()
+        bot.signal_queue_batch_size = 10
+        bot.user_manager = mock.Mock()
+        bot.user_manager.list_users.return_value = [{"id": 123, "plan": "premium", "is_admin": False}]
+        bot.bot = mock.Mock()
+        bot._send_signal_alert_to_recipients = mock.AsyncMock(return_value={"success_count": 1, "error_summary": None})
+
+        with mock.patch("telegram_bot.runtime_db.get_pending_telegram_signals", return_value=[{
+            "id": 42,
+            "symbol": "BTC/USDT",
+            "timeframe": "1h",
+            "signal_type": "COMPRA",
+            "price": 71000.0,
+            "candle_timestamp": "2026-03-22T10:00:00+00:00",
+            "created_at_br": "22/03/2026 07:00:00",
+        }]), \
+             mock.patch("telegram_bot.runtime_db.mark_trading_signal_telegram_sent") as mark_sent, \
+             mock.patch("telegram_bot.asyncio.to_thread", side_effect=self._direct_to_thread):
+            asyncio.run(bot._dispatch_pending_signal_alerts())
+
+        bot._send_signal_alert_to_recipients.assert_awaited_once()
+        mark_sent.assert_called_once_with(42, None)
+
+    def test_scan_symbols_skips_duplicate_signal_for_same_candle(self):
+        bot = TelegramTradingBot.__new__(TelegramTradingBot)
+        bot.logger = mock.Mock()
+        bot.signal_scan_symbols = ["BTC/USDT"]
+        bot.signal_scan_timeframe = "1h"
+        bot.user_manager = mock.Mock()
+        bot.user_manager.list_users.return_value = [{"id": 123, "plan": "premium", "is_admin": False}]
+        bot._evaluate_operational_signal_snapshot = mock.Mock(
+            return_value={
+                "symbol": "BTC/USDT",
+                "timeframe": "1h",
+                "final_signal": "COMPRA",
+                "runtime_allowed": True,
+                "candle_timestamp": "2026-03-22T10:00:00+00:00",
+                "signal_pipeline": {},
+                "last_candle": {"rsi": 58.0, "macd": 100.0, "macd_signal": 90.0, "volume": 1200.0},
+                "strategy_settings": {"strategy_version": "v1", "context_timeframe": "4h"},
+                "regime_evaluation": {"regime": "trend_bull"},
+                "risk_plan": {"allowed": False},
+                "price": 71200.0,
+            }
+        )
+        bot._send_signal_alert_to_recipients = mock.AsyncMock()
+        bot.paper_trade_service = mock.Mock()
+
+        with mock.patch("telegram_bot.runtime_db.has_signal_for_candle", return_value=True), \
+             mock.patch("telegram_bot.runtime_db.save_trading_signal") as save_signal, \
+             mock.patch("telegram_bot.asyncio.to_thread", side_effect=self._direct_to_thread):
+            asyncio.run(bot._scan_symbols_for_new_signals())
+
+        save_signal.assert_not_called()
+        bot._send_signal_alert_to_recipients.assert_not_called()
+
+    def test_scan_symbols_saves_and_sends_new_actionable_signal(self):
+        bot = TelegramTradingBot.__new__(TelegramTradingBot)
+        bot.logger = mock.Mock()
+        bot.signal_scan_symbols = ["BTC/USDT"]
+        bot.signal_scan_timeframe = "1h"
+        bot.user_manager = mock.Mock()
+        bot.user_manager.list_users.return_value = [{"id": 123, "plan": "premium", "is_admin": False}]
+        bot._evaluate_operational_signal_snapshot = mock.Mock(
+            return_value={
+                "symbol": "BTC/USDT",
+                "timeframe": "1h",
+                "final_signal": "COMPRA",
+                "runtime_allowed": True,
+                "candle_timestamp": "2026-03-22T10:00:00+00:00",
+                "signal_pipeline": {},
+                "last_candle": {"rsi": 58.0, "macd": 100.0, "macd_signal": 90.0, "volume": 1200.0},
+                "strategy_settings": {
+                    "strategy_version": "BTCUSDT-1h-v1",
+                    "context_timeframe": "4h",
+                    "stop_loss_pct": 2.0,
+                    "take_profit_pct": 4.0,
+                },
+                "regime_evaluation": {"regime": "trend_bull"},
+                "risk_plan": {"allowed": False},
+                "entry_quality_evaluation": {"setup_type": "ema_rsi_resume_long"},
+                "scenario_evaluation": {"scenario_score": 7.2},
+                "rule_signal": "COMPRA",
+                "price": 71200.0,
+            }
+        )
+        bot._send_signal_alert_to_recipients = mock.AsyncMock(return_value={"success_count": 1, "error_summary": None})
+        bot.paper_trade_service = mock.Mock()
+
+        with mock.patch("telegram_bot.runtime_db.has_signal_for_candle", return_value=False), \
+             mock.patch("telegram_bot.runtime_db.save_trading_signal", return_value=99) as save_signal, \
+             mock.patch("telegram_bot.runtime_db.mark_trading_signal_telegram_sent") as mark_sent, \
+             mock.patch("telegram_bot.asyncio.to_thread", side_effect=self._direct_to_thread):
+            asyncio.run(bot._scan_symbols_for_new_signals())
+
+        save_signal.assert_called_once()
+        bot._send_signal_alert_to_recipients.assert_awaited_once()
+        mark_sent.assert_called_once_with(99, None)
 
 
 if __name__ == "__main__":

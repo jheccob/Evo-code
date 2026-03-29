@@ -6,22 +6,23 @@ import pandas as pd
 
 from config import ProductionConfig
 from database.database import db as runtime_db
-from position_management import evaluate_position_management
+from position_management import EVO_RESUME_SETUPS, evaluate_position_management
 
 logger = logging.getLogger(__name__)
 
 
-LONG_SIGNALS = {"COMPRA", "COMPRA_FRACA"}
-SHORT_SIGNALS = {"VENDA", "VENDA_FRACA"}
+LONG_SIGNALS = {"COMPRA"}
+SHORT_SIGNALS = {"VENDA"}
 ACTIONABLE_SIGNALS = LONG_SIGNALS | SHORT_SIGNALS
+EVO_RESUME_EXECUTION_MODE = "ema_rsi_resume"
 
 
 class PaperTradeService:
     def __init__(
         self,
         database=None,
-        default_stop_loss_pct: float = 2.0,
-        default_take_profit_pct: float = 4.0,
+        default_stop_loss_pct: float = ProductionConfig.DEFAULT_LIVE_STOP_LOSS_PCT,
+        default_take_profit_pct: float = ProductionConfig.DEFAULT_LIVE_TAKE_PROFIT_PCT,
         max_hold_candles: int = 288,
         fee_rate: Optional[float] = None,
         slippage: Optional[float] = None,
@@ -32,6 +33,22 @@ class PaperTradeService:
         self.max_hold_candles = int(max_hold_candles)
         self.fee_rate = float(ProductionConfig.PAPER_FEE_RATE if fee_rate is None else fee_rate)
         self.slippage = float(ProductionConfig.PAPER_SLIPPAGE if slippage is None else slippage)
+
+    @staticmethod
+    def _normalize_text(value: Optional[object]) -> str:
+        return str(value or "").strip().lower()
+
+    def _uses_close_to_close_execution(self, setup_name: Optional[str]) -> bool:
+        normalized_setup = self._normalize_text(setup_name)
+        return normalized_setup in EVO_RESUME_SETUPS or normalized_setup == EVO_RESUME_EXECUTION_MODE
+
+    def _can_flip_trade(self, current_trade: Dict, incoming_side: str, incoming_setup_name: Optional[str]) -> bool:
+        current_setup_name = current_trade.get("setup_name") or current_trade.get("strategy_version")
+        return (
+            self._uses_close_to_close_execution(current_setup_name)
+            and self._uses_close_to_close_execution(incoming_setup_name)
+            and str(current_trade.get("side") or "").strip().lower() != str(incoming_side or "").strip().lower()
+        )
 
     def register_signal(
         self,
@@ -55,6 +72,7 @@ class PaperTradeService:
         rejection_reason: str = None,
         sample_type: str = "paper",
     ) -> Optional[int]:
+        signal = str(signal or "").strip().upper()
         if signal not in ACTIONABLE_SIGNALS:
             return None
 
@@ -69,24 +87,42 @@ class PaperTradeService:
         timestamp_iso = self._normalize_timestamp(entry_timestamp)
         open_trades = self.database.get_open_paper_trades(symbol=symbol, timeframe=timeframe)
 
-        for trade in open_trades:
-            if trade["side"] == side:
-                return trade["id"]
-
-            close_result = self._build_close_result(
-                trade=trade,
-                exit_price=float(entry_price),
-                exit_timestamp=timestamp_iso,
-                close_reason="SIGNAL_FLIP",
-            )
-            self.database.close_paper_trade(
-                trade_id=trade["id"],
-                exit_timestamp=close_result["exit_timestamp"],
-                exit_price=close_result["exit_price"],
-                outcome=close_result["outcome"],
-                close_reason=close_result["close_reason"],
-                result_pct=close_result["result_pct"],
-            )
+        if open_trades:
+            primary_trade = open_trades[0]
+            if len(open_trades) > 1:
+                logger.warning(
+                    "Mais de uma paper position aberta para %s %s; mantendo a primeira e ignorando novo sinal.",
+                    symbol,
+                    timeframe,
+                )
+            if self._can_flip_trade(primary_trade, side, setup_name):
+                close_result = self._build_close_result(
+                    primary_trade,
+                    float(entry_price),
+                    timestamp_iso,
+                    "OPPOSITE_SIGNAL",
+                )
+                self.database.close_paper_trade(
+                    trade_id=primary_trade["id"],
+                    exit_timestamp=close_result["exit_timestamp"],
+                    exit_price=close_result["exit_price"],
+                    outcome=close_result["outcome"],
+                    close_reason=close_result["close_reason"],
+                    result_pct=close_result["result_pct"],
+                    final_stop_price=close_result.get("final_stop_price"),
+                    final_take_price=close_result.get("final_take_price"),
+                    break_even_active=bool(close_result.get("break_even_active", False)),
+                    trailing_active=bool(close_result.get("trailing_active", False)),
+                    protection_level=close_result.get("protection_level"),
+                    regime_exit_flag=bool(close_result.get("regime_exit_flag", False)),
+                    structure_exit_flag=bool(close_result.get("structure_exit_flag", False)),
+                    post_pump_protection=bool(close_result.get("post_pump_protection", False)),
+                    mfe_pct=float(close_result.get("mfe_pct", 0.0) or 0.0),
+                    mae_pct=float(close_result.get("mae_pct", 0.0) or 0.0),
+                    max_unrealized_rr=float(close_result.get("max_unrealized_rr", 0.0) or 0.0),
+                )
+            else:
+                return primary_trade["id"]
 
         trade_data = {
             "symbol": symbol,
@@ -210,7 +246,111 @@ class PaperTradeService:
     def get_summary(self, symbol: str = None, timeframe: str = None) -> Dict:
         return self.database.get_paper_trade_summary(symbol=symbol, timeframe=timeframe)
 
+    def _sync_trade_management_state(self, trade: Dict, management: Dict) -> None:
+        managed_fields = {
+            "stop_loss_price": management.get("stop_price"),
+            "take_profit_price": management.get("take_price"),
+            "final_stop_price": management.get("stop_price"),
+            "final_take_price": management.get("take_price"),
+            "break_even_active": int(bool(management.get("break_even_active", False))),
+            "trailing_active": int(bool(management.get("trailing_active", False))),
+            "protection_level": management.get("protection_level"),
+            "regime_exit_flag": int(bool(management.get("regime_exit_flag", False))),
+            "structure_exit_flag": int(bool(management.get("structure_exit_flag", False))),
+            "post_pump_protection": int(bool(management.get("post_pump_protection", False))),
+            "mfe_pct": round(float(management.get("mfe_pct", 0.0) or 0.0), 4),
+            "mae_pct": round(float(management.get("mae_pct", 0.0) or 0.0), 4),
+            "max_unrealized_rr": round(float(management.get("unrealized_rr", 0.0) or 0.0), 4),
+        }
+        dirty = False
+        for key, value in managed_fields.items():
+            if trade.get(key) != value:
+                trade[key] = value
+                dirty = True
+        if dirty:
+            trade["_management_dirty"] = True
+
+    def _close_trade_on_close(self, trade: Dict, candle: pd.Series, close_reason: str) -> Dict:
+        return self._build_close_result(
+            trade,
+            float(candle["close"]),
+            self._normalize_timestamp(candle.name),
+            close_reason,
+        )
+
+    def _evaluate_close_execution_trade(
+        self,
+        trade: Dict,
+        candles: pd.DataFrame,
+    ) -> Optional[Dict]:
+        side = trade["side"]
+        stop_loss_price = trade.get("stop_loss_price")
+        take_profit_price = trade.get("take_profit_price")
+
+        for index, (_, candle) in enumerate(candles.iterrows(), start=1):
+            recent_slice = candles.loc[: pd.Timestamp(candle.name)]
+            management = evaluate_position_management(
+                recent_df=recent_slice,
+                side=side,
+                entry_price=float(trade["entry_price"]),
+                current_stop_price=float(stop_loss_price) if stop_loss_price is not None else None,
+                current_take_price=float(take_profit_price) if take_profit_price is not None else None,
+                initial_stop_price=float(trade.get("initial_stop_price")) if trade.get("initial_stop_price") is not None else None,
+                initial_take_price=float(trade.get("initial_take_price")) if trade.get("initial_take_price") is not None else None,
+                break_even_active=bool(trade.get("break_even_active", False)),
+                trailing_active=bool(trade.get("trailing_active", False)),
+                protection_level=trade.get("protection_level", "normal"),
+                regime_evaluation={
+                    "regime": candle.get("market_regime", trade.get("regime")),
+                    "volatility_state": candle.get("volatility_state", "normal_volatility"),
+                    "regime_score": candle.get("regime_score", 0.0),
+                    "parabolic": candle.get("parabolic", False),
+                    "ema_distance_pct": candle.get("ema_distance_pct", 0.0),
+                },
+                mfe_pct=float(trade.get("mfe_pct", 0.0) or 0.0),
+                mae_pct=float(trade.get("mae_pct", 0.0) or 0.0),
+                position_age_candles=index,
+                timeframe=trade.get("timeframe"),
+                setup_name=trade.get("setup_name"),
+                entry_quality=trade.get("entry_quality"),
+            )
+            self._sync_trade_management_state(trade, management)
+            stop_loss_price = trade.get("stop_loss_price")
+            take_profit_price = trade.get("take_profit_price")
+            close_price = float(candle["close"])
+
+            if side == "long":
+                stop_hit = stop_loss_price is not None and close_price <= float(stop_loss_price)
+                take_hit = take_profit_price is not None and close_price >= float(take_profit_price)
+            else:
+                stop_hit = stop_loss_price is not None and close_price >= float(stop_loss_price)
+                take_hit = take_profit_price is not None and close_price <= float(take_profit_price)
+
+            if stop_hit:
+                stop_reason = "TRAILING_STOP" if bool(trade.get("trailing_active", False)) else "STOP_LOSS"
+                return self._close_trade_on_close(trade, candle, stop_reason)
+            if take_hit:
+                return self._close_trade_on_close(trade, candle, "TAKE_PROFIT")
+
+            action = str(management.get("action") or "hold")
+            if action == "exit_on_structure_failure":
+                return self._close_trade_on_close(trade, candle, "STRUCTURE_FAILURE")
+            if action == "exit_on_regime_shift":
+                return self._close_trade_on_close(trade, candle, "REGIME_SHIFT")
+            if action == "exit_on_time_decay":
+                return self._close_trade_on_close(trade, candle, "TIME_EXIT")
+
+        return None
+
     def _evaluate_trade_against_candles(self, trade: Dict, candles: pd.DataFrame) -> Optional[Dict]:
+        if self._uses_close_to_close_execution(trade.get("setup_name") or trade.get("strategy_version")):
+            close_execution_result = self._evaluate_close_execution_trade(trade, candles)
+            if close_execution_result is not None:
+                return close_execution_result
+            if len(candles) >= self.max_hold_candles:
+                return self._close_trade_on_close(trade, candles.iloc[-1], "TIME_EXIT")
+            return None
+
         side = trade["side"]
         stop_loss_price = trade.get("stop_loss_price")
         take_profit_price = trade.get("take_profit_price")
@@ -283,30 +423,6 @@ class PaperTradeService:
             )
 
         return None
-
-    def _sync_trade_management_state(self, trade: Dict, management: Dict) -> None:
-        managed_fields = {
-            "stop_loss_price": management.get("stop_price"),
-            "take_profit_price": management.get("take_price"),
-            "final_stop_price": management.get("stop_price"),
-            "final_take_price": management.get("take_price"),
-            "break_even_active": int(bool(management.get("break_even_active", False))),
-            "trailing_active": int(bool(management.get("trailing_active", False))),
-            "protection_level": management.get("protection_level"),
-            "regime_exit_flag": int(bool(management.get("regime_exit_flag", False))),
-            "structure_exit_flag": int(bool(management.get("structure_exit_flag", False))),
-            "post_pump_protection": int(bool(management.get("post_pump_protection", False))),
-            "mfe_pct": round(float(management.get("mfe_pct", 0.0) or 0.0), 4),
-            "mae_pct": round(float(management.get("mae_pct", 0.0) or 0.0), 4),
-            "max_unrealized_rr": round(float(management.get("unrealized_rr", 0.0) or 0.0), 4),
-        }
-        dirty = False
-        for key, value in managed_fields.items():
-            if trade.get(key) != value:
-                trade[key] = value
-                dirty = True
-        if dirty:
-            trade["_management_dirty"] = True
 
     def _build_close_result(self, trade: Dict, exit_price: float, exit_timestamp: str, close_reason: str) -> Dict:
         entry_price = float(trade["entry_price"])

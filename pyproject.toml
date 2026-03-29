@@ -32,3 +32,8 @@ dependencies = [
     "uvicorn>=0.35.0",
     "websockets>=15.0.1",
 ]
+
+[tool.pytest.ini_options]
+addopts = "-p no:cacheprovider"
+testpaths = ["tests"]
+norecursedirs = ["pytest-cache-files-*", "pytest_cache", ".pytest_cache"]

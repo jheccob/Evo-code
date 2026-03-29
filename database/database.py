@@ -4,10 +4,17 @@ Sistema de banco de dados usando SQLite para persistir dados do trading bot
 import sqlite3
 import os
 import json
-from datetime import datetime, timedelta
+import hmac
+import hashlib
+import secrets
+from datetime import UTC, datetime, timedelta
 from typing import List, Dict, Optional, Any
 from utils.timezone_utils import get_brazil_datetime_naive, format_brazil_time
 from config import AppConfig, ProductionConfig
+from market_state_engine import (
+    market_states_to_setup_allowlist,
+    setup_types_to_market_state_allowlist,
+)
 
 
 def build_strategy_version(
@@ -46,14 +53,22 @@ class TradingDatabase:
     def __init__(self, db_path: str = AppConfig.DB_PATH):
         self.db_path = db_path
         # Criar diretório se não existir
-        os.makedirs(os.path.dirname(db_path), exist_ok=True)
+        os.makedirs(os.path.dirname(db_path) or ".", exist_ok=True)
         self.init_database()
     
     def get_connection(self):
         """Criar conexão com banco de dados"""
-        conn = sqlite3.connect(self.db_path)
+        conn = sqlite3.connect(self.db_path, timeout=30.0)
         conn.row_factory = sqlite3.Row  # Para retornar dicionários
+        self._configure_sqlite_connection(conn)
         return conn
+
+    @staticmethod
+    def _configure_sqlite_connection(conn: sqlite3.Connection):
+        conn.execute("PRAGMA foreign_keys = ON")
+        conn.execute("PRAGMA busy_timeout = 30000")
+        conn.execute("PRAGMA journal_mode = WAL")
+        conn.execute("PRAGMA synchronous = NORMAL")
     
     def init_database(self):
         """Inicializar estrutura do banco de dados"""
@@ -76,9 +91,12 @@ class TradingDatabase:
                 macd_value REAL,
                 signal_strength REAL,
                 volume REAL,
+                candle_timestamp TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 created_at_br TEXT,  -- Horário brasileiro formatado
-                sent_telegram BOOLEAN DEFAULT FALSE
+                sent_telegram BOOLEAN DEFAULT FALSE,
+                sent_telegram_at TEXT,
+                telegram_error TEXT
             )
         ''')
         
@@ -117,6 +135,22 @@ class TradingDatabase:
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         ''')
+
+        cursor.execute(
+            '''
+            CREATE TABLE IF NOT EXISTS telegram_users (
+                telegram_id INTEGER PRIMARY KEY,
+                username TEXT,
+                first_name TEXT,
+                plan TEXT NOT NULL DEFAULT 'free',
+                is_admin INTEGER NOT NULL DEFAULT 0,
+                joined_date TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                analysis_count_today INTEGER NOT NULL DEFAULT 0,
+                last_reset TEXT,
+                last_analysis TEXT
+            )
+            '''
+        )
 
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS backtest_runs (
@@ -171,6 +205,17 @@ class TradingDatabase:
                 walk_forward_avg_oos_return_pct REAL DEFAULT 0.0,
                 walk_forward_avg_oos_profit_factor REAL DEFAULT 0.0,
                 walk_forward_avg_oos_expectancy_pct REAL DEFAULT 0.0,
+                objective_status TEXT,
+                objective_score REAL DEFAULT 0.0,
+                approved_market_state TEXT,
+                approved_market_states TEXT,
+                approved_market_state_trades INTEGER DEFAULT 0,
+                approved_market_state_profit_factor REAL DEFAULT 0.0,
+                approved_setup_type TEXT,
+                approved_setup_types TEXT,
+                approved_setup_trades INTEGER DEFAULT 0,
+                approved_setup_profit_factor REAL DEFAULT 0.0,
+                evaluation_period_days REAL DEFAULT 0.0,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 created_at_br TEXT
             )
@@ -186,6 +231,8 @@ class TradingDatabase:
                 setup_name TEXT,
                 strategy_version TEXT,
                 regime TEXT,
+                market_state TEXT,
+                execution_mode TEXT,
                 signal_score REAL DEFAULT 0.0,
                 atr REAL DEFAULT 0.0,
                 entry_timestamp TEXT,
@@ -278,6 +325,10 @@ class TradingDatabase:
                 timeframe TEXT NOT NULL,
                 context_timeframe TEXT,
                 strategy_version TEXT NOT NULL,
+                market_state TEXT,
+                allowed_market_states TEXT,
+                setup_type TEXT,
+                allowed_setup_types TEXT,
                 status TEXT NOT NULL DEFAULT 'draft',
                 rsi_period INTEGER,
                 rsi_min INTEGER,
@@ -403,6 +454,8 @@ class TradingDatabase:
                 entry_score REAL DEFAULT 0.0,
                 scenario_score REAL DEFAULT 0.0,
                 setup_type TEXT,
+                market_state TEXT,
+                execution_mode TEXT,
                 risk_mode TEXT,
                 notes TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -513,9 +566,201 @@ class TradingDatabase:
             )
         ''')
 
+        cursor.execute(
+            '''
+            CREATE TABLE IF NOT EXISTS user_accounts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                account_id TEXT NOT NULL,
+                account_alias TEXT,
+                exchange TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'active',
+                live_enabled BOOLEAN NOT NULL DEFAULT FALSE,
+                paper_enabled BOOLEAN NOT NULL DEFAULT TRUE,
+                capital_base REAL DEFAULT 0.0,
+                risk_mode TEXT DEFAULT 'normal',
+                allowed_symbols TEXT,
+                allowed_timeframes TEXT,
+                notes TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(user_id, account_id)
+            )
+            '''
+        )
+
+        cursor.execute(
+            '''
+            CREATE TABLE IF NOT EXISTS user_risk_profiles (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                account_id TEXT NOT NULL,
+                max_risk_per_trade REAL DEFAULT 0.0,
+                max_daily_loss REAL DEFAULT 0.0,
+                max_drawdown REAL DEFAULT 0.0,
+                max_portfolio_open_risk_pct REAL DEFAULT 0.0,
+                allowed_position_count INTEGER DEFAULT 0,
+                preferred_symbols TEXT,
+                leverage_cap REAL DEFAULT 0.0,
+                risk_mode TEXT DEFAULT 'normal',
+                live_enabled BOOLEAN DEFAULT FALSE,
+                paper_enabled BOOLEAN DEFAULT TRUE,
+                is_valid BOOLEAN DEFAULT TRUE,
+                notes TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(user_id, account_id)
+            )
+            '''
+        )
+
+        cursor.execute(
+            '''
+            CREATE TABLE IF NOT EXISTS user_exchange_credentials (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                account_id TEXT NOT NULL,
+                exchange TEXT NOT NULL,
+                credential_alias TEXT,
+                api_key_ref TEXT,
+                token_ref TEXT,
+                encrypted_api_key TEXT NOT NULL,
+                encrypted_api_secret TEXT NOT NULL,
+                permissions_read BOOLEAN DEFAULT TRUE,
+                permissions_trade BOOLEAN DEFAULT TRUE,
+                permissions_withdraw BOOLEAN DEFAULT FALSE,
+                permission_status TEXT DEFAULT 'unknown',
+                token_status TEXT DEFAULT 'unknown',
+                reconciliation_status TEXT DEFAULT 'unknown',
+                last_validated_at TEXT,
+                notes TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(user_id, account_id, exchange)
+            )
+            '''
+        )
+
+        cursor.execute(
+            '''
+            CREATE TABLE IF NOT EXISTS user_live_orders (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                account_id TEXT NOT NULL,
+                exchange TEXT,
+                symbol TEXT,
+                timeframe TEXT,
+                strategy_version TEXT,
+                client_order_id TEXT,
+                exchange_order_id TEXT,
+                side TEXT,
+                order_type TEXT,
+                quantity REAL DEFAULT 0.0,
+                price REAL DEFAULT 0.0,
+                status TEXT NOT NULL DEFAULT 'pending',
+                source TEXT,
+                notes TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            '''
+        )
+
+        cursor.execute(
+            '''
+            CREATE TABLE IF NOT EXISTS user_live_positions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                account_id TEXT NOT NULL,
+                exchange TEXT,
+                symbol TEXT,
+                timeframe TEXT,
+                strategy_version TEXT,
+                side TEXT,
+                quantity REAL DEFAULT 0.0,
+                entry_price REAL DEFAULT 0.0,
+                mark_price REAL DEFAULT 0.0,
+                unrealized_pnl REAL DEFAULT 0.0,
+                status TEXT NOT NULL DEFAULT 'open',
+                notes TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            '''
+        )
+
+        cursor.execute(
+            '''
+            CREATE TABLE IF NOT EXISTS user_execution_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                account_id TEXT NOT NULL,
+                exchange TEXT,
+                symbol TEXT,
+                timeframe TEXT,
+                strategy_version TEXT,
+                event_type TEXT NOT NULL,
+                event_status TEXT NOT NULL,
+                message TEXT,
+                details_json TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            '''
+        )
+
+        cursor.execute(
+            '''
+            CREATE TABLE IF NOT EXISTS user_governance_state (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                account_id TEXT NOT NULL,
+                exchange TEXT,
+                symbol TEXT,
+                timeframe TEXT,
+                strategy_version TEXT,
+                governance_status TEXT DEFAULT 'unknown',
+                governance_mode TEXT DEFAULT 'blocked',
+                blocked BOOLEAN DEFAULT FALSE,
+                block_reason TEXT,
+                notes TEXT,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(user_id, account_id, exchange, symbol, timeframe, strategy_version)
+            )
+            '''
+        )
+
+        cursor.execute(
+            '''
+            CREATE TABLE IF NOT EXISTS dashboard_user_access (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL UNIQUE,
+                login_name TEXT NOT NULL UNIQUE,
+                password_salt TEXT NOT NULL,
+                password_hash TEXT NOT NULL,
+                is_active BOOLEAN NOT NULL DEFAULT TRUE,
+                require_password_change BOOLEAN NOT NULL DEFAULT FALSE,
+                notes TEXT,
+                last_login_at TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            '''
+        )
+
         self._ensure_column(cursor, 'trading_signals', 'context_timeframe', 'TEXT')
         self._ensure_column(cursor, 'trading_signals', 'strategy_version', 'TEXT')
         self._ensure_column(cursor, 'trading_signals', 'regime', 'TEXT')
+        self._ensure_column(cursor, 'trading_signals', 'candle_timestamp', 'TEXT')
+        self._ensure_column(cursor, 'trading_signals', 'sent_telegram', 'BOOLEAN DEFAULT FALSE')
+        self._ensure_column(cursor, 'trading_signals', 'sent_telegram_at', 'TEXT')
+        self._ensure_column(cursor, 'trading_signals', 'telegram_error', 'TEXT')
+        cursor.execute(
+            '''
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_trading_signals_unique_candle_signal
+            ON trading_signals(symbol, timeframe, signal_type, candle_timestamp)
+            WHERE candle_timestamp IS NOT NULL
+            '''
+        )
         self._ensure_column(cursor, 'backtest_runs', 'context_timeframe', 'TEXT')
         self._ensure_column(cursor, 'backtest_runs', 'strategy_version', 'TEXT')
         self._ensure_column(cursor, 'backtest_trades', 'context_timeframe', 'TEXT')
@@ -530,6 +775,8 @@ class TradingDatabase:
         self._ensure_column(cursor, 'backtest_trades', 'entry_quality', 'TEXT')
         self._ensure_column(cursor, 'backtest_trades', 'rejection_reason', 'TEXT')
         self._ensure_column(cursor, 'backtest_trades', 'exit_reason', 'TEXT')
+        self._ensure_column(cursor, 'backtest_trades', 'market_state', 'TEXT')
+        self._ensure_column(cursor, 'backtest_trades', 'execution_mode', 'TEXT')
         self._ensure_column(cursor, 'backtest_trades', 'initial_stop_price', 'REAL')
         self._ensure_column(cursor, 'backtest_trades', 'initial_take_price', 'REAL')
         self._ensure_column(cursor, 'backtest_trades', 'final_stop_price', 'REAL')
@@ -602,6 +849,23 @@ class TradingDatabase:
         self._ensure_column(cursor, 'backtest_runs', 'walk_forward_avg_oos_return_pct', 'REAL DEFAULT 0.0')
         self._ensure_column(cursor, 'backtest_runs', 'walk_forward_avg_oos_profit_factor', 'REAL DEFAULT 0.0')
         self._ensure_column(cursor, 'backtest_runs', 'walk_forward_avg_oos_expectancy_pct', 'REAL DEFAULT 0.0')
+        self._ensure_column(cursor, 'backtest_runs', 'objective_status', 'TEXT')
+        self._ensure_column(cursor, 'backtest_runs', 'objective_score', 'REAL DEFAULT 0.0')
+        self._ensure_column(cursor, 'backtest_runs', 'approved_market_state', 'TEXT')
+        self._ensure_column(cursor, 'backtest_runs', 'approved_market_states', 'TEXT')
+        self._ensure_column(cursor, 'backtest_runs', 'approved_market_state_trades', 'INTEGER DEFAULT 0')
+        self._ensure_column(cursor, 'backtest_runs', 'approved_market_state_profit_factor', 'REAL DEFAULT 0.0')
+        self._ensure_column(cursor, 'backtest_runs', 'approved_setup_type', 'TEXT')
+        self._ensure_column(cursor, 'backtest_runs', 'approved_setup_types', 'TEXT')
+        self._ensure_column(cursor, 'backtest_runs', 'approved_setup_trades', 'INTEGER DEFAULT 0')
+        self._ensure_column(cursor, 'backtest_runs', 'approved_setup_profit_factor', 'REAL DEFAULT 0.0')
+        self._ensure_column(cursor, 'backtest_runs', 'evaluation_period_days', 'REAL DEFAULT 0.0')
+        self._ensure_column(cursor, 'signal_audit', 'market_state', 'TEXT')
+        self._ensure_column(cursor, 'signal_audit', 'execution_mode', 'TEXT')
+        self._ensure_column(cursor, 'strategy_profiles', 'market_state', 'TEXT')
+        self._ensure_column(cursor, 'strategy_profiles', 'allowed_market_states', 'TEXT')
+        self._ensure_column(cursor, 'strategy_profiles', 'setup_type', 'TEXT')
+        self._ensure_column(cursor, 'strategy_profiles', 'allowed_setup_types', 'TEXT')
         self._ensure_column(cursor, 'strategy_profiles', 'context_timeframe', 'TEXT')
         self._ensure_column(cursor, 'strategy_profiles', 'source_run_id', 'INTEGER')
         self._ensure_column(cursor, 'strategy_profiles', 'avoid_ranging', 'BOOLEAN DEFAULT FALSE')
@@ -611,6 +875,37 @@ class TradingDatabase:
         self._ensure_column(cursor, 'strategy_profiles', 'updated_at', 'TIMESTAMP DEFAULT CURRENT_TIMESTAMP')
         self._ensure_column(cursor, 'strategy_profiles', 'updated_at_br', 'TEXT')
 
+        cursor.execute(
+            '''
+            CREATE INDEX IF NOT EXISTS idx_user_accounts_active
+            ON user_accounts(status, live_enabled, paper_enabled)
+            '''
+        )
+        cursor.execute(
+            '''
+            CREATE INDEX IF NOT EXISTS idx_user_execution_events_lookup
+            ON user_execution_events(user_id, account_id, created_at)
+            '''
+        )
+        cursor.execute(
+            '''
+            CREATE INDEX IF NOT EXISTS idx_user_live_orders_lookup
+            ON user_live_orders(user_id, account_id, status, created_at)
+            '''
+        )
+        cursor.execute(
+            '''
+            CREATE INDEX IF NOT EXISTS idx_user_live_positions_lookup
+            ON user_live_positions(user_id, account_id, status, created_at)
+            '''
+        )
+        cursor.execute(
+            '''
+            CREATE INDEX IF NOT EXISTS idx_dashboard_user_access_login
+            ON dashboard_user_access(login_name)
+            '''
+        )
+
         conn.commit()
         conn.close()
 
@@ -619,7 +914,1211 @@ class TradingDatabase:
         cursor.execute(f"PRAGMA table_info({table_name})")
         existing_columns = {row[1] for row in cursor.fetchall()}
         if column_name not in existing_columns:
-            cursor.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_definition}")
+            try:
+                cursor.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_definition}")
+            except sqlite3.OperationalError as exc:
+                if "duplicate column name" not in str(exc).lower():
+                    raise
+
+    def _to_json_text(self, value: Any) -> Optional[str]:
+        if value is None:
+            return None
+        if isinstance(value, str):
+            return value
+        return json.dumps(value, ensure_ascii=True)
+
+    def _to_list(self, raw_value: Any) -> List[str]:
+        if raw_value in (None, ""):
+            return []
+        if isinstance(raw_value, list):
+            return [str(item) for item in raw_value if item not in (None, "")]
+        if isinstance(raw_value, str):
+            stripped = raw_value.strip()
+            if not stripped:
+                return []
+            try:
+                parsed = json.loads(stripped)
+                if isinstance(parsed, list):
+                    return [str(item) for item in parsed if item not in (None, "")]
+            except Exception:
+                pass
+            return [item.strip() for item in stripped.split(",") if item.strip()]
+        return [str(raw_value)]
+
+    @staticmethod
+    def _normalize_dashboard_login_name(login_name: Any) -> str:
+        return str(login_name or "").strip().lower()
+
+    @staticmethod
+    def _validate_dashboard_password(password: str):
+        minimum_length = max(int(ProductionConfig.DASHBOARD_MIN_PASSWORD_LENGTH), 10)
+        if len(str(password or "")) < minimum_length:
+            raise ValueError(f"A senha da dashboard deve ter pelo menos {minimum_length} caracteres.")
+
+    @classmethod
+    def _hash_dashboard_password(cls, password: str, salt_hex: Optional[str] = None) -> Dict[str, str]:
+        cls._validate_dashboard_password(password)
+        salt_bytes = bytes.fromhex(salt_hex) if salt_hex else secrets.token_bytes(16)
+        digest = hashlib.pbkdf2_hmac(
+            "sha256",
+            str(password).encode("utf-8"),
+            salt_bytes,
+            200000,
+        )
+        return {
+            "salt_hex": salt_bytes.hex(),
+            "hash_hex": digest.hex(),
+        }
+
+    @classmethod
+    def _verify_dashboard_password(cls, password: str, salt_hex: str, stored_hash_hex: str) -> bool:
+        if not password or not salt_hex or not stored_hash_hex:
+            return False
+        derived = cls._hash_dashboard_password(password, salt_hex=salt_hex)
+        return hmac.compare_digest(derived["hash_hex"], str(stored_hash_hex))
+
+    def upsert_dashboard_user_access(self, access_data: Dict[str, Any]) -> int:
+        user_id = int(access_data["user_id"])
+        login_name = self._normalize_dashboard_login_name(access_data.get("login_name"))
+        if not login_name:
+            raise ValueError("Informe um login_name valido para o acesso da dashboard.")
+
+        password = access_data.get("password")
+        conn = self.get_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                SELECT *
+                FROM dashboard_user_access
+                WHERE user_id = ? OR login_name = ?
+                ORDER BY CASE WHEN user_id = ? THEN 0 ELSE 1 END
+                LIMIT 1
+                ''',
+                (user_id, login_name, user_id),
+            )
+            existing = cursor.fetchone()
+
+            if existing:
+                existing = dict(existing)
+                if int(existing["user_id"]) != user_id and self._normalize_dashboard_login_name(existing["login_name"]) == login_name:
+                    raise ValueError("Este login_name ja esta em uso por outro usuario.")
+                password_salt = str(existing["password_salt"])
+                password_hash = str(existing["password_hash"])
+            else:
+                if not password:
+                    raise ValueError("Defina uma senha para criar o acesso da dashboard.")
+                password_payload = self._hash_dashboard_password(str(password))
+                password_salt = password_payload["salt_hex"]
+                password_hash = password_payload["hash_hex"]
+
+            if password:
+                password_payload = self._hash_dashboard_password(str(password))
+                password_salt = password_payload["salt_hex"]
+                password_hash = password_payload["hash_hex"]
+
+            cursor.execute(
+                '''
+                INSERT INTO dashboard_user_access (
+                    user_id, login_name, password_salt, password_hash,
+                    is_active, require_password_change, notes, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(user_id) DO UPDATE SET
+                    login_name = excluded.login_name,
+                    password_salt = excluded.password_salt,
+                    password_hash = excluded.password_hash,
+                    is_active = excluded.is_active,
+                    require_password_change = excluded.require_password_change,
+                    notes = excluded.notes,
+                    updated_at = CURRENT_TIMESTAMP
+                ''',
+                (
+                    user_id,
+                    login_name,
+                    password_salt,
+                    password_hash,
+                    int(bool(access_data.get("is_active", True))),
+                    int(bool(access_data.get("require_password_change", False))),
+                    access_data.get("notes"),
+                ),
+            )
+            cursor.execute(
+                '''
+                SELECT id
+                FROM dashboard_user_access
+                WHERE user_id = ?
+                LIMIT 1
+                ''',
+                (user_id,),
+            )
+            row = cursor.fetchone()
+            conn.commit()
+            return int(row["id"])
+        finally:
+            conn.close()
+
+    def authenticate_dashboard_user(self, login_name: str, password: str) -> Optional[Dict[str, Any]]:
+        normalized_login = self._normalize_dashboard_login_name(login_name)
+        if not normalized_login or not password:
+            return None
+
+        conn = self.get_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                SELECT access.*, tu.username AS telegram_username, tu.first_name AS telegram_first_name, tu.plan AS telegram_plan
+                FROM dashboard_user_access access
+                LEFT JOIN telegram_users tu
+                  ON tu.telegram_id = access.user_id
+                WHERE lower(access.login_name) = ?
+                   OR CAST(access.user_id AS TEXT) = ?
+                LIMIT 1
+                ''',
+                (normalized_login, normalized_login),
+            )
+            row = cursor.fetchone()
+            if not row:
+                return None
+            payload = dict(row)
+            if not bool(payload.get("is_active")):
+                return None
+            if not self._verify_dashboard_password(
+                password=str(password),
+                salt_hex=str(payload.get("password_salt") or ""),
+                stored_hash_hex=str(payload.get("password_hash") or ""),
+            ):
+                return None
+            last_login_at = datetime.now(UTC).isoformat()
+            cursor.execute(
+                '''
+                UPDATE dashboard_user_access
+                SET last_login_at = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+                ''',
+                (last_login_at, int(payload["id"])),
+            )
+            conn.commit()
+            return {
+                "id": int(payload["id"]),
+                "user_id": int(payload["user_id"]),
+                "login_name": payload.get("login_name"),
+                "is_active": bool(payload.get("is_active")),
+                "require_password_change": bool(payload.get("require_password_change")),
+                "last_login_at": last_login_at,
+                "username": payload.get("telegram_username"),
+                "first_name": payload.get("telegram_first_name"),
+                "plan": payload.get("telegram_plan"),
+            }
+        finally:
+            conn.close()
+
+    def change_dashboard_user_password(self, user_id: int, current_password: str, new_password: str) -> bool:
+        conn = self.get_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                SELECT *
+                FROM dashboard_user_access
+                WHERE user_id = ?
+                LIMIT 1
+                ''',
+                (int(user_id),),
+            )
+            row = cursor.fetchone()
+            if not row:
+                return False
+            payload = dict(row)
+            if not self._verify_dashboard_password(
+                password=str(current_password),
+                salt_hex=str(payload.get("password_salt") or ""),
+                stored_hash_hex=str(payload.get("password_hash") or ""),
+            ):
+                return False
+
+            password_payload = self._hash_dashboard_password(str(new_password))
+            cursor.execute(
+                '''
+                UPDATE dashboard_user_access
+                SET password_salt = ?,
+                    password_hash = ?,
+                    require_password_change = 0,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE user_id = ?
+                ''',
+                (
+                    password_payload["salt_hex"],
+                    password_payload["hash_hex"],
+                    int(user_id),
+                ),
+            )
+            conn.commit()
+            return cursor.rowcount > 0
+        finally:
+            conn.close()
+
+    def list_dashboard_user_access(self, limit: int = 200) -> List[Dict[str, Any]]:
+        conn = self.get_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                SELECT
+                    access.id,
+                    access.user_id,
+                    access.login_name,
+                    access.is_active,
+                    access.require_password_change,
+                    access.notes,
+                    access.last_login_at,
+                    access.created_at,
+                    access.updated_at,
+                    tu.username AS telegram_username,
+                    tu.first_name AS telegram_first_name,
+                    tu.plan AS telegram_plan,
+                    (
+                        SELECT COUNT(*)
+                        FROM user_accounts ua
+                        WHERE ua.user_id = access.user_id
+                    ) AS account_count
+                FROM dashboard_user_access access
+                LEFT JOIN telegram_users tu
+                  ON tu.telegram_id = access.user_id
+                ORDER BY access.user_id ASC
+                LIMIT ?
+                ''',
+                (int(limit),),
+            )
+            return [dict(row) for row in cursor.fetchall()]
+        finally:
+            conn.close()
+
+    def get_user_workspace_accounts(self, user_id: int, limit: int = 50) -> List[Dict[str, Any]]:
+        conn = self.get_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                SELECT
+                    a.user_id,
+                    a.account_id,
+                    a.account_alias,
+                    a.exchange,
+                    a.status,
+                    a.live_enabled,
+                    a.paper_enabled,
+                    a.capital_base,
+                    COALESCE(rp.risk_mode, a.risk_mode) AS risk_mode,
+                    COALESCE(rp.allowed_position_count, 0) AS allowed_position_count,
+                    COALESCE(rp.max_risk_per_trade, 0.0) AS max_risk_per_trade,
+                    COALESCE(rp.max_daily_loss, 0.0) AS max_daily_loss,
+                    COALESCE(rp.max_drawdown, 0.0) AS max_drawdown,
+                    COALESCE(rp.max_portfolio_open_risk_pct, 0.0) AS max_portfolio_open_risk_pct,
+                    COALESCE(rp.leverage_cap, 0.0) AS leverage_cap,
+                    COALESCE(rp.is_valid, 0) AS risk_profile_valid,
+                    COALESCE(cred.permission_status, 'unknown') AS permission_status,
+                    COALESCE(cred.token_status, 'unknown') AS token_status,
+                    COALESCE(cred.reconciliation_status, 'unknown') AS reconciliation_status,
+                    cred.api_key_ref,
+                    cred.token_ref,
+                    (
+                        SELECT COUNT(*)
+                        FROM user_live_positions lp
+                        WHERE lp.user_id = a.user_id
+                          AND lp.account_id = a.account_id
+                          AND lower(lp.status) = 'open'
+                    ) AS open_positions,
+                    (
+                        SELECT COUNT(*)
+                        FROM user_live_orders lo
+                        WHERE lo.user_id = a.user_id
+                          AND lo.account_id = a.account_id
+                          AND lower(lo.status) IN ('pending', 'open', 'new')
+                    ) AS pending_orders
+                FROM user_accounts a
+                LEFT JOIN user_risk_profiles rp
+                  ON rp.user_id = a.user_id AND rp.account_id = a.account_id
+                LEFT JOIN user_exchange_credentials cred
+                  ON cred.user_id = a.user_id AND cred.account_id = a.account_id AND cred.exchange = a.exchange
+                WHERE a.user_id = ?
+                ORDER BY CASE WHEN lower(a.status) = 'active' THEN 0 ELSE 1 END, a.account_id ASC
+                LIMIT ?
+                ''',
+                (int(user_id), int(limit)),
+            )
+            rows = []
+            for row in cursor.fetchall():
+                item = dict(row)
+                base_account = self.get_user_accounts(
+                    user_id=int(item["user_id"]),
+                    account_id=str(item["account_id"]),
+                    status=None,
+                )
+                if base_account:
+                    item["allowed_symbols"] = self._to_list(base_account[0].get("allowed_symbols"))
+                    item["allowed_timeframes"] = self._to_list(base_account[0].get("allowed_timeframes"))
+                    item["notes"] = base_account[0].get("notes")
+                else:
+                    item["allowed_symbols"] = []
+                    item["allowed_timeframes"] = []
+                    item["notes"] = None
+                rows.append(item)
+            return rows
+        finally:
+            conn.close()
+
+    def upsert_user_account(self, account_data: Dict[str, Any]) -> int:
+        conn = self.get_connection()
+        try:
+            cursor = conn.cursor()
+            user_id = int(account_data["user_id"])
+            account_id = str(account_data["account_id"])
+            exchange = str(account_data["exchange"])
+            allowed_symbols = self._to_json_text(account_data.get("allowed_symbols"))
+            allowed_timeframes = self._to_json_text(account_data.get("allowed_timeframes"))
+
+            cursor.execute(
+                '''
+                INSERT INTO user_accounts (
+                    user_id, account_id, account_alias, exchange, status,
+                    live_enabled, paper_enabled, capital_base, risk_mode,
+                    allowed_symbols, allowed_timeframes, notes, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(user_id, account_id) DO UPDATE SET
+                    account_alias = excluded.account_alias,
+                    exchange = excluded.exchange,
+                    status = excluded.status,
+                    live_enabled = excluded.live_enabled,
+                    paper_enabled = excluded.paper_enabled,
+                    capital_base = excluded.capital_base,
+                    risk_mode = excluded.risk_mode,
+                    allowed_symbols = excluded.allowed_symbols,
+                    allowed_timeframes = excluded.allowed_timeframes,
+                    notes = excluded.notes,
+                    updated_at = CURRENT_TIMESTAMP
+                ''',
+                (
+                    user_id,
+                    account_id,
+                    account_data.get("account_alias"),
+                    exchange,
+                    account_data.get("status", "active"),
+                    int(bool(account_data.get("live_enabled", False))),
+                    int(bool(account_data.get("paper_enabled", True))),
+                    float(account_data.get("capital_base", 0.0) or 0.0),
+                    account_data.get("risk_mode", "normal"),
+                    allowed_symbols,
+                    allowed_timeframes,
+                    account_data.get("notes"),
+                ),
+            )
+
+            cursor.execute(
+                '''
+                SELECT id FROM user_accounts
+                WHERE user_id = ? AND account_id = ?
+                LIMIT 1
+                ''',
+                (user_id, account_id),
+            )
+            row = cursor.fetchone()
+            conn.commit()
+            return int(row["id"])
+        finally:
+            conn.close()
+
+    def get_user_accounts(
+        self,
+        user_id: Optional[int] = None,
+        account_id: Optional[str] = None,
+        status: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        conn = self.get_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                SELECT *
+                FROM user_accounts
+                WHERE (? IS NULL OR user_id = ?)
+                  AND (? IS NULL OR account_id = ?)
+                  AND (? IS NULL OR status = ?)
+                ORDER BY user_id ASC, account_id ASC
+                ''',
+                (
+                    user_id,
+                    user_id,
+                    account_id,
+                    account_id,
+                    status,
+                    status,
+                ),
+            )
+            rows = cursor.fetchall()
+            accounts: List[Dict[str, Any]] = []
+            for row in rows:
+                item = dict(row)
+                item["allowed_symbols"] = self._to_list(item.get("allowed_symbols"))
+                item["allowed_timeframes"] = self._to_list(item.get("allowed_timeframes"))
+                accounts.append(item)
+            return accounts
+        finally:
+            conn.close()
+
+    def set_user_account_operational_state(
+        self,
+        *,
+        user_id: int,
+        account_id: str,
+        live_enabled: Optional[bool] = None,
+        paper_enabled: Optional[bool] = None,
+        status: Optional[str] = None,
+        notes: Optional[str] = None,
+    ) -> bool:
+        updates = []
+        params: List[Any] = []
+        if live_enabled is not None:
+            updates.append("live_enabled = ?")
+            params.append(int(bool(live_enabled)))
+        if paper_enabled is not None:
+            updates.append("paper_enabled = ?")
+            params.append(int(bool(paper_enabled)))
+        if status is not None:
+            updates.append("status = ?")
+            params.append(status)
+        if notes is not None:
+            updates.append("notes = ?")
+            params.append(notes)
+
+        if not updates:
+            return False
+
+        updates.append("updated_at = CURRENT_TIMESTAMP")
+        params.extend([int(user_id), str(account_id)])
+
+        conn = self.get_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                f'''
+                UPDATE user_accounts
+                SET {", ".join(updates)}
+                WHERE user_id = ? AND account_id = ?
+                ''',
+                tuple(params),
+            )
+            conn.commit()
+            return cursor.rowcount > 0
+        finally:
+            conn.close()
+
+    def upsert_user_risk_profile(self, profile_data: Dict[str, Any]) -> int:
+        conn = self.get_connection()
+        try:
+            cursor = conn.cursor()
+            user_id = int(profile_data["user_id"])
+            account_id = str(profile_data["account_id"])
+            preferred_symbols = self._to_json_text(profile_data.get("preferred_symbols"))
+            cursor.execute(
+                '''
+                INSERT INTO user_risk_profiles (
+                    user_id, account_id,
+                    max_risk_per_trade, max_daily_loss, max_drawdown, max_portfolio_open_risk_pct,
+                    allowed_position_count, preferred_symbols, leverage_cap, risk_mode,
+                    live_enabled, paper_enabled, is_valid, notes, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(user_id, account_id) DO UPDATE SET
+                    max_risk_per_trade = excluded.max_risk_per_trade,
+                    max_daily_loss = excluded.max_daily_loss,
+                    max_drawdown = excluded.max_drawdown,
+                    max_portfolio_open_risk_pct = excluded.max_portfolio_open_risk_pct,
+                    allowed_position_count = excluded.allowed_position_count,
+                    preferred_symbols = excluded.preferred_symbols,
+                    leverage_cap = excluded.leverage_cap,
+                    risk_mode = excluded.risk_mode,
+                    live_enabled = excluded.live_enabled,
+                    paper_enabled = excluded.paper_enabled,
+                    is_valid = excluded.is_valid,
+                    notes = excluded.notes,
+                    updated_at = CURRENT_TIMESTAMP
+                ''',
+                (
+                    user_id,
+                    account_id,
+                    float(profile_data.get("max_risk_per_trade", 0.0) or 0.0),
+                    float(profile_data.get("max_daily_loss", 0.0) or 0.0),
+                    float(profile_data.get("max_drawdown", 0.0) or 0.0),
+                    float(profile_data.get("max_portfolio_open_risk_pct", 0.0) or 0.0),
+                    int(profile_data.get("allowed_position_count", 0) or 0),
+                    preferred_symbols,
+                    float(profile_data.get("leverage_cap", 0.0) or 0.0),
+                    profile_data.get("risk_mode", "normal"),
+                    int(bool(profile_data.get("live_enabled", False))),
+                    int(bool(profile_data.get("paper_enabled", True))),
+                    int(bool(profile_data.get("is_valid", True))),
+                    profile_data.get("notes"),
+                ),
+            )
+            cursor.execute(
+                '''
+                SELECT id FROM user_risk_profiles
+                WHERE user_id = ? AND account_id = ?
+                LIMIT 1
+                ''',
+                (user_id, account_id),
+            )
+            row = cursor.fetchone()
+            conn.commit()
+            return int(row["id"])
+        finally:
+            conn.close()
+
+    def get_user_risk_profile(self, user_id: int, account_id: str) -> Optional[Dict[str, Any]]:
+        conn = self.get_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                SELECT *
+                FROM user_risk_profiles
+                WHERE user_id = ? AND account_id = ?
+                LIMIT 1
+                ''',
+                (int(user_id), str(account_id)),
+            )
+            row = cursor.fetchone()
+            if not row:
+                return None
+            item = dict(row)
+            item["preferred_symbols"] = self._to_list(item.get("preferred_symbols"))
+            return item
+        finally:
+            conn.close()
+
+    def upsert_user_exchange_credential(self, credential_data: Dict[str, Any]) -> int:
+        conn = self.get_connection()
+        try:
+            cursor = conn.cursor()
+            user_id = int(credential_data["user_id"])
+            account_id = str(credential_data["account_id"])
+            exchange = str(credential_data["exchange"])
+            cursor.execute(
+                '''
+                INSERT INTO user_exchange_credentials (
+                    user_id, account_id, exchange, credential_alias, api_key_ref, token_ref,
+                    encrypted_api_key, encrypted_api_secret,
+                    permissions_read, permissions_trade, permissions_withdraw,
+                    permission_status, token_status, reconciliation_status,
+                    last_validated_at, notes, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(user_id, account_id, exchange) DO UPDATE SET
+                    credential_alias = excluded.credential_alias,
+                    api_key_ref = excluded.api_key_ref,
+                    token_ref = excluded.token_ref,
+                    encrypted_api_key = excluded.encrypted_api_key,
+                    encrypted_api_secret = excluded.encrypted_api_secret,
+                    permissions_read = excluded.permissions_read,
+                    permissions_trade = excluded.permissions_trade,
+                    permissions_withdraw = excluded.permissions_withdraw,
+                    permission_status = excluded.permission_status,
+                    token_status = excluded.token_status,
+                    reconciliation_status = excluded.reconciliation_status,
+                    last_validated_at = excluded.last_validated_at,
+                    notes = excluded.notes,
+                    updated_at = CURRENT_TIMESTAMP
+                ''',
+                (
+                    user_id,
+                    account_id,
+                    exchange,
+                    credential_data.get("credential_alias"),
+                    credential_data.get("api_key_ref"),
+                    credential_data.get("token_ref"),
+                    credential_data["encrypted_api_key"],
+                    credential_data["encrypted_api_secret"],
+                    int(bool(credential_data.get("permissions_read", True))),
+                    int(bool(credential_data.get("permissions_trade", True))),
+                    int(bool(credential_data.get("permissions_withdraw", False))),
+                    credential_data.get("permission_status", "unknown"),
+                    credential_data.get("token_status", "unknown"),
+                    credential_data.get("reconciliation_status", "unknown"),
+                    credential_data.get("last_validated_at"),
+                    credential_data.get("notes"),
+                ),
+            )
+            cursor.execute(
+                '''
+                SELECT id
+                FROM user_exchange_credentials
+                WHERE user_id = ? AND account_id = ? AND exchange = ?
+                LIMIT 1
+                ''',
+                (user_id, account_id, exchange),
+            )
+            row = cursor.fetchone()
+            conn.commit()
+            return int(row["id"])
+        finally:
+            conn.close()
+
+    def get_user_exchange_credential(
+        self,
+        *,
+        user_id: int,
+        account_id: str,
+        exchange: str,
+        include_encrypted: bool = False,
+    ) -> Optional[Dict[str, Any]]:
+        conn = self.get_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                SELECT *
+                FROM user_exchange_credentials
+                WHERE user_id = ? AND account_id = ? AND exchange = ?
+                LIMIT 1
+                ''',
+                (int(user_id), str(account_id), str(exchange)),
+            )
+            row = cursor.fetchone()
+            if not row:
+                return None
+            item = dict(row)
+            if not include_encrypted:
+                item.pop("encrypted_api_key", None)
+                item.pop("encrypted_api_secret", None)
+            return item
+        finally:
+            conn.close()
+
+    def upsert_user_governance_state(self, governance_data: Dict[str, Any]) -> int:
+        conn = self.get_connection()
+        try:
+            cursor = conn.cursor()
+            user_id = int(governance_data["user_id"])
+            account_id = str(governance_data["account_id"])
+            exchange = str(governance_data.get("exchange") or "")
+            symbol = str(governance_data.get("symbol") or "")
+            timeframe = str(governance_data.get("timeframe") or "")
+            strategy_version = str(governance_data.get("strategy_version") or "")
+
+            cursor.execute(
+                '''
+                INSERT INTO user_governance_state (
+                    user_id, account_id, exchange, symbol, timeframe, strategy_version,
+                    governance_status, governance_mode, blocked, block_reason, notes, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(user_id, account_id, exchange, symbol, timeframe, strategy_version) DO UPDATE SET
+                    governance_status = excluded.governance_status,
+                    governance_mode = excluded.governance_mode,
+                    blocked = excluded.blocked,
+                    block_reason = excluded.block_reason,
+                    notes = excluded.notes,
+                    updated_at = CURRENT_TIMESTAMP
+                ''',
+                (
+                    user_id,
+                    account_id,
+                    exchange,
+                    symbol,
+                    timeframe,
+                    strategy_version,
+                    governance_data.get("governance_status", "unknown"),
+                    governance_data.get("governance_mode", "blocked"),
+                    int(bool(governance_data.get("blocked", False))),
+                    governance_data.get("block_reason"),
+                    governance_data.get("notes"),
+                ),
+            )
+            cursor.execute(
+                '''
+                SELECT id FROM user_governance_state
+                WHERE user_id = ? AND account_id = ? AND exchange = ? AND symbol = ? AND timeframe = ? AND strategy_version = ?
+                LIMIT 1
+                ''',
+                (user_id, account_id, exchange, symbol, timeframe, strategy_version),
+            )
+            row = cursor.fetchone()
+            conn.commit()
+            return int(row["id"])
+        finally:
+            conn.close()
+
+    def get_user_governance_state(
+        self,
+        *,
+        user_id: int,
+        account_id: str,
+        exchange: Optional[str] = None,
+        symbol: Optional[str] = None,
+        timeframe: Optional[str] = None,
+        strategy_version: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        conn = self.get_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                SELECT *
+                FROM user_governance_state
+                WHERE user_id = ?
+                  AND account_id = ?
+                  AND (? IS NULL OR exchange = ?)
+                  AND (? IS NULL OR symbol = ?)
+                  AND (? IS NULL OR timeframe = ?)
+                  AND (? IS NULL OR strategy_version = ?)
+                ORDER BY updated_at DESC
+                LIMIT 1
+                ''',
+                (
+                    int(user_id),
+                    str(account_id),
+                    exchange,
+                    exchange,
+                    symbol,
+                    symbol,
+                    timeframe,
+                    timeframe,
+                    strategy_version,
+                    strategy_version,
+                ),
+            )
+            row = cursor.fetchone()
+            return dict(row) if row else None
+        finally:
+            conn.close()
+
+    def create_user_live_order(self, order_data: Dict[str, Any]) -> int:
+        conn = self.get_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                INSERT INTO user_live_orders (
+                    user_id, account_id, exchange, symbol, timeframe, strategy_version,
+                    client_order_id, exchange_order_id, side, order_type, quantity, price, status, source, notes, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                ''',
+                (
+                    int(order_data["user_id"]),
+                    str(order_data["account_id"]),
+                    order_data.get("exchange"),
+                    order_data.get("symbol"),
+                    order_data.get("timeframe"),
+                    order_data.get("strategy_version"),
+                    order_data.get("client_order_id"),
+                    order_data.get("exchange_order_id"),
+                    order_data.get("side"),
+                    order_data.get("order_type"),
+                    float(order_data.get("quantity", 0.0) or 0.0),
+                    float(order_data.get("price", 0.0) or 0.0),
+                    order_data.get("status", "pending"),
+                    order_data.get("source"),
+                    order_data.get("notes"),
+                ),
+            )
+            order_id = cursor.lastrowid
+            conn.commit()
+            return int(order_id)
+        finally:
+            conn.close()
+
+    def create_user_live_position(self, position_data: Dict[str, Any]) -> int:
+        conn = self.get_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                INSERT INTO user_live_positions (
+                    user_id, account_id, exchange, symbol, timeframe, strategy_version,
+                    side, quantity, entry_price, mark_price, unrealized_pnl, status, notes, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                ''',
+                (
+                    int(position_data["user_id"]),
+                    str(position_data["account_id"]),
+                    position_data.get("exchange"),
+                    position_data.get("symbol"),
+                    position_data.get("timeframe"),
+                    position_data.get("strategy_version"),
+                    position_data.get("side"),
+                    float(position_data.get("quantity", 0.0) or 0.0),
+                    float(position_data.get("entry_price", 0.0) or 0.0),
+                    float(position_data.get("mark_price", 0.0) or 0.0),
+                    float(position_data.get("unrealized_pnl", 0.0) or 0.0),
+                    position_data.get("status", "open"),
+                    position_data.get("notes"),
+                ),
+            )
+            position_id = cursor.lastrowid
+            conn.commit()
+            return int(position_id)
+        finally:
+            conn.close()
+
+    def get_user_live_orders(
+        self,
+        user_id: Optional[int] = None,
+        account_id: Optional[str] = None,
+        status: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        conn = self.get_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                SELECT *
+                FROM user_live_orders
+                WHERE (? IS NULL OR user_id = ?)
+                  AND (? IS NULL OR account_id = ?)
+                  AND (? IS NULL OR status = ?)
+                ORDER BY created_at DESC
+                ''',
+                (user_id, user_id, account_id, account_id, status, status),
+            )
+            return [dict(row) for row in cursor.fetchall()]
+        finally:
+            conn.close()
+
+    def get_user_live_positions(
+        self,
+        user_id: Optional[int] = None,
+        account_id: Optional[str] = None,
+        status: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        conn = self.get_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                SELECT *
+                FROM user_live_positions
+                WHERE (? IS NULL OR user_id = ?)
+                  AND (? IS NULL OR account_id = ?)
+                  AND (? IS NULL OR status = ?)
+                ORDER BY created_at DESC
+                ''',
+                (user_id, user_id, account_id, account_id, status, status),
+            )
+            return [dict(row) for row in cursor.fetchall()]
+        finally:
+            conn.close()
+
+    def save_user_execution_event(self, event_data: Dict[str, Any]) -> int:
+        conn = self.get_connection()
+        try:
+            cursor = conn.cursor()
+            details_json = self._to_json_text(event_data.get("details_json"))
+            cursor.execute(
+                '''
+                INSERT INTO user_execution_events (
+                    user_id, account_id, exchange, symbol, timeframe, strategy_version,
+                    event_type, event_status, message, details_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ''',
+                (
+                    int(event_data["user_id"]),
+                    str(event_data["account_id"]),
+                    event_data.get("exchange"),
+                    event_data.get("symbol"),
+                    event_data.get("timeframe"),
+                    event_data.get("strategy_version"),
+                    event_data.get("event_type"),
+                    event_data.get("event_status"),
+                    event_data.get("message"),
+                    details_json,
+                ),
+            )
+            event_id = cursor.lastrowid
+            conn.commit()
+            return int(event_id)
+        finally:
+            conn.close()
+
+    def get_user_execution_events(
+        self,
+        user_id: Optional[int] = None,
+        account_id: Optional[str] = None,
+        event_status: Optional[str] = None,
+        limit: int = 200,
+    ) -> List[Dict[str, Any]]:
+        conn = self.get_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                SELECT *
+                FROM user_execution_events
+                WHERE (? IS NULL OR user_id = ?)
+                  AND (? IS NULL OR account_id = ?)
+                  AND (? IS NULL OR event_status = ?)
+                ORDER BY created_at DESC, id DESC
+                LIMIT ?
+                ''',
+                (
+                    user_id,
+                    user_id,
+                    account_id,
+                    account_id,
+                    event_status,
+                    event_status,
+                    int(limit),
+                ),
+            )
+            events = []
+            for row in cursor.fetchall():
+                item = dict(row)
+                item["details_json"] = self._decode_json_field(item.get("details_json"), {})
+                events.append(item)
+            return events
+        finally:
+            conn.close()
+
+    def list_eligible_accounts_for_runtime(
+        self,
+        symbol: Optional[str] = None,
+        timeframe: Optional[str] = None,
+        strategy_version: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        conn = self.get_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                SELECT
+                    a.user_id,
+                    a.account_id,
+                    a.account_alias,
+                    a.exchange,
+                    a.status,
+                    a.live_enabled,
+                    a.paper_enabled,
+                    a.capital_base,
+                    a.risk_mode,
+                    a.allowed_symbols,
+                    a.allowed_timeframes,
+                    a.notes,
+                    rp.max_risk_per_trade,
+                    rp.max_daily_loss,
+                    rp.max_drawdown,
+                    rp.max_portfolio_open_risk_pct,
+                    rp.allowed_position_count,
+                    rp.preferred_symbols,
+                    rp.leverage_cap,
+                    rp.live_enabled AS risk_live_enabled,
+                    rp.paper_enabled AS risk_paper_enabled,
+                    rp.is_valid AS risk_profile_valid,
+                    rp.risk_mode AS risk_profile_mode,
+                    cred.api_key_ref,
+                    cred.token_ref,
+                    cred.permission_status,
+                    cred.token_status,
+                    cred.reconciliation_status
+                FROM user_accounts a
+                LEFT JOIN user_risk_profiles rp
+                    ON rp.user_id = a.user_id AND rp.account_id = a.account_id
+                LEFT JOIN user_exchange_credentials cred
+                    ON cred.user_id = a.user_id AND cred.account_id = a.account_id AND cred.exchange = a.exchange
+                WHERE a.status = 'active'
+                  AND a.live_enabled = 1
+                ORDER BY a.user_id ASC, a.account_id ASC
+                '''
+            )
+            rows = cursor.fetchall()
+            contexts = []
+            for row in rows:
+                item = dict(row)
+                context = self.build_account_execution_context(
+                    user_id=int(item["user_id"]),
+                    account_id=str(item["account_id"]),
+                    exchange=item.get("exchange"),
+                    symbol=symbol,
+                    timeframe=timeframe,
+                    strategy_version=strategy_version,
+                    preload_row=item,
+                )
+                contexts.append(context)
+            return contexts
+        finally:
+            conn.close()
+
+    def build_account_execution_context(
+        self,
+        *,
+        user_id: int,
+        account_id: str,
+        exchange: Optional[str] = None,
+        symbol: Optional[str] = None,
+        timeframe: Optional[str] = None,
+        strategy_version: Optional[str] = None,
+        preload_row: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        account_rows = self.get_user_accounts(user_id=user_id, account_id=account_id, status="active")
+        if not account_rows:
+            raise ValueError("Conta nao encontrada ou inativa.")
+        account = account_rows[0]
+        resolved_exchange = exchange or account.get("exchange")
+
+        risk_profile = self.get_user_risk_profile(user_id=user_id, account_id=account_id) or {}
+        credential = self.get_user_exchange_credential(
+            user_id=user_id,
+            account_id=account_id,
+            exchange=str(resolved_exchange),
+            include_encrypted=False,
+        ) or {}
+
+        governance_state = self.get_user_governance_state(
+            user_id=user_id,
+            account_id=account_id,
+            exchange=resolved_exchange,
+            symbol=symbol,
+            timeframe=timeframe,
+            strategy_version=strategy_version,
+        ) or {}
+
+        if preload_row:
+            credential = {
+                **credential,
+                "api_key_ref": preload_row.get("api_key_ref", credential.get("api_key_ref")),
+                "token_ref": preload_row.get("token_ref", credential.get("token_ref")),
+                "permission_status": preload_row.get("permission_status", credential.get("permission_status")),
+                "token_status": preload_row.get("token_status", credential.get("token_status")),
+                "reconciliation_status": preload_row.get(
+                    "reconciliation_status",
+                    credential.get("reconciliation_status"),
+                ),
+            }
+
+        return {
+            "user_id": int(user_id),
+            "account_id": str(account_id),
+            "account_alias": account.get("account_alias") or str(account_id),
+            "exchange_name": resolved_exchange,
+            "api_key_ref": credential.get("api_key_ref"),
+            "token_ref": credential.get("token_ref"),
+            "live_enabled": bool(account.get("live_enabled")),
+            "paper_enabled": bool(account.get("paper_enabled")),
+            "governance_status": governance_state.get("governance_status") or "unknown",
+            "governance_mode": governance_state.get("governance_mode") or "blocked",
+            "governance_blocked": bool(governance_state.get("blocked", False)),
+            "governance_block_reason": governance_state.get("block_reason"),
+            "risk_profile": risk_profile,
+            "allowed_symbols": self._to_list(account.get("allowed_symbols")),
+            "allowed_timeframes": self._to_list(account.get("allowed_timeframes")),
+            "capital_base": float(account.get("capital_base", 0.0) or 0.0),
+            "risk_mode": account.get("risk_mode") or "normal",
+            "notes": account.get("notes"),
+            "permission_status": credential.get("permission_status") or "unknown",
+            "token_status": credential.get("token_status") or "unknown",
+            "reconciliation_status": credential.get("reconciliation_status") or "unknown",
+        }
+
+    def get_multiuser_dashboard_summary(self) -> Dict[str, Any]:
+        conn = self.get_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute("SELECT COUNT(*) AS total FROM user_accounts WHERE status = 'active'")
+            active_accounts = int((cursor.fetchone() or {"total": 0})["total"] or 0)
+
+            cursor.execute(
+                '''
+                SELECT COUNT(*) AS total
+                FROM user_accounts
+                WHERE status = 'active' AND paper_enabled = 1 AND live_enabled = 0
+                '''
+            )
+            paper_accounts = int((cursor.fetchone() or {"total": 0})["total"] or 0)
+
+            cursor.execute(
+                '''
+                SELECT COUNT(DISTINCT a.user_id || ':' || a.account_id) AS total
+                FROM user_accounts a
+                LEFT JOIN user_governance_state g
+                  ON g.user_id = a.user_id AND g.account_id = a.account_id
+                WHERE a.status = 'active' AND (a.live_enabled = 0 OR g.blocked = 1 OR lower(g.governance_mode) = 'blocked')
+                '''
+            )
+            blocked_accounts = int((cursor.fetchone() or {"total": 0})["total"] or 0)
+
+            cursor.execute(
+                '''
+                SELECT COUNT(DISTINCT user_id || ':' || account_id) AS total
+                FROM user_execution_events
+                WHERE event_status = 'error'
+                  AND created_at >= datetime('now', '-24 hours')
+                '''
+            )
+            operational_error_accounts = int((cursor.fetchone() or {"total": 0})["total"] or 0)
+
+            cursor.execute(
+                '''
+                SELECT COUNT(*) AS total
+                FROM user_exchange_credentials
+                WHERE lower(reconciliation_status) IN ('broken', 'mismatch', 'reconciliation_mismatch')
+                '''
+            )
+            mismatch_accounts = int((cursor.fetchone() or {"total": 0})["total"] or 0)
+
+            return {
+                "active_accounts": active_accounts,
+                "paper_accounts": paper_accounts,
+                "blocked_accounts": blocked_accounts,
+                "operational_error_accounts": operational_error_accounts,
+                "mismatch_accounts": mismatch_accounts,
+            }
+        finally:
+            conn.close()
+
+    def get_multiuser_account_overview(self, limit: int = 200) -> List[Dict[str, Any]]:
+        conn = self.get_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                SELECT
+                    a.user_id,
+                    a.account_id,
+                    a.account_alias,
+                    a.exchange,
+                    a.status,
+                    a.live_enabled,
+                    a.paper_enabled,
+                    a.capital_base,
+                    COALESCE(rp.risk_mode, a.risk_mode) AS risk_mode,
+                    COALESCE(rp.allowed_position_count, 0) AS allowed_position_count,
+                    COALESCE(cred.permission_status, 'unknown') AS permission_status,
+                    COALESCE(cred.token_status, 'unknown') AS token_status,
+                    COALESCE(cred.reconciliation_status, 'unknown') AS reconciliation_status,
+                    (
+                        SELECT COUNT(*)
+                        FROM user_live_positions lp
+                        WHERE lp.user_id = a.user_id
+                          AND lp.account_id = a.account_id
+                          AND lower(lp.status) = 'open'
+                    ) AS open_positions,
+                    (
+                        SELECT COUNT(*)
+                        FROM user_live_orders lo
+                        WHERE lo.user_id = a.user_id
+                          AND lo.account_id = a.account_id
+                          AND lower(lo.status) IN ('pending', 'open', 'new')
+                    ) AS pending_orders
+                FROM user_accounts a
+                LEFT JOIN user_risk_profiles rp
+                    ON rp.user_id = a.user_id AND rp.account_id = a.account_id
+                LEFT JOIN user_exchange_credentials cred
+                    ON cred.user_id = a.user_id AND cred.account_id = a.account_id AND cred.exchange = a.exchange
+                WHERE a.status = 'active'
+                ORDER BY a.user_id ASC, a.account_id ASC
+                LIMIT ?
+                ''',
+                (int(limit),),
+            )
+            return [dict(row) for row in cursor.fetchall()]
+        finally:
+            conn.close()
 
     def save_strategy_profile(self, profile_data: Dict[str, Any]) -> int:
         """Criar ou atualizar um perfil/versionamento de estrategia."""
@@ -644,6 +2143,10 @@ class TradingDatabase:
 
             values = {
                 'status': profile_data.get('status', 'draft'),
+                'market_state': profile_data.get('market_state'),
+                'allowed_market_states': self._to_json_text(profile_data.get('allowed_market_states')),
+                'setup_type': profile_data.get('setup_type'),
+                'allowed_setup_types': self._to_json_text(profile_data.get('allowed_setup_types')),
                 'rsi_period': profile_data.get('rsi_period'),
                 'rsi_min': profile_data.get('rsi_min'),
                 'rsi_max': profile_data.get('rsi_max'),
@@ -664,7 +2167,7 @@ class TradingDatabase:
                 cursor.execute(
                     '''
                     UPDATE strategy_profiles
-                    SET status = ?, rsi_period = ?, rsi_min = ?, rsi_max = ?,
+                    SET status = ?, market_state = ?, allowed_market_states = ?, setup_type = ?, allowed_setup_types = ?, rsi_period = ?, rsi_min = ?, rsi_max = ?,
                         context_timeframe = ?, stop_loss_pct = ?, take_profit_pct = ?, require_volume = ?, require_trend = ?, avoid_ranging = ?,
                         source_run_id = ?, notes = ?, promoted_at_br = ?, deactivated_at_br = ?,
                         updated_at = CURRENT_TIMESTAMP, updated_at_br = ?
@@ -672,6 +2175,10 @@ class TradingDatabase:
                     ''',
                     (
                         values['status'],
+                        values['market_state'],
+                        values['allowed_market_states'],
+                        values['setup_type'],
+                        values['allowed_setup_types'],
                         values['rsi_period'],
                         values['rsi_min'],
                         values['rsi_max'],
@@ -694,16 +2201,20 @@ class TradingDatabase:
                 cursor.execute(
                     '''
                     INSERT INTO strategy_profiles (
-                        symbol, timeframe, context_timeframe, strategy_version, status, rsi_period, rsi_min, rsi_max,
+                        symbol, timeframe, context_timeframe, strategy_version, market_state, allowed_market_states, setup_type, allowed_setup_types, status, rsi_period, rsi_min, rsi_max,
                         stop_loss_pct, take_profit_pct, require_volume, require_trend, avoid_ranging, source_run_id,
                         notes, promoted_at_br, deactivated_at_br, created_at_br, updated_at_br
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ''',
                     (
                         symbol,
                         timeframe,
                         values['context_timeframe'],
                         strategy_version,
+                        values['market_state'],
+                        values['allowed_market_states'],
+                        values['setup_type'],
+                        values['allowed_setup_types'],
                         values['status'],
                         values['rsi_period'],
                         values['rsi_min'],
@@ -751,12 +2262,265 @@ class TradingDatabase:
             (symbol, symbol, timeframe, timeframe, status, status, limit),
         )
         rows = [dict(row) for row in cursor.fetchall()]
+        for row in rows:
+            row["allowed_market_states"] = self._to_list(row.get("allowed_market_states"))
+            row["allowed_setup_types"] = self._to_list(row.get("allowed_setup_types"))
         conn.close()
         return rows
 
     def get_active_strategy_profile(self, symbol: str, timeframe: str) -> Optional[Dict]:
         profiles = self.get_strategy_profiles(symbol=symbol, timeframe=timeframe, status='active', limit=1)
         return profiles[0] if profiles else None
+
+    def _calculate_run_period_days(self, run: Dict[str, Any]) -> float:
+        start_date = run.get('start_date')
+        end_date = run.get('end_date')
+        if not start_date or not end_date:
+            return 0.0
+        try:
+            start_dt = datetime.fromisoformat(str(start_date))
+            end_dt = datetime.fromisoformat(str(end_date))
+        except ValueError:
+            return 0.0
+        return max((end_dt - start_dt).total_seconds() / 86400.0, 0.0)
+
+    def _cap_profit_factor(self, value: float) -> float:
+        try:
+            normalized = float(value or 0.0)
+        except (TypeError, ValueError):
+            normalized = 0.0
+        if normalized <= 0:
+            return 0.0
+        return min(normalized, float(ProductionConfig.MAX_STATISTICAL_PROFIT_FACTOR))
+
+    def _rank_setup_candidates(self, rows: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+        if not rows:
+            return None
+
+        min_setup_trades = max(int(ProductionConfig.MIN_PROMOTION_SETUP_TRADES), 1)
+        candidates = []
+        for row in rows:
+            setup_type = str(row.get('setup_type') or row.get('setup_name') or '').strip().lower()
+            if not setup_type:
+                continue
+            total_trades = int(row.get('total_trades', 0) or 0)
+            profit_factor = self._cap_profit_factor(float(row.get('profit_factor', 0.0) or 0.0))
+            win_rate = float(row.get('win_rate', 0.0) or 0.0)
+            net_profit = float(row.get('net_profit', 0.0) or 0.0)
+            setup_score = (
+                min(max(profit_factor - 1.0, 0.0), 1.5) * 35.0
+                + min(max(win_rate, 0.0), 100.0) * 0.25
+                + (10.0 if net_profit > 0 else -6.0)
+                + min(total_trades, 120) * 0.10
+            )
+            candidates.append(
+                {
+                    'setup_type': setup_type,
+                    'total_trades': total_trades,
+                    'profit_factor': round(profit_factor, 2),
+                    'win_rate': round(win_rate, 2),
+                    'net_profit': round(net_profit, 2),
+                    'meets_min_sample': total_trades >= min_setup_trades,
+                    'meets_min_pf': profit_factor >= float(ProductionConfig.MIN_PROMOTION_PROFIT_FACTOR),
+                    'setup_score': round(max(setup_score, 0.0), 2),
+                }
+            )
+
+        if not candidates:
+            return None
+
+        candidates.sort(
+            key=lambda item: (
+                bool(item.get('meets_min_sample')),
+                bool(item.get('meets_min_pf')),
+                float(item.get('net_profit', 0.0) or 0.0) > 0,
+                float(item.get('setup_score', 0.0) or 0.0),
+                int(item.get('total_trades', 0) or 0),
+            ),
+            reverse=True,
+        )
+        return candidates[0]
+
+    @staticmethod
+    def _market_states_to_setup_allowlist(market_states: Optional[List[str]]) -> List[str]:
+        return market_states_to_setup_allowlist(market_states)
+
+    @staticmethod
+    def _setup_types_to_market_state_allowlist(setup_types: Optional[List[str]]) -> List[str]:
+        return setup_types_to_market_state_allowlist(setup_types)
+
+    def _rank_market_state_candidates(self, rows: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+        if not rows:
+            return None
+
+        min_market_state_trades = max(int(ProductionConfig.MIN_PROMOTION_SETUP_TRADES), 1)
+        candidates = []
+        for row in rows:
+            market_state = str(row.get('market_state') or row.get('state') or '').strip().lower()
+            if not market_state:
+                continue
+            total_trades = int(row.get('total_trades', 0) or 0)
+            profit_factor = self._cap_profit_factor(float(row.get('profit_factor', 0.0) or 0.0))
+            win_rate = float(row.get('win_rate', 0.0) or 0.0)
+            net_profit = float(row.get('net_profit', 0.0) or 0.0)
+            state_score = (
+                min(max(profit_factor - 1.0, 0.0), 1.5) * 35.0
+                + min(max(win_rate, 0.0), 100.0) * 0.25
+                + (10.0 if net_profit > 0 else -6.0)
+                + min(total_trades, 120) * 0.10
+            )
+            candidates.append(
+                {
+                    'market_state': market_state,
+                    'total_trades': total_trades,
+                    'profit_factor': round(profit_factor, 2),
+                    'win_rate': round(win_rate, 2),
+                    'net_profit': round(net_profit, 2),
+                    'meets_min_sample': total_trades >= min_market_state_trades,
+                    'meets_min_pf': profit_factor >= float(ProductionConfig.MIN_PROMOTION_PROFIT_FACTOR),
+                    'state_score': round(max(state_score, 0.0), 2),
+                }
+            )
+
+        if not candidates:
+            return None
+
+        candidates.sort(
+            key=lambda item: (
+                bool(item.get('meets_min_sample')),
+                bool(item.get('meets_min_pf')),
+                float(item.get('net_profit', 0.0) or 0.0) > 0,
+                float(item.get('state_score', 0.0) or 0.0),
+                int(item.get('total_trades', 0) or 0),
+            ),
+            reverse=True,
+        )
+        return candidates[0]
+
+    def _derive_approved_market_state_from_run(self, run_id: int) -> Optional[Dict[str, Any]]:
+        conn = self.get_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                SELECT
+                    COALESCE(market_state, '') AS market_state,
+                    COUNT(*) AS total_trades,
+                    SUM(CASE WHEN profit_loss > 0 THEN profit_loss ELSE 0 END) AS gross_profit,
+                    ABS(SUM(CASE WHEN profit_loss < 0 THEN profit_loss ELSE 0 END)) AS gross_loss,
+                    AVG(CASE WHEN profit_loss_pct IS NOT NULL THEN profit_loss_pct ELSE 0 END) AS expectancy_pct,
+                    AVG(CASE WHEN profit_loss > 0 THEN 1.0 ELSE 0.0 END) * 100 AS win_rate,
+                    SUM(COALESCE(profit_loss, 0.0)) AS net_profit
+                FROM backtest_trades
+                WHERE run_id = ?
+                GROUP BY COALESCE(market_state, '')
+                HAVING total_trades > 0
+                ''',
+                (run_id,),
+            )
+            rows = cursor.fetchall()
+            if not rows:
+                return None
+            return self._rank_market_state_candidates(
+                [
+                    {
+                        'market_state': row['market_state'],
+                        'total_trades': row['total_trades'],
+                        'profit_factor': (
+                            float(row['gross_profit'] or 0.0) / float(row['gross_loss'] or 1.0)
+                            if float(row['gross_loss'] or 0.0) > 0
+                            else float(row['gross_profit'] or 0.0)
+                        ),
+                        'win_rate': row['win_rate'],
+                        'net_profit': row['net_profit'],
+                        'expectancy_pct': row['expectancy_pct'],
+                    }
+                    for row in rows
+                ]
+            )
+        finally:
+            conn.close()
+
+    def _derive_approved_setup_from_run(self, run_id: int) -> Optional[Dict[str, Any]]:
+        conn = self.get_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                SELECT
+                    COALESCE(setup_name, '') AS setup_type,
+                    COUNT(*) AS total_trades,
+                    SUM(CASE WHEN profit_loss > 0 THEN profit_loss ELSE 0 END) AS gross_profit,
+                    ABS(SUM(CASE WHEN profit_loss < 0 THEN profit_loss ELSE 0 END)) AS gross_loss,
+                    AVG(CASE WHEN profit_loss_pct IS NOT NULL THEN profit_loss_pct ELSE 0 END) AS expectancy_pct,
+                    AVG(CASE WHEN profit_loss > 0 THEN 1.0 ELSE 0.0 END) * 100 AS win_rate,
+                    SUM(COALESCE(profit_loss, 0.0)) AS net_profit
+                FROM backtest_trades
+                WHERE run_id = ?
+                GROUP BY COALESCE(setup_name, '')
+                HAVING total_trades > 0
+                ''',
+                (run_id,),
+            )
+            trade_rows = cursor.fetchall()
+            if trade_rows:
+                return self._rank_setup_candidates(
+                    [
+                        {
+                            'setup_type': row['setup_type'],
+                            'total_trades': row['total_trades'],
+                            'profit_factor': (
+                                float(row['gross_profit'] or 0.0) / float(row['gross_loss'] or 1.0)
+                                if float(row['gross_loss'] or 0.0) > 0
+                                else float(row['gross_profit'] or 0.0)
+                            ),
+                            'win_rate': row['win_rate'],
+                            'net_profit': row['net_profit'],
+                            'expectancy_pct': row['expectancy_pct'],
+                        }
+                        for row in trade_rows
+                    ]
+                )
+
+            cursor.execute(
+                '''
+                SELECT
+                    COALESCE(setup_type, '') AS setup_type,
+                    COUNT(*) AS total_trades,
+                    SUM(CASE WHEN pnl_abs > 0 THEN pnl_abs ELSE 0 END) AS gross_profit,
+                    ABS(SUM(CASE WHEN pnl_abs < 0 THEN pnl_abs ELSE 0 END)) AS gross_loss,
+                    AVG(CASE WHEN pnl_pct IS NOT NULL THEN pnl_pct ELSE 0 END) AS expectancy_pct,
+                    AVG(CASE WHEN pnl_abs > 0 THEN 1.0 ELSE 0.0 END) * 100 AS win_rate,
+                    SUM(COALESCE(pnl_abs, 0.0)) AS net_profit
+                FROM trade_analytics
+                WHERE run_id = ?
+                GROUP BY COALESCE(setup_type, '')
+                HAVING total_trades > 0
+                ''',
+                (run_id,),
+            )
+            analytics_rows = cursor.fetchall()
+            if analytics_rows:
+                return self._rank_setup_candidates(
+                    [
+                        {
+                            'setup_type': row['setup_type'],
+                            'total_trades': row['total_trades'],
+                            'profit_factor': (
+                                float(row['gross_profit'] or 0.0) / float(row['gross_loss'] or 1.0)
+                                if float(row['gross_loss'] or 0.0) > 0
+                                else float(row['gross_profit'] or 0.0)
+                            ),
+                            'win_rate': row['win_rate'],
+                            'net_profit': row['net_profit'],
+                            'expectancy_pct': row['expectancy_pct'],
+                        }
+                        for row in analytics_rows
+                    ]
+                )
+            return None
+        finally:
+            conn.close()
 
     def get_backtest_run_promotion_readiness(self, run_id: int) -> Dict[str, Any]:
         conn = self.get_connection()
@@ -778,17 +2542,91 @@ class TradingDatabase:
         reasons = []
         total_trades = int(run.get('total_trades', 0) or 0)
         total_return_pct = float(run.get('total_return_pct', 0.0) or 0.0)
-        profit_factor = float(run.get('profit_factor', 0.0) or 0.0)
+        profit_factor = self._cap_profit_factor(float(run.get('profit_factor', 0.0) or 0.0))
         expectancy_pct = float(run.get('expectancy_pct', 0.0) or 0.0)
         max_drawdown = float(run.get('max_drawdown', 0.0) or 0.0)
+        evaluation_period_days = float(run.get('evaluation_period_days', 0.0) or 0.0) or self._calculate_run_period_days(run)
+        objective_status = str(run.get('objective_status') or '').strip().lower()
         out_of_sample_passed = bool(run.get('out_of_sample_passed', False))
+        out_of_sample_trades = int(run.get('out_of_sample_total_trades', 0) or 0)
+        out_of_sample_profit_factor = self._cap_profit_factor(float(run.get('out_of_sample_profit_factor', 0.0) or 0.0))
+        out_of_sample_expectancy_pct = float(run.get('out_of_sample_expectancy_pct', 0.0) or 0.0)
         walk_forward_windows = int(run.get('walk_forward_windows', 0) or 0)
         walk_forward_passed = bool(run.get('walk_forward_passed', False))
+        walk_forward_pass_rate_pct = float(run.get('walk_forward_pass_rate_pct', 0.0) or 0.0)
+        walk_forward_oos_profit_factor = self._cap_profit_factor(float(run.get('walk_forward_avg_oos_profit_factor', 0.0) or 0.0))
+        approved_market_state = str(run.get('approved_market_state') or '').strip().lower()
+        approved_market_states = [
+            str(item or '').strip().lower()
+            for item in self._to_list(run.get('approved_market_states'))
+            if str(item or '').strip()
+        ]
+        approved_market_state_trades = int(run.get('approved_market_state_trades', 0) or 0)
+        approved_market_state_profit_factor = self._cap_profit_factor(
+            float(run.get('approved_market_state_profit_factor', 0.0) or 0.0)
+        )
+        approved_setup_type = str(run.get('approved_setup_type') or '').strip().lower()
+        approved_setup_types = [
+            str(item or '').strip().lower()
+            for item in self._to_list(run.get('approved_setup_types'))
+            if str(item or '').strip()
+        ]
+        approved_setup_trades = int(run.get('approved_setup_trades', 0) or 0)
+        approved_setup_profit_factor = self._cap_profit_factor(float(run.get('approved_setup_profit_factor', 0.0) or 0.0))
+        if approved_market_state and approved_market_state not in approved_market_states:
+            approved_market_states.insert(0, approved_market_state)
+        if approved_setup_type and approved_setup_type not in approved_setup_types:
+            approved_setup_types.insert(0, approved_setup_type)
+        basket_mode = len(approved_market_states) > 1 if approved_market_states else len(approved_setup_types) > 1
+
+        if (not approved_market_state and not approved_market_states) or approved_market_state_trades <= 0:
+            derived_market_state = self._derive_approved_market_state_from_run(run_id)
+            if derived_market_state:
+                approved_market_state = str(derived_market_state.get('market_state') or '').strip().lower()
+                approved_market_states = [approved_market_state] if approved_market_state else approved_market_states
+                approved_market_state_trades = int(derived_market_state.get('total_trades', 0) or 0)
+                approved_market_state_profit_factor = self._cap_profit_factor(
+                    float(derived_market_state.get('profit_factor', 0.0) or 0.0)
+                )
+        if (not approved_setup_type and not approved_setup_types) or approved_setup_trades <= 0:
+            derived_setup = self._derive_approved_setup_from_run(run_id)
+            if derived_setup:
+                approved_setup_type = str(derived_setup.get('setup_type') or '').strip().lower()
+                approved_setup_types = [approved_setup_type] if approved_setup_type else approved_setup_types
+                approved_setup_trades = int(derived_setup.get('total_trades', 0) or 0)
+                approved_setup_profit_factor = self._cap_profit_factor(
+                    float(derived_setup.get('profit_factor', 0.0) or 0.0)
+                )
+        if approved_setup_type and approved_setup_type not in approved_setup_types:
+            approved_setup_types.insert(0, approved_setup_type)
+        if approved_setup_types and not approved_market_states:
+            approved_market_states = self._setup_types_to_market_state_allowlist(approved_setup_types)
+            approved_market_state = approved_market_states[0] if approved_market_states else approved_market_state
+        if approved_market_state and approved_market_state not in approved_market_states:
+            approved_market_states.insert(0, approved_market_state)
+        if approved_market_states and approved_market_state_trades <= 0:
+            approved_market_state_trades = approved_setup_trades
+        if approved_market_states and approved_market_state_profit_factor <= 0:
+            approved_market_state_profit_factor = approved_setup_profit_factor
+        if approved_market_states and not approved_setup_types:
+            approved_setup_types = self._market_states_to_setup_allowlist(approved_market_states)
+            approved_setup_type = approved_setup_types[0] if approved_setup_types else approved_setup_type
+        basket_mode = len(approved_market_states) > 1 if approved_market_states else len(approved_setup_types) > 1
+        if basket_mode:
+            approved_market_state_trades = max(approved_market_state_trades, total_trades)
+            approved_market_state_profit_factor = max(approved_market_state_profit_factor, profit_factor)
+            approved_setup_trades = max(approved_setup_trades, total_trades)
+            approved_setup_profit_factor = max(approved_setup_profit_factor, profit_factor)
 
         if total_trades < ProductionConfig.MIN_BACKTEST_TRADES_FOR_PROMOTION:
             reasons.append(
                 f"Amostra de backtest insuficiente: {total_trades} trades "
                 f"(minimo {ProductionConfig.MIN_BACKTEST_TRADES_FOR_PROMOTION})."
+            )
+        if evaluation_period_days < float(ProductionConfig.MIN_PROMOTION_PERIOD_DAYS):
+            reasons.append(
+                f"Periodo avaliado insuficiente: {evaluation_period_days:.1f} dias "
+                f"(minimo {ProductionConfig.MIN_PROMOTION_PERIOD_DAYS})."
             )
         if total_return_pct <= 0:
             reasons.append("Retorno total do backtest nao positivo.")
@@ -797,25 +2635,85 @@ class TradingDatabase:
                 f"Profit factor abaixo do minimo: {profit_factor:.2f} "
                 f"(minimo {ProductionConfig.MIN_PROMOTION_PROFIT_FACTOR:.2f})."
             )
-        if expectancy_pct <= 0:
-            reasons.append("Expectancy do backtest nao positiva.")
+        if expectancy_pct < ProductionConfig.MIN_PROMOTION_EXPECTANCY_PCT:
+            reasons.append(
+                f"Expectancy do backtest abaixo do minimo: {expectancy_pct:.3f}% "
+                f"(minimo {ProductionConfig.MIN_PROMOTION_EXPECTANCY_PCT:.3f}%)."
+            )
         if max_drawdown > ProductionConfig.MAX_PROMOTION_DRAWDOWN:
             reasons.append(
                 f"Drawdown acima do limite: {max_drawdown:.2f}% "
                 f"(maximo {ProductionConfig.MAX_PROMOTION_DRAWDOWN:.2f}%)."
             )
+        if not approved_market_state and not approved_market_states:
+            reasons.append("Backtest nao definiu estado de mercado aprovado para o runtime.")
+        if approved_market_state_trades < ProductionConfig.MIN_PROMOTION_SETUP_TRADES:
+            reasons.append(
+                (
+                    f"Cesta de estados de mercado com amostra insuficiente: {approved_market_state_trades} trades "
+                    f"(minimo {ProductionConfig.MIN_PROMOTION_SETUP_TRADES})."
+                    if basket_mode
+                    else f"Estado de mercado foco com amostra insuficiente: {approved_market_state_trades} trades "
+                    f"(minimo {ProductionConfig.MIN_PROMOTION_SETUP_TRADES})."
+                )
+            )
+        if (approved_market_state or approved_market_states) and approved_market_state_profit_factor < ProductionConfig.MIN_PROMOTION_PROFIT_FACTOR:
+            reasons.append(
+                (
+                    f"Cesta de estados de mercado com PF insuficiente: {approved_market_state_profit_factor:.2f} "
+                    f"(minimo {ProductionConfig.MIN_PROMOTION_PROFIT_FACTOR:.2f})."
+                    if basket_mode
+                    else f"Estado de mercado foco com PF insuficiente: {approved_market_state_profit_factor:.2f} "
+                    f"(minimo {ProductionConfig.MIN_PROMOTION_PROFIT_FACTOR:.2f})."
+                )
+            )
+        if out_of_sample_trades < ProductionConfig.MIN_PROMOTION_OOS_TRADES:
+            reasons.append(
+                f"Amostra OOS insuficiente: {out_of_sample_trades} trades "
+                f"(minimo {ProductionConfig.MIN_PROMOTION_OOS_TRADES})."
+            )
+        if out_of_sample_profit_factor < ProductionConfig.MIN_PROMOTION_OOS_PROFIT_FACTOR:
+            reasons.append(
+                f"PF OOS abaixo do minimo: {out_of_sample_profit_factor:.2f} "
+                f"(minimo {ProductionConfig.MIN_PROMOTION_OOS_PROFIT_FACTOR:.2f})."
+            )
+        if out_of_sample_expectancy_pct < ProductionConfig.MIN_PROMOTION_OOS_EXPECTANCY_PCT:
+            reasons.append(
+                f"Expectancy OOS abaixo do minimo: {out_of_sample_expectancy_pct:.3f}% "
+                f"(minimo {ProductionConfig.MIN_PROMOTION_OOS_EXPECTANCY_PCT:.3f}%)."
+            )
         if not out_of_sample_passed:
             reasons.append("Setup nao passou na validacao fora da amostra.")
         if walk_forward_windows > 0 and not walk_forward_passed:
             reasons.append("Setup nao passou no walk-forward.")
+        if walk_forward_windows > 0 and walk_forward_pass_rate_pct < ProductionConfig.MIN_WALK_FORWARD_PASS_RATE_PCT:
+            reasons.append(
+                f"Walk-forward abaixo do minimo: {walk_forward_pass_rate_pct:.2f}% "
+                f"(minimo {ProductionConfig.MIN_WALK_FORWARD_PASS_RATE_PCT:.2f}%)."
+            )
+        if walk_forward_windows > 0 and walk_forward_oos_profit_factor < ProductionConfig.MIN_WALK_FORWARD_OOS_PROFIT_FACTOR:
+            reasons.append(
+                f"PF medio do walk-forward abaixo do minimo: {walk_forward_oos_profit_factor:.2f} "
+                f"(minimo {ProductionConfig.MIN_WALK_FORWARD_OOS_PROFIT_FACTOR:.2f})."
+            )
+        if objective_status == 'blocked':
+            reasons.append("Check objetivo do backtest bloqueou a configuracao.")
 
         return {
             "ready": not reasons,
             "reasons": reasons,
             "run": run,
+            "approved_market_state": approved_market_state,
+            "approved_market_states": approved_market_states,
+            "approved_setup_types": approved_setup_types,
             "thresholds": {
                 "min_backtest_trades": ProductionConfig.MIN_BACKTEST_TRADES_FOR_PROMOTION,
+                "min_setup_trades": ProductionConfig.MIN_PROMOTION_SETUP_TRADES,
+                "min_period_days": ProductionConfig.MIN_PROMOTION_PERIOD_DAYS,
                 "min_profit_factor": ProductionConfig.MIN_PROMOTION_PROFIT_FACTOR,
+                "min_expectancy_pct": ProductionConfig.MIN_PROMOTION_EXPECTANCY_PCT,
+                "min_oos_trades": ProductionConfig.MIN_PROMOTION_OOS_TRADES,
+                "min_oos_profit_factor": ProductionConfig.MIN_PROMOTION_OOS_PROFIT_FACTOR,
                 "max_drawdown": ProductionConfig.MAX_PROMOTION_DRAWDOWN,
             },
         }
@@ -903,6 +2801,41 @@ class TradingDatabase:
             return None
 
         run = dict(run)
+        readiness = readiness if require_ready else self.get_backtest_run_promotion_readiness(run_id)
+        approved_market_state = str(run.get('approved_market_state') or '').strip().lower() or (
+            str((readiness or {}).get('approved_market_states', [None])[0] or '').strip().lower()
+        )
+        approved_market_states = [
+            str(item or '').strip().lower()
+            for item in self._to_list(run.get('approved_market_states'))
+            if str(item or '').strip()
+        ]
+        if approved_market_state and approved_market_state not in approved_market_states:
+            approved_market_states.insert(0, approved_market_state)
+        if not approved_market_states:
+            approved_market_states = list((readiness or {}).get('approved_market_states') or [])
+            approved_market_state = approved_market_states[0] if approved_market_states else approved_market_state
+        approved_setup = self._derive_approved_setup_from_run(run_id)
+        approved_setup_type = str(run.get('approved_setup_type') or '').strip().lower() or (
+            str((approved_setup or {}).get('setup_type') or '').strip().lower()
+        )
+        approved_setup_types = [
+            str(item or '').strip().lower()
+            for item in self._to_list(run.get('approved_setup_types'))
+            if str(item or '').strip()
+        ]
+        if approved_setup_type and approved_setup_type not in approved_setup_types:
+            approved_setup_types.insert(0, approved_setup_type)
+        if approved_setup_types and not approved_market_states:
+            approved_market_states = self._setup_types_to_market_state_allowlist(approved_setup_types)
+            approved_market_state = approved_market_states[0] if approved_market_states else approved_market_state
+        if approved_market_state and approved_market_state not in approved_market_states:
+            approved_market_states.insert(0, approved_market_state)
+        if approved_market_states and not approved_setup_types:
+            approved_setup_types = self._market_states_to_setup_allowlist(approved_market_states)
+            approved_setup_type = approved_setup_types[0] if approved_setup_types else approved_setup_type
+        if not approved_setup_types and approved_setup_type:
+            approved_setup_types = [approved_setup_type]
         strategy_version = run.get('strategy_version') or build_strategy_version(
             symbol=run.get('symbol'),
             timeframe=run.get('timeframe'),
@@ -922,6 +2855,10 @@ class TradingDatabase:
                 'timeframe': run.get('timeframe'),
                 'context_timeframe': run.get('context_timeframe'),
                 'strategy_version': strategy_version,
+                'market_state': approved_market_state or None,
+                'allowed_market_states': approved_market_states,
+                'setup_type': approved_setup_type or None,
+                'allowed_setup_types': approved_setup_types,
                 'status': 'active',
                 'rsi_period': run.get('rsi_period'),
                 'rsi_min': run.get('rsi_min'),
@@ -942,32 +2879,132 @@ class TradingDatabase:
         """Salvar um sinal de trading"""
         conn = self.get_connection()
         cursor = conn.cursor()
-        
-        cursor.execute('''
-            INSERT INTO trading_signals 
-            (symbol, timeframe, context_timeframe, strategy_version, regime, signal_type, price, rsi, macd_signal, macd_value, 
-             signal_strength, volume, created_at_br)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ''', (
-            signal_data.get('symbol'),
-            signal_data.get('timeframe'),
-            signal_data.get('context_timeframe'),
-            signal_data.get('strategy_version'),
-            signal_data.get('regime'),
-            signal_data.get('signal'),
-            signal_data.get('price'),
-            signal_data.get('rsi'),
-            signal_data.get('macd_signal'),
-            signal_data.get('macd_value'),
-            signal_data.get('signal_strength', 0.0),
-            signal_data.get('volume'),
-            format_brazil_time()
-        ))
-        
-        signal_id = cursor.lastrowid
+        candle_timestamp = signal_data.get('candle_timestamp')
+        try:
+            cursor.execute(
+                '''
+                INSERT INTO trading_signals
+                (
+                    symbol, timeframe, context_timeframe, strategy_version, regime, signal_type, price, rsi, macd_signal, macd_value,
+                    signal_strength, volume, candle_timestamp, created_at_br, sent_telegram, sent_telegram_at, telegram_error
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ''',
+                (
+                    signal_data.get('symbol'),
+                    signal_data.get('timeframe'),
+                    signal_data.get('context_timeframe'),
+                    signal_data.get('strategy_version'),
+                    signal_data.get('regime'),
+                    signal_data.get('signal'),
+                    signal_data.get('price'),
+                    signal_data.get('rsi'),
+                    signal_data.get('macd_signal'),
+                    signal_data.get('macd_value'),
+                    signal_data.get('signal_strength', 0.0),
+                    signal_data.get('volume'),
+                    candle_timestamp,
+                    format_brazil_time(),
+                    int(bool(signal_data.get('sent_telegram', False))),
+                    signal_data.get('sent_telegram_at'),
+                    signal_data.get('telegram_error'),
+                ),
+            )
+            signal_id = cursor.lastrowid
+            conn.commit()
+            return int(signal_id)
+        except sqlite3.IntegrityError:
+            if candle_timestamp:
+                cursor.execute(
+                    '''
+                    SELECT id
+                    FROM trading_signals
+                    WHERE symbol = ? AND timeframe = ? AND signal_type = ? AND candle_timestamp = ?
+                    ORDER BY id DESC
+                    LIMIT 1
+                    ''',
+                    (
+                        signal_data.get('symbol'),
+                        signal_data.get('timeframe'),
+                        signal_data.get('signal'),
+                        candle_timestamp,
+                    ),
+                )
+                row = cursor.fetchone()
+                if row:
+                    return int(row['id'])
+            raise
+        finally:
+            conn.close()
+
+    def has_signal_for_candle(
+        self,
+        symbol: str,
+        timeframe: str,
+        signal: str,
+        candle_timestamp: Optional[str],
+    ) -> bool:
+        if not candle_timestamp:
+            return False
+
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            '''
+            SELECT 1
+            FROM trading_signals
+            WHERE symbol = ? AND timeframe = ? AND signal_type = ? AND candle_timestamp = ?
+            LIMIT 1
+            ''',
+            (symbol, timeframe, signal, candle_timestamp),
+        )
+        exists = cursor.fetchone() is not None
+        conn.close()
+        return exists
+
+    def get_pending_telegram_signals(self, limit: int = 50) -> List[Dict[str, Any]]:
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            '''
+            SELECT *
+            FROM trading_signals
+            WHERE sent_telegram = 0
+              AND signal_type IN ('COMPRA', 'VENDA', 'COMPRA_FRACA', 'VENDA_FRACA')
+            ORDER BY id ASC
+            LIMIT ?
+            ''',
+            (limit,),
+        )
+        rows = [dict(row) for row in cursor.fetchall()]
+        conn.close()
+        return rows
+
+    def mark_trading_signal_telegram_sent(self, signal_id: int, error: Optional[str] = None):
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        if error:
+            cursor.execute(
+                '''
+                UPDATE trading_signals
+                SET telegram_error = ?
+                WHERE id = ?
+                ''',
+                (str(error), signal_id),
+            )
+        else:
+            cursor.execute(
+                '''
+                UPDATE trading_signals
+                SET sent_telegram = 1,
+                    sent_telegram_at = ?,
+                    telegram_error = NULL
+                WHERE id = ?
+                ''',
+                (format_brazil_time(), signal_id),
+            )
         conn.commit()
         conn.close()
-        return signal_id
 
     def create_paper_trade(self, trade_data: Dict[str, Any]) -> int:
         """Criar um paper trade para acompanhamento de outcome do sinal."""
@@ -1458,8 +3495,9 @@ class TradingDatabase:
         if gross_loss > 0:
             aggregate_profit_factor = gross_profit / gross_loss
         else:
-            aggregate_profit_factor = 999.0 if gross_profit > 0 else 0.0
+            aggregate_profit_factor = gross_profit if gross_profit > 0 else 0.0
 
+        aggregate_profit_factor = self._cap_profit_factor(aggregate_profit_factor)
         target["avg_profit_factor"] = round(aggregate_profit_factor, 2)
         target["avg_expectancy_pct"] = round(avg_trade_result_pct, 2)
         target["avg_win_rate"] = round(aggregate_win_rate, 2)
@@ -1611,6 +3649,17 @@ class TradingDatabase:
                 'walk_forward_avg_oos_return_pct': run_data.get('walk_forward_avg_oos_return_pct', 0.0),
                 'walk_forward_avg_oos_profit_factor': run_data.get('walk_forward_avg_oos_profit_factor', 0.0),
                 'walk_forward_avg_oos_expectancy_pct': run_data.get('walk_forward_avg_oos_expectancy_pct', 0.0),
+                'objective_status': run_data.get('objective_status'),
+                'objective_score': run_data.get('objective_score', 0.0),
+                'approved_market_state': run_data.get('approved_market_state'),
+                'approved_market_states': self._to_json_text(run_data.get('approved_market_states')),
+                'approved_market_state_trades': run_data.get('approved_market_state_trades', 0),
+                'approved_market_state_profit_factor': run_data.get('approved_market_state_profit_factor', 0.0),
+                'approved_setup_type': run_data.get('approved_setup_type'),
+                'approved_setup_types': self._to_json_text(run_data.get('approved_setup_types')),
+                'approved_setup_trades': run_data.get('approved_setup_trades', 0),
+                'approved_setup_profit_factor': run_data.get('approved_setup_profit_factor', 0.0),
+                'evaluation_period_days': run_data.get('evaluation_period_days', 0.0),
                 'created_at_br': format_brazil_time(),
             }
             columns = list(column_values.keys())
@@ -1631,6 +3680,8 @@ class TradingDatabase:
                     trade.get('setup_name') or run_data.get('strategy_version'),
                     run_data.get('strategy_version'),
                     trade.get('regime'),
+                    trade.get('market_state'),
+                    trade.get('execution_mode'),
                     trade.get('signal_score', 0.0),
                     trade.get('atr', 0.0),
                     self._normalize_timestamp(trade.get('entry_timestamp')),
@@ -1674,7 +3725,8 @@ class TradingDatabase:
                 trade_placeholders = ', '.join(['?'] * len(trade_rows[0]))
                 cursor.executemany('''
                     INSERT INTO backtest_trades (
-                        run_id, symbol, timeframe, context_timeframe, setup_name, strategy_version, regime, signal_score, atr, entry_timestamp,
+                        run_id, symbol, timeframe, context_timeframe, setup_name, strategy_version, regime, market_state, execution_mode,
+                        signal_score, atr, entry_timestamp,
                         entry_reason, entry_quality, rejection_reason, exit_timestamp, entry_price, exit_price,
                         initial_stop_price, initial_take_price, final_stop_price, final_take_price,
                         break_even_active, trailing_active, protection_level, regime_exit_flag, structure_exit_flag,
@@ -1763,6 +3815,8 @@ class TradingDatabase:
                     audit.get('entry_score', 0.0),
                     audit.get('scenario_score', 0.0),
                     audit.get('setup_type'),
+                    audit.get('market_state'),
+                    audit.get('execution_mode'),
                     audit.get('risk_mode'),
                     json.dumps(audit.get('notes') or []),
                 )
@@ -1776,7 +3830,7 @@ class TradingDatabase:
                         run_id, symbol, timeframe, strategy_version, timestamp, candidate_signal,
                         approved_signal, blocked_signal, block_reason, regime, regime_score, trend_state,
                         volatility_state, context_bias, structure_state, confirmation_state, entry_quality,
-                        entry_score, scenario_score, setup_type, risk_mode, notes
+                        entry_score, scenario_score, setup_type, market_state, execution_mode, risk_mode, notes
                     ) VALUES (''' + signal_audit_placeholders + ''')
                 ''', signal_audit_rows)
 
@@ -1817,6 +3871,9 @@ class TradingDatabase:
             LIMIT ?
         ''', (symbol, symbol, timeframe, timeframe, strategy_version, strategy_version, limit))
         rows = [dict(row) for row in cursor.fetchall()]
+        for row in rows:
+            row["approved_market_states"] = self._to_list(row.get("approved_market_states"))
+            row["approved_setup_types"] = self._to_list(row.get("approved_setup_types"))
 
         conn.close()
         return rows
@@ -3235,10 +5292,18 @@ class TradingDatabase:
         score -= min(max(float(backtest_summary.get('avg_max_drawdown', 0.0) or 0.0), 0.0), 30.0) * 1.1
 
         total_trades = int(backtest_summary.get('total_trades', 0) or 0)
-        if total_trades < 10:
-            score -= 6
+        min_backtest_trades = max(int(ProductionConfig.MIN_BACKTEST_TRADES_FOR_PROMOTION), 1)
+        if total_trades < 5:
+            score -= 45
+        elif total_trades < 10:
+            score -= 35
         elif total_trades < 25:
-            score -= 3
+            score -= 22
+        elif total_trades < min_backtest_trades:
+            score -= 12
+
+        if total_trades < min_backtest_trades:
+            score = min(score, max(0.0, float(ProductionConfig.MIN_LIVE_QUALITY_SCORE) - 5.0))
 
         return round(max(0.0, min(100.0, score)), 2)
 

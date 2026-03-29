@@ -22,6 +22,8 @@ class BillingService:
             stripe
             and ProductionConfig.STRIPE_SECRET_KEY
             and self.webhook_secret
+            and ProductionConfig.STRIPE_SUCCESS_URL
+            and ProductionConfig.STRIPE_CANCEL_URL
             and ProductionConfig.PREMIUM_PRICE_MONTHLY > 0
         )
 
@@ -40,7 +42,10 @@ class BillingService:
     async def create_payment_link(self, user_id: int) -> str:
         """Criar link de pagamento."""
         if not self.enabled:
-            return "Billing indisponivel: configure STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET e PREMIUM_PRICE_MONTHLY"
+            return (
+                "Billing indisponivel: configure STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET, "
+                "STRIPE_SUCCESS_URL, STRIPE_CANCEL_URL e PREMIUM_PRICE_MONTHLY"
+            )
 
         try:
             customer = stripe.Customer.create(
@@ -63,8 +68,8 @@ class BillingService:
                     "quantity": 1,
                 }],
                 mode="subscription",
-                success_url="https://yourbot.replit.app/success",
-                cancel_url="https://yourbot.replit.app/cancel",
+                success_url=ProductionConfig.STRIPE_SUCCESS_URL,
+                cancel_url=ProductionConfig.STRIPE_CANCEL_URL,
                 metadata={"telegram_user_id": str(user_id)}
             )
 

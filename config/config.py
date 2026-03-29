@@ -1,9 +1,14 @@
-import ccxt
+import importlib
 import os
 import logging
-from typing import Optional
+from typing import Iterable, Optional
+from market_state_engine import market_states_to_setup_allowlist, normalize_setup_collection
 
 logger = logging.getLogger(__name__)
+
+
+def _load_ccxt():
+    return importlib.import_module("ccxt")
 
 
 def _get_default_db_path() -> str:
@@ -21,13 +26,19 @@ class AppConfig:
     # Trading parameters - single-setup mode for robust OOS validation
     SINGLE_SETUP_MODE = True
     PRIMARY_SYMBOL = "BTC/USDT"
-    PRIMARY_TIMEFRAME = "1h"
-    PRIMARY_CONTEXT_TIMEFRAME = "4h"
+    PRIMARY_TIMEFRAME = "15m"
+    PRIMARY_CONTEXT_TIMEFRAME = "1h"
+    DEFAULT_BACKTEST_PRESET = "EMA/RSI Validado (15m)"
+    DEFAULT_BACKTEST_WINDOW_DAYS = 30
+    VALIDATED_BACKTEST_SUMMARY = (
+        "Validação multi-horizonte: 30d +4.10% | 90d +7.94% | "
+        "180d +4.07% | 1a +3.86% | DD anual 6.68% | PF anual 1.08"
+    )
     DEFAULT_SYMBOL = PRIMARY_SYMBOL
     DEFAULT_TIMEFRAME = PRIMARY_TIMEFRAME
     DEFAULT_RSI_PERIOD = 14
-    DEFAULT_RSI_MIN = 30
-    DEFAULT_RSI_MAX = 70
+    DEFAULT_RSI_MIN = 54
+    DEFAULT_RSI_MAX = 47
 
     DEFAULT_EXCHANGE = "bybit"
     BRAZIL_SUPPORTED_EXCHANGES = ["bybit", "okx", "kucoin", "mexc"]
@@ -62,7 +73,11 @@ class AppConfig:
     ENABLE_PARAMETER_OPTIMIZATION = False
     ENABLE_MARKET_SCAN = False
     MULTI_TIMEFRAME_CONTEXT_MAP = {
+        "5m": "15m",
+        "15m": "1h",
+        "30m": "4h",
         "1h": "4h",
+        "4h": "1d",
     }
 
     @classmethod
@@ -96,6 +111,33 @@ class AppConfig:
         if not context_timeframe or context_timeframe == timeframe:
             return None
         return context_timeframe
+
+    @classmethod
+    def get_runtime_allowed_execution_setups(
+        cls,
+        timeframe: Optional[str],
+        promoted_setup_type: Optional[str] = None,
+        promoted_setup_types: Optional[Iterable[str]] = None,
+        promoted_market_states: Optional[Iterable[str]] = None,
+    ) -> Optional[list[str]]:
+        raw_allowlist = os.getenv("RUNTIME_ALLOWED_EXECUTION_SETUPS", "").strip()
+        if raw_allowlist:
+            parsed = [item.strip().lower() for item in raw_allowlist.split(",") if item.strip()]
+            normalized = normalize_setup_collection(parsed)
+            return normalized or None
+
+        derived_from_market_states = market_states_to_setup_allowlist(promoted_market_states)
+        if derived_from_market_states:
+            return derived_from_market_states
+
+        normalized_setups = normalize_setup_collection(promoted_setup_types)
+        if normalized_setups:
+            return normalized_setups
+
+        normalized_setup = normalize_setup_collection([promoted_setup_type])
+        if normalized_setup:
+            return normalized_setup
+        return None
 
     @classmethod
     def get_optimized_settings(cls, asset_class="crypto"):
@@ -139,7 +181,7 @@ class AppConfig:
         settings = {
             "1m": {"rsi_oversold": 20, "rsi_overbought": 80, "min_confidence": 85, "min_volume_ratio": 2.5, "volatility_filter": 0.08, "rsi_period": 9},
             "5m": {"rsi_oversold": 28, "rsi_overbought": 72, "min_confidence": 65, "min_volume_ratio": 1.4, "volatility_filter": 0.10, "rsi_period": 9},
-            "15m": {"rsi_oversold": 25, "rsi_overbought": 75, "min_confidence": 75, "min_volume_ratio": 1.8, "volatility_filter": 0.06, "rsi_period": 9},
+            "15m": {"rsi_oversold": 52, "rsi_overbought": 47, "min_confidence": 68, "min_volume_ratio": 1.0, "volatility_filter": 0.06, "rsi_period": 14},
             "1h": {"rsi_oversold": 30, "rsi_overbought": 70, "min_confidence": 70, "min_volume_ratio": 1.5, "volatility_filter": 0.05, "rsi_period": 9},
             "4h": {"rsi_oversold": 35, "rsi_overbought": 65, "min_confidence": 65, "min_volume_ratio": 1.3, "volatility_filter": 0.04, "rsi_period": 9},
             "1d": {"rsi_oversold": 30, "rsi_overbought": 70, "min_confidence": 60, "min_volume_ratio": 1.2, "volatility_filter": 0.03, "rsi_period": 14}
@@ -151,7 +193,7 @@ class AppConfig:
         day_trading_config = {
             "1m": {"rsi_period": 9, "rsi_oversold": 12, "rsi_overbought": 88, "min_confidence": 88, "min_volume_ratio": 3.0, "volatility_filter": 0.12, "macd_fast": 8, "macd_slow": 17, "macd_signal": 6, "stoch_rsi_extreme": {"low": 10, "high": 90}, "williams_r_extreme": {"low": -90, "high": -10}, "min_adx": 30, "bb_squeeze_threshold": 0.08, "time_filters": {"avoid_lunch": True, "peak_hours_only": True}},
             "5m": {"rsi_period": 14, "rsi_oversold": 20, "rsi_overbought": 80, "min_confidence": 75, "min_volume_ratio": 2.0, "volatility_filter": 0.09, "macd_fast": 9, "macd_slow": 19, "macd_signal": 7, "stoch_rsi_extreme": {"low": 15, "high": 85}, "williams_r_extreme": {"low": -85, "high": -15}, "min_adx": 28, "bb_squeeze_threshold": 0.10, "time_filters": {"avoid_lunch": True, "peak_hours_only": True}},
-            "15m": {"rsi_period": 9, "rsi_oversold": 22, "rsi_overbought": 78, "min_confidence": 78, "min_volume_ratio": 1.8, "volatility_filter": 0.07, "macd_fast": 12, "macd_slow": 26, "macd_signal": 9, "stoch_rsi_extreme": {"low": 20, "high": 80}, "williams_r_extreme": {"low": -80, "high": -20}, "min_adx": 25, "bb_squeeze_threshold": 0.09, "time_filters": {"avoid_lunch": False, "peak_hours_only": True}}
+            "15m": {"rsi_period": 14, "rsi_oversold": 52, "rsi_overbought": 47, "min_confidence": 68, "min_volume_ratio": 1.0, "volatility_filter": 0.07, "macd_fast": 12, "macd_slow": 26, "macd_signal": 9, "stoch_rsi_extreme": {"low": 20, "high": 80}, "williams_r_extreme": {"low": -80, "high": -20}, "min_adx": 20, "bb_squeeze_threshold": 0.09, "time_filters": {"avoid_lunch": False, "peak_hours_only": True}}
         }
         return day_trading_config.get(timeframe, day_trading_config["5m"])
 
@@ -191,6 +233,7 @@ class ExchangeConfig:
         if exchange_name not in cls.SUPPORTED_EXCHANGES:
             raise ValueError(f"Exchange {exchange_name} não suportado")
 
+        ccxt = _load_ccxt()
         exchange_class = getattr(ccxt, exchange_name)
 
         config = {
@@ -392,8 +435,6 @@ class TelegramBotConfig:
     SIGNAL_EMOJIS = {
         "COMPRA": "🟢",
         "VENDA": "🔴",
-        "COMPRA_FRACA": "🟡",
-        "VENDA_FRACA": "🟠",
         "NEUTRO": "⚪"
     }
 
@@ -420,7 +461,7 @@ def _parse_admin_users(raw_value: str) -> list[int]:
         user_id = user_id.strip()
         if user_id.isdigit():
             admin_users.append(int(user_id))
-    return admin_users or [1035830659]
+    return admin_users
 
 
 def _parse_float_env(var_name: str, default: float) -> float:
@@ -439,22 +480,60 @@ class ProductionConfig:
     # Somente variáveis de ambiente (fonte única de verdade)
     TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
     TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "").strip()
+    ENABLE_TELEGRAM_SIGNAL_SCANNER = os.getenv("ENABLE_TELEGRAM_SIGNAL_SCANNER", "true").strip().lower() in {"1", "true", "yes"}
+    TELEGRAM_SIGNAL_SCAN_INTERVAL_SECONDS = max(15, int(os.getenv("TELEGRAM_SIGNAL_SCAN_INTERVAL_SECONDS", "60").strip() or "60"))
+    TELEGRAM_SIGNAL_SCAN_TIMEFRAME = os.getenv("TELEGRAM_SIGNAL_SCAN_TIMEFRAME", AppConfig.PRIMARY_TIMEFRAME).strip() or AppConfig.PRIMARY_TIMEFRAME
+    TELEGRAM_SIGNAL_SCAN_SYMBOLS = os.getenv("TELEGRAM_SIGNAL_SCAN_SYMBOLS", "").strip()
+    TELEGRAM_SIGNAL_QUEUE_BATCH_SIZE = max(1, int(os.getenv("TELEGRAM_SIGNAL_QUEUE_BATCH_SIZE", "25").strip() or "25"))
     ADMIN_PANEL_PASSWORD = os.getenv("ADMIN_PANEL_PASSWORD", "").strip()
     ENABLE_DASHBOARD_BACKGROUND_BOT = os.getenv("ENABLE_DASHBOARD_BACKGROUND_BOT", "").strip().lower() in {"1", "true", "yes"}
     ENABLE_EDGE_GUARDRAIL = os.getenv("ENABLE_EDGE_GUARDRAIL", "true").strip().lower() in {"1", "true", "yes"}
     ENABLE_AI_SIGNAL_INFLUENCE = os.getenv("ENABLE_AI_SIGNAL_INFLUENCE", "false").strip().lower() in {"1", "true", "yes"}
     ENABLE_RISK_CIRCUIT_BREAKER = os.getenv("ENABLE_RISK_CIRCUIT_BREAKER", "true").strip().lower() in {"1", "true", "yes"}
     ENABLE_LIVE_EXECUTION = os.getenv("ENABLE_LIVE_EXECUTION", "false").strip().lower() in {"1", "true", "yes"}
+    ENABLE_MULTIUSER_RUNTIME = os.getenv("ENABLE_MULTIUSER_RUNTIME", "false").strip().lower() in {"1", "true", "yes"}
+    ENABLE_MULTIUSER_AUTO_ORDER_EXECUTION = os.getenv(
+        "ENABLE_MULTIUSER_AUTO_ORDER_EXECUTION",
+        "false",
+    ).strip().lower() in {"1", "true", "yes"}
+    REQUIRE_MULTIUSER_VALID_TOKEN = os.getenv("REQUIRE_MULTIUSER_VALID_TOKEN", "true").strip().lower() in {"1", "true", "yes"}
+    REQUIRE_MULTIUSER_VALID_PERMISSIONS = os.getenv("REQUIRE_MULTIUSER_VALID_PERMISSIONS", "true").strip().lower() in {"1", "true", "yes"}
+    REQUIRE_MULTIUSER_RECONCILIATION_OK = os.getenv("REQUIRE_MULTIUSER_RECONCILIATION_OK", "true").strip().lower() in {"1", "true", "yes"}
+    DASHBOARD_USER_SESSION_TIMEOUT_HOURS = max(
+        1,
+        int(os.getenv("DASHBOARD_USER_SESSION_TIMEOUT_HOURS", "12").strip() or "12"),
+    )
+    DASHBOARD_MIN_PASSWORD_LENGTH = max(
+        10,
+        int(os.getenv("DASHBOARD_MIN_PASSWORD_LENGTH", "10").strip() or "10"),
+    )
+    CREDENTIAL_ENCRYPTION_KEY = os.getenv("CREDENTIAL_ENCRYPTION_KEY", "").strip()
     REQUIRE_APPROVED_GOVERNANCE_FOR_LIVE = os.getenv("REQUIRE_APPROVED_GOVERNANCE_FOR_LIVE", "true").strip().lower() in {"1", "true", "yes"}
     REDIS_URL = os.getenv("REDIS_URL", "").strip()
     STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY", "").strip()
     STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET", "").strip()
+    PUBLIC_APP_URL = os.getenv("PUBLIC_APP_URL", "").strip().rstrip("/")
+    STRIPE_SUCCESS_URL = os.getenv("STRIPE_SUCCESS_URL", "").strip() or (
+        f"{PUBLIC_APP_URL}/success" if PUBLIC_APP_URL else ""
+    )
+    STRIPE_CANCEL_URL = os.getenv("STRIPE_CANCEL_URL", "").strip() or (
+        f"{PUBLIC_APP_URL}/cancel" if PUBLIC_APP_URL else ""
+    )
     PREMIUM_PRICE_MONTHLY = _parse_float_env("PREMIUM_PRICE_MONTHLY", 19.90)
     MIN_PAPER_TRADES_FOR_EDGE_VALIDATION = int(os.getenv("MIN_PAPER_TRADES_FOR_EDGE_VALIDATION", "30").strip() or "30")
     MIN_PAPER_TRADES_FOR_EDGE_GUARDRAIL = int(os.getenv("MIN_PAPER_TRADES_FOR_EDGE_GUARDRAIL", "30").strip() or "30")
-    MIN_BACKTEST_TRADES_FOR_PROMOTION = int(os.getenv("MIN_BACKTEST_TRADES_FOR_PROMOTION", "10").strip() or "10")
+    MIN_BACKTEST_TRADES_FOR_PROMOTION = int(os.getenv("MIN_BACKTEST_TRADES_FOR_PROMOTION", "50").strip() or "50")
+    MIN_PROMOTION_SETUP_TRADES = int(
+        os.getenv("MIN_PROMOTION_SETUP_TRADES", str(MIN_BACKTEST_TRADES_FOR_PROMOTION)).strip()
+        or str(MIN_BACKTEST_TRADES_FOR_PROMOTION)
+    )
+    MIN_PROMOTION_PERIOD_DAYS = int(os.getenv("MIN_PROMOTION_PERIOD_DAYS", "30").strip() or "30")
     MIN_PROMOTION_PROFIT_FACTOR = _parse_float_env("MIN_PROMOTION_PROFIT_FACTOR", 1.20)
-    MAX_PROMOTION_DRAWDOWN = _parse_float_env("MAX_PROMOTION_DRAWDOWN", 20.0)
+    MIN_PROMOTION_EXPECTANCY_PCT = _parse_float_env("MIN_PROMOTION_EXPECTANCY_PCT", 0.03)
+    MIN_PROMOTION_OOS_TRADES = int(os.getenv("MIN_PROMOTION_OOS_TRADES", "15").strip() or "15")
+    MIN_PROMOTION_OOS_PROFIT_FACTOR = _parse_float_env("MIN_PROMOTION_OOS_PROFIT_FACTOR", 1.10)
+    MIN_PROMOTION_OOS_EXPECTANCY_PCT = _parse_float_env("MIN_PROMOTION_OOS_EXPECTANCY_PCT", 0.0)
+    MAX_PROMOTION_DRAWDOWN = _parse_float_env("MAX_PROMOTION_DRAWDOWN", 18.0)
     PAPER_ACCOUNT_BALANCE = _parse_float_env("PAPER_ACCOUNT_BALANCE", 10000.0)
     RISK_PER_TRADE_PCT = _parse_float_env("RISK_PER_TRADE_PCT", 0.5)
     MAX_OPEN_PAPER_TRADES = int(os.getenv("MAX_OPEN_PAPER_TRADES", "3").strip() or "3")
@@ -467,11 +546,55 @@ class ProductionConfig:
     RISK_DRAWDOWN_BLOCK_PCT = _parse_float_env("RISK_DRAWDOWN_BLOCK_PCT", 10.0)
     RISK_REDUCED_MODE_MULTIPLIER = _parse_float_env("RISK_REDUCED_MODE_MULTIPLIER", 0.5)
     MIN_LIVE_QUALITY_SCORE = _parse_float_env("MIN_LIVE_QUALITY_SCORE", 60.0)
+    BINANCE_FUTURES_TESTNET = os.getenv("BINANCE_FUTURES_TESTNET", "true").strip().lower() in {"1", "true", "yes"}
+    BINANCE_FUTURES_ENTRY_RESPONSE_TYPE = (
+        os.getenv("BINANCE_FUTURES_ENTRY_RESPONSE_TYPE", "RESULT").strip().upper() or "RESULT"
+    )
+    BINANCE_FUTURES_WORKING_TYPE = os.getenv("BINANCE_FUTURES_WORKING_TYPE", "MARK_PRICE").strip().upper() or "MARK_PRICE"
+    BINANCE_FUTURES_PRICE_PROTECT = os.getenv("BINANCE_FUTURES_PRICE_PROTECT", "true").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+    }
+    BINANCE_FUTURES_REQUIRE_PROTECTION = os.getenv(
+        "BINANCE_FUTURES_REQUIRE_PROTECTION",
+        "true",
+    ).strip().lower() in {"1", "true", "yes"}
+    BINANCE_FUTURES_RECONCILIATION_FETCH_LIMIT = max(
+        5,
+        int(os.getenv("BINANCE_FUTURES_RECONCILIATION_FETCH_LIMIT", "20").strip() or "20"),
+    )
+    BINANCE_USER_STREAM_KEEPALIVE_SECONDS = max(
+        300,
+        int(os.getenv("BINANCE_USER_STREAM_KEEPALIVE_SECONDS", "1800").strip() or "1800"),
+    )
+    BINANCE_USER_STREAM_RECONNECT_SECONDS = max(
+        3600,
+        int(os.getenv("BINANCE_USER_STREAM_RECONNECT_SECONDS", "82800").strip() or "82800"),
+    )
+    BINANCE_USER_STREAM_MAINNET_WS_URL = (
+        os.getenv("BINANCE_USER_STREAM_MAINNET_WS_URL", "wss://fstream.binance.com/ws").strip().rstrip("/")
+    )
+    BINANCE_USER_STREAM_TESTNET_WS_URL = (
+        os.getenv("BINANCE_USER_STREAM_TESTNET_WS_URL", "wss://stream.binancefuture.com/ws").strip().rstrip("/")
+    )
+    BINANCE_FUTURES_RUNTIME_STATE_PATH = (
+        os.getenv("BINANCE_FUTURES_RUNTIME_STATE_PATH", "data/binance_futures_runtime_state.json").strip()
+        or "data/binance_futures_runtime_state.json"
+    )
+    BINANCE_RUNTIME_AUTO_RECOVER_PROTECTION = os.getenv(
+        "BINANCE_RUNTIME_AUTO_RECOVER_PROTECTION",
+        "true",
+    ).strip().lower() in {"1", "true", "yes"}
+    BINANCE_RUNTIME_RECOVERY_COOLDOWN_SECONDS = max(
+        1,
+        int(os.getenv("BINANCE_RUNTIME_RECOVERY_COOLDOWN_SECONDS", "5").strip() or "5"),
+    )
     PAPER_FEE_RATE = _parse_float_env("PAPER_FEE_RATE", 0.001)
     PAPER_SLIPPAGE = _parse_float_env("PAPER_SLIPPAGE", 0.0005)
     REQUIRE_ACTIVE_PROFILE_FOR_RUNTIME = os.getenv("REQUIRE_ACTIVE_PROFILE_FOR_RUNTIME", "true").strip().lower() in {"1", "true", "yes"}
-    DEFAULT_LIVE_STOP_LOSS_PCT = _parse_float_env("DEFAULT_LIVE_STOP_LOSS_PCT", 2.0)
-    DEFAULT_LIVE_TAKE_PROFIT_PCT = _parse_float_env("DEFAULT_LIVE_TAKE_PROFIT_PCT", 4.0)
+    DEFAULT_LIVE_STOP_LOSS_PCT = _parse_float_env("DEFAULT_LIVE_STOP_LOSS_PCT", 0.8)
+    DEFAULT_LIVE_TAKE_PROFIT_PCT = _parse_float_env("DEFAULT_LIVE_TAKE_PROFIT_PCT", 1.8)
     ENABLE_DYNAMIC_POSITION_MANAGEMENT = os.getenv("ENABLE_DYNAMIC_POSITION_MANAGEMENT", "true").strip().lower() in {"1", "true", "yes"}
     BREAK_EVEN_TRIGGER_R = _parse_float_env("BREAK_EVEN_TRIGGER_R", 1.0)
     TRAILING_TRIGGER_R = _parse_float_env("TRAILING_TRIGGER_R", 2.0)
@@ -479,6 +602,19 @@ class ProductionConfig:
     HIGH_VOL_TRAILING_ATR_MULTIPLIER = _parse_float_env("HIGH_VOL_TRAILING_ATR_MULTIPLIER", 1.4)
     PARABOLIC_TRAILING_ATR_MULTIPLIER = _parse_float_env("PARABOLIC_TRAILING_ATR_MULTIPLIER", 1.2)
     STRUCTURE_EXIT_MIN_R = _parse_float_env("STRUCTURE_EXIT_MIN_R", 0.8)
+    CONTINUATION_FAST_MANAGEMENT_ENABLED = os.getenv("CONTINUATION_FAST_MANAGEMENT_ENABLED", "true").strip().lower() in {"1", "true", "yes"}
+    LOWER_TIMEFRAME_CONTINUATION_BREAK_EVEN_TRIGGER_R = _parse_float_env("LOWER_TIMEFRAME_CONTINUATION_BREAK_EVEN_TRIGGER_R", 0.75)
+    LOWER_TIMEFRAME_CONTINUATION_TRAILING_TRIGGER_R = _parse_float_env("LOWER_TIMEFRAME_CONTINUATION_TRAILING_TRIGGER_R", 1.25)
+    LOWER_TIMEFRAME_CONTINUATION_TIME_STOP_CANDLES = int(
+        os.getenv("LOWER_TIMEFRAME_CONTINUATION_TIME_STOP_CANDLES", "18").strip() or "18"
+    )
+    LOWER_TIMEFRAME_CONTINUATION_TIME_STOP_MAX_CLOSE_R = _parse_float_env(
+        "LOWER_TIMEFRAME_CONTINUATION_TIME_STOP_MAX_CLOSE_R",
+        0.35,
+    )
+    MIN_WALK_FORWARD_PASS_RATE_PCT = _parse_float_env("MIN_WALK_FORWARD_PASS_RATE_PCT", 60.0)
+    MIN_WALK_FORWARD_OOS_PROFIT_FACTOR = _parse_float_env("MIN_WALK_FORWARD_OOS_PROFIT_FACTOR", 1.10)
+    MAX_STATISTICAL_PROFIT_FACTOR = _parse_float_env("MAX_STATISTICAL_PROFIT_FACTOR", 5.0)
     GOVERNANCE_LOOKBACK_DAYS = int(os.getenv("GOVERNANCE_LOOKBACK_DAYS", "90").strip() or "90")
     GOVERNANCE_LOOKBACK_TRADES = int(os.getenv("GOVERNANCE_LOOKBACK_TRADES", "30").strip() or "30")
     GOVERNANCE_MIN_REGIME_TRADES = int(os.getenv("GOVERNANCE_MIN_REGIME_TRADES", "6").strip() or "6")
@@ -497,7 +633,7 @@ class ProductionConfig:
     GOVERNANCE_MAX_PROFIT_GIVEBACK_BLOCK_PCT = _parse_float_env("GOVERNANCE_MAX_PROFIT_GIVEBACK_BLOCK_PCT", 75.0)
 
     # Lista separada por vírgula: ADMIN_USERS=123,456
-    ADMIN_USERS: list = _parse_admin_users(os.getenv("ADMIN_USERS", "1035830659"))
+    ADMIN_USERS: list = _parse_admin_users(os.getenv("ADMIN_USERS", ""))
 
     @classmethod
     def validate_config(cls) -> bool:
@@ -594,9 +730,6 @@ class TimeFrame5mConfig:
                 return "NEUTRO"
             if not (9 <= current_hour <= 11 or 14 <= current_hour <= 16 or 20 <= current_hour <= 22):
                 return "NEUTRO"
-
-        if signal in ['COMPRA_FRACA', 'VENDA_FRACA']:
-            return "NEUTRO"
 
         rsi = row.get('rsi', 50)
         volume_ratio = row.get('volume_ratio', 1)

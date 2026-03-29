@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 import os
 import tempfile
 import unittest
@@ -9,6 +9,7 @@ from unittest import mock
 import pandas as pd
 
 from backtest import BacktestEngine
+from config import ProductionConfig
 from database.database import TradingDatabase
 
 
@@ -177,6 +178,14 @@ class PipelineAwareTradingBot(DeterministicTradingBot):
                 "structure_evaluation": {"structure_state": "breakout"},
                 "confirmation_evaluation": {"confirmation_state": "confirmed"},
                 "entry_quality_evaluation": {"entry_quality": "strong", "setup_type": "continuation_breakout", "entry_score": 7.8},
+                "market_state_evaluation": {"market_state": "breakout_expansion", "execution_mode": "momentum_follow"},
+                "trade_decision": {
+                    "action": "buy",
+                    "market_state": "breakout_expansion",
+                    "execution_mode": "momentum_follow",
+                    "confidence": 7.8,
+                    "setup_type": "continuation_breakout",
+                },
             },
             212: {
                 "candidate_signal": "COMPRA",
@@ -188,6 +197,14 @@ class PipelineAwareTradingBot(DeterministicTradingBot):
                 "structure_evaluation": {"structure_state": "weak_structure"},
                 "confirmation_evaluation": {"confirmation_state": "confirmed"},
                 "entry_quality_evaluation": {"entry_quality": "strong", "setup_type": "continuation_breakout", "entry_score": 7.2},
+                "market_state_evaluation": {"market_state": "transition", "execution_mode": "standby"},
+                "trade_decision": {
+                    "action": "wait",
+                    "market_state": "transition",
+                    "execution_mode": "standby",
+                    "confidence": 4.6,
+                    "setup_type": "continuation_breakout",
+                },
             },
             213: {
                 "candidate_signal": "VENDA",
@@ -199,6 +216,14 @@ class PipelineAwareTradingBot(DeterministicTradingBot):
                 "structure_evaluation": {"structure_state": "pullback"},
                 "confirmation_evaluation": {"confirmation_state": "weak"},
                 "entry_quality_evaluation": {"entry_quality": "bad", "setup_type": "pullback_trend", "entry_score": 3.4},
+                "market_state_evaluation": {"market_state": "blocked", "execution_mode": "standby"},
+                "trade_decision": {
+                    "action": "wait",
+                    "market_state": "blocked",
+                    "execution_mode": "standby",
+                    "confidence": 1.8,
+                    "setup_type": "pullback_trend",
+                },
             },
         }
         return sequence.get(
@@ -213,8 +238,84 @@ class PipelineAwareTradingBot(DeterministicTradingBot):
                 "structure_evaluation": {"structure_state": "mid_range"},
                 "confirmation_evaluation": {"confirmation_state": "mixed"},
                 "entry_quality_evaluation": {"entry_quality": "acceptable", "setup_type": "reversal_controlled", "entry_score": 5.2},
+                "market_state_evaluation": {"market_state": "neutral_chop", "execution_mode": "standby"},
+                "trade_decision": {
+                    "action": "wait",
+                    "market_state": "neutral_chop",
+                    "execution_mode": "standby",
+                    "confidence": 0.0,
+                    "setup_type": "reversal_controlled",
+                },
             },
         )
+
+
+class EvoResumePipelineTradingBot(DeterministicTradingBot):
+    def __init__(self, signal_map):
+        super().__init__()
+        self.signal_map = signal_map
+
+    def calculate_indicators(self, df):
+        return df
+
+    def evaluate_signal_pipeline(
+        self,
+        df,
+        timeframe="5m",
+        require_volume=False,
+        require_trend=False,
+        avoid_ranging=False,
+        **kwargs,
+    ):
+        signal = self.signal_map.get(len(df), "NEUTRO")
+        if signal == "COMPRA":
+            setup_type = "ema_rsi_resume_long"
+            market_state = "ema_rsi_resume_bull"
+        elif signal == "VENDA":
+            setup_type = "ema_rsi_resume_short"
+            market_state = "ema_rsi_resume_bear"
+        else:
+            return {
+                "candidate_signal": "NEUTRO",
+                "approved_signal": None,
+                "blocked_signal": None,
+                "analytical_signal": "NEUTRO",
+                "block_reason": None,
+                "regime_evaluation": {"regime": "range"},
+                "structure_evaluation": {"structure_state": "mid_range"},
+                "confirmation_evaluation": {"confirmation_state": "mixed"},
+                "entry_quality_evaluation": {"entry_quality": "acceptable", "setup_type": None, "entry_score": 0.0},
+                "market_state_evaluation": {"market_state": "neutral", "execution_mode": "standby"},
+                "trade_decision": {
+                    "action": "wait",
+                    "market_state": "neutral",
+                    "execution_mode": "standby",
+                    "confidence": 0.0,
+                    "setup_type": None,
+                },
+            }
+
+        action = "buy" if signal == "COMPRA" else "sell"
+        return {
+            "candidate_signal": signal,
+            "approved_signal": signal,
+            "blocked_signal": None,
+            "analytical_signal": signal,
+            "block_reason": None,
+            "regime_evaluation": {"regime": "trend_bull" if signal == "COMPRA" else "trend_bear"},
+            "structure_evaluation": {"structure_state": "resume"},
+            "confirmation_evaluation": {"confirmation_state": "confirmed"},
+            "entry_quality_evaluation": {"entry_quality": "strong", "setup_type": setup_type, "entry_score": 8.4},
+            "market_state_evaluation": {"market_state": market_state, "execution_mode": "ema_rsi_resume"},
+            "trade_decision": {
+                "action": action,
+                "market_state": market_state,
+                "execution_mode": "ema_rsi_resume",
+                "confidence": 8.4,
+                "setup_type": setup_type,
+                "entry_reason": signal,
+            },
+        }
 
 
 class FixedDataBacktestEngine(BacktestEngine):
@@ -362,6 +463,54 @@ class BacktestEngineTests(unittest.TestCase):
         data.iloc[214, data.columns.get_loc("ema_21")] = 103.2
         return data
 
+    def _build_evo_resume_take_market_data(self):
+        timestamps = pd.date_range("2026-01-01", periods=260, freq="5min")
+        data = pd.DataFrame(
+            {
+                "open": [100.0] * len(timestamps),
+                "high": [100.2] * len(timestamps),
+                "low": [99.8] * len(timestamps),
+                "close": [100.0] * len(timestamps),
+                "volume": [1_000.0] * len(timestamps),
+            },
+            index=timestamps,
+        )
+        data.iloc[211, data.columns.get_loc("open")] = 110.0
+        data.iloc[211, data.columns.get_loc("high")] = 120.0
+        data.iloc[211, data.columns.get_loc("low")] = 95.0
+        data.iloc[211, data.columns.get_loc("close")] = 101.0
+        data.iloc[212, data.columns.get_loc("open")] = 101.0
+        data.iloc[212, data.columns.get_loc("high")] = 105.0
+        data.iloc[212, data.columns.get_loc("low")] = 100.0
+        data.iloc[212, data.columns.get_loc("close")] = 104.2
+        return data
+
+    def _build_evo_resume_reversal_market_data(self):
+        timestamps = pd.date_range("2026-01-01", periods=260, freq="5min")
+        data = pd.DataFrame(
+            {
+                "open": [100.0] * len(timestamps),
+                "high": [100.2] * len(timestamps),
+                "low": [99.8] * len(timestamps),
+                "close": [100.0] * len(timestamps),
+                "volume": [1_000.0] * len(timestamps),
+            },
+            index=timestamps,
+        )
+        data.iloc[211, data.columns.get_loc("open")] = 110.0
+        data.iloc[211, data.columns.get_loc("high")] = 115.0
+        data.iloc[211, data.columns.get_loc("low")] = 95.0
+        data.iloc[211, data.columns.get_loc("close")] = 101.0
+        data.iloc[212, data.columns.get_loc("open")] = 101.0
+        data.iloc[212, data.columns.get_loc("high")] = 102.0
+        data.iloc[212, data.columns.get_loc("low")] = 100.0
+        data.iloc[212, data.columns.get_loc("close")] = 101.0
+        data.iloc[213, data.columns.get_loc("open")] = 90.0
+        data.iloc[213, data.columns.get_loc("high")] = 101.0
+        data.iloc[213, data.columns.get_loc("low")] = 89.0
+        data.iloc[213, data.columns.get_loc("close")] = 100.0
+        return data
+
     def test_apply_setup_execution_policy_blocks_disallowed_setup(self):
         engine = BacktestEngine(trading_bot=DeterministicTradingBot())
         pipeline = {
@@ -448,6 +597,28 @@ class BacktestEngineTests(unittest.TestCase):
         )
         self.assertEqual(bot.updated_config["symbol"], "BTC/USDT")
 
+    def test_run_backtest_accepts_timezone_aware_dates_with_naive_market_index(self):
+        bot = DeterministicTradingBot()
+        engine = FixedDataBacktestEngine(self._build_market_data(), bot)
+
+        results = engine.run_backtest(
+            symbol="BTC/USDT",
+            timeframe="5m",
+            start_date=datetime(2026, 1, 1, 0, 0, tzinfo=UTC),
+            end_date=datetime(2026, 1, 1, 21, 35, tzinfo=UTC),
+            initial_balance=1_000,
+            rsi_period=14,
+            rsi_min=20,
+            rsi_max=80,
+            take_profit_pct=0.5,
+            fee_rate=0.0,
+            slippage=0.0,
+        )
+
+        self.assertEqual(results["stats"]["total_trades"], 1)
+        self.assertTrue(results["benchmark_values"])
+        self.assertEqual(results["candidate_count"], 1)
+
     def test_run_backtest_collects_signal_pipeline_counters(self):
         bot = PipelineAwareTradingBot()
         engine = FixedDataBacktestEngine(self._build_market_data(), bot)
@@ -490,14 +661,63 @@ class BacktestEngineTests(unittest.TestCase):
         self.assertEqual(results["signal_audit_summary"]["candidate_count"], 3)
         self.assertEqual(results["signal_audit_summary"]["blocked_count"], 2)
         self.assertIn("approval_by_regime", results["signal_audit_summary"])
+        self.assertIn("approval_by_market_state", results["signal_audit_summary"])
         self.assertEqual(results["signal_pipeline_stats"]["regime_counts"]["trend_bull"], 1)
+        self.assertEqual(results["signal_pipeline_stats"]["market_state_counts"]["breakout_expansion"], 1)
+        self.assertEqual(results["signal_pipeline_stats"]["market_state_approved_counts"]["breakout_expansion"], 1)
+        self.assertEqual(results["signal_pipeline_stats"]["market_state_blocked_counts"]["blocked"], 1)
+        self.assertEqual(results["signal_pipeline_stats"]["execution_mode_counts"]["standby"], 2)
         self.assertEqual(len(results["regime_summary"]), 1)
         self.assertEqual(results["regime_summary"][0]["regime"], "trend_bull")
         self.assertEqual(results["regime_summary"][0]["total_trades"], 1)
         self.assertEqual(results["setup_type_summary"][0]["setup_type"], "continuation_breakout")
+        self.assertEqual(results["market_state_summary"][0]["market_state"], "breakout_expansion")
+        self.assertEqual(results["execution_mode_summary"][0]["execution_mode"], "momentum_follow")
+
+    def test_run_backtest_executes_evo_resume_on_signal_close_and_ignores_intrabar_take(self):
+        bot = EvoResumePipelineTradingBot({211: "COMPRA"})
+        engine = FixedDataBacktestEngine(self._build_evo_resume_take_market_data(), bot)
+
+        results = engine.run_backtest(
+            symbol="BTC/USDT",
+            timeframe="5m",
+            start_date=datetime(2026, 1, 1, 0, 0),
+            end_date=datetime(2026, 1, 1, 21, 35),
+            initial_balance=1_000,
+            take_profit_pct=4.0,
+            fee_rate=0.0,
+            slippage=0.0,
+        )
+
+        self.assertEqual(results["stats"]["total_trades"], 1)
+        self.assertEqual(results["trades"][0]["setup_name"], "ema_rsi_resume_long")
+        self.assertEqual(results["trades"][0]["entry_price"], 100.0)
+        self.assertEqual(results["trades"][0]["price"], 104.2)
+        self.assertEqual(results["trades"][0]["reason"], "TAKE_PROFIT")
+
+    def test_run_backtest_reverses_evo_resume_position_on_same_candle_close(self):
+        bot = EvoResumePipelineTradingBot({211: "COMPRA", 213: "VENDA"})
+        engine = FixedDataBacktestEngine(self._build_evo_resume_reversal_market_data(), bot)
+
+        results = engine.run_backtest(
+            symbol="BTC/USDT",
+            timeframe="5m",
+            start_date=datetime(2026, 1, 1, 0, 0),
+            end_date=datetime(2026, 1, 1, 21, 35),
+            initial_balance=1_000,
+            fee_rate=0.0,
+            slippage=0.0,
+        )
+
+        self.assertEqual(results["stats"]["total_trades"], 2)
+        self.assertEqual(results["trades"][0]["reason"], "OPPOSITE_SIGNAL")
+        self.assertEqual(results["trades"][0]["entry_price"], 100.0)
+        self.assertEqual(results["trades"][0]["price"], 101.0)
+        self.assertEqual(results["trades"][1]["side"], "short")
+        self.assertEqual(results["trades"][1]["entry_price"], 101.0)
 
     def test_run_backtest_persists_run_and_trade_metrics_in_sqlite(self):
-        bot = DeterministicTradingBot()
+        bot = PipelineAwareTradingBot()
         temp_db = tempfile.NamedTemporaryFile(delete=False, suffix=".db")
         temp_db.close()
 
@@ -537,9 +757,9 @@ class BacktestEngineTests(unittest.TestCase):
             self.assertEqual(summary["breakdown_by_market"][0]["symbol"], "BTC/USDT")
             self.assertIn("avg_expectancy_pct", summary)
             self.assertEqual(runs[0]["net_profit"], results["stats"]["net_profit"])
-            self.assertEqual(trades[0]["setup_name"], results["meta"]["strategy_version"])
+            self.assertEqual(trades[0]["setup_name"], "continuation_breakout")
             self.assertEqual(trades[0]["strategy_version"], results["meta"]["strategy_version"])
-            self.assertEqual(trades[0]["entry_reason"], trades[0]["signal"])
+            self.assertEqual(trades[0]["entry_reason"], "COMPRA")
             self.assertEqual(trades[0]["exit_reason"], trades[0]["reason"])
             self.assertEqual(trades[0]["sample_type"], "backtest")
             self.assertGreaterEqual(float(trades[0]["signal_score"]), 0.0)
@@ -548,6 +768,8 @@ class BacktestEngineTests(unittest.TestCase):
             self.assertIn("risk_mode", trades[0])
             self.assertIn("risk_amount", trades[0])
             self.assertIn("size_reduced", trades[0])
+            self.assertEqual(trades[0]["market_state"], "breakout_expansion")
+            self.assertEqual(trades[0]["execution_mode"], "momentum_follow")
             self.assertEqual(trade_analytics[0]["setup_type"], results["trades"][0]["setup_name"])
             self.assertIn("mfe_pct", trade_analytics[0])
             self.assertIn("mae_pct", trade_analytics[0])
@@ -557,6 +779,10 @@ class BacktestEngineTests(unittest.TestCase):
             self.assertIn("candidate_signal", signal_audit[0])
             self.assertIn("scenario_score", signal_audit[0])
             self.assertIn("risk_mode", signal_audit[0])
+            self.assertIn("market_state", signal_audit[0])
+            self.assertIn("execution_mode", signal_audit[0])
+            self.assertEqual(signal_audit[0]["market_state"], "blocked")
+            self.assertEqual(signal_audit[-1]["execution_mode"], "momentum_follow")
             self.assertIsInstance(signal_audit[0]["notes"], list)
         finally:
             if os.path.exists(temp_db.name):
@@ -909,18 +1135,19 @@ class BacktestEngineTests(unittest.TestCase):
         )
         engine = FixedDataBacktestEngine(self._build_walk_forward_market_data(), bot)
 
-        results = engine.run_backtest(
-            symbol="BTC/USDT",
-            timeframe="5m",
-            start_date=datetime(2026, 1, 1, 0, 0),
-            end_date=datetime(2026, 1, 4, 3, 0),
-            initial_balance=1_000,
-            take_profit_pct=0.5,
-            fee_rate=0.0,
-            slippage=0.0,
-            walk_forward_windows=2,
-            persist_result=False,
-        )
+        with mock.patch.object(ProductionConfig, "MIN_PROMOTION_OOS_TRADES", 1):
+            results = engine.run_backtest(
+                symbol="BTC/USDT",
+                timeframe="5m",
+                start_date=datetime(2026, 1, 1, 0, 0),
+                end_date=datetime(2026, 1, 4, 3, 0),
+                initial_balance=1_000,
+                take_profit_pct=0.5,
+                fee_rate=0.0,
+                slippage=0.0,
+                walk_forward_windows=2,
+                persist_result=False,
+            )
 
         self.assertIn("walk_forward", results)
         self.assertEqual(results["walk_forward"]["total_windows"], 2)
@@ -945,17 +1172,18 @@ class BacktestEngineTests(unittest.TestCase):
             engine = FixedDataBacktestEngine(self._build_walk_forward_market_data(), bot)
             engine.database = database
 
-            results = engine.run_backtest(
-                symbol="BTC/USDT",
-                timeframe="5m",
-                start_date=datetime(2026, 1, 1, 0, 0),
-                end_date=datetime(2026, 1, 4, 3, 0),
-                initial_balance=1_000,
-                take_profit_pct=0.5,
-                fee_rate=0.0,
-                slippage=0.0,
-                walk_forward_windows=2,
-            )
+            with mock.patch.object(ProductionConfig, "MIN_PROMOTION_OOS_TRADES", 1):
+                results = engine.run_backtest(
+                    symbol="BTC/USDT",
+                    timeframe="5m",
+                    start_date=datetime(2026, 1, 1, 0, 0),
+                    end_date=datetime(2026, 1, 4, 3, 0),
+                    initial_balance=1_000,
+                    take_profit_pct=0.5,
+                    fee_rate=0.0,
+                    slippage=0.0,
+                    walk_forward_windows=2,
+                )
 
             run = database.get_backtest_runs(limit=1)[0]
             summary = database.get_backtest_performance_summary(symbol="BTC/USDT", timeframe="5m")
@@ -1167,11 +1395,11 @@ class BacktestEngineTests(unittest.TestCase):
         )
         self.assertTrue(should_exit)
 
-    def test_should_force_opposite_exit_ignores_weak_or_low_quality_reversal(self):
+    def test_should_force_opposite_exit_ignores_neutral_or_low_quality_reversal(self):
         engine = BacktestEngine(trading_bot=DeterministicTradingBot())
         weak_signal_exit = engine._should_force_opposite_exit(
             position_side="long",
-            analytical_signal="VENDA_FRACA",
+            analytical_signal="NEUTRO",
             signal_pipeline={
                 "trade_decision": {"confidence": 8.0},
                 "scenario_evaluation": {"scenario_score": 8.0},
@@ -1228,6 +1456,22 @@ class BacktestEngineTests(unittest.TestCase):
             risk_engine_summary={
                 "risk_blocked_count": 130,
             },
+            market_state_summary=[
+                {
+                    "market_state": "breakout_expansion",
+                    "total_trades": 160,
+                    "profit_factor": 1.34,
+                    "win_rate": 57.2,
+                    "net_profit": 1420.0,
+                },
+                {
+                    "market_state": "trend_pullback",
+                    "total_trades": 80,
+                    "profit_factor": 1.12,
+                    "win_rate": 52.5,
+                    "net_profit": 460.0,
+                },
+            ],
             setup_type_summary=[
                 {
                     "setup_type": "continuation_breakout",
@@ -1248,6 +1492,8 @@ class BacktestEngineTests(unittest.TestCase):
 
         self.assertEqual(objective_check["status"], "approved")
         self.assertGreaterEqual(objective_check["objective_score"], 75.0)
+        self.assertEqual(objective_check["recommended_market_state"], "breakout_expansion")
+        self.assertEqual(objective_check["approved_market_state"], "breakout_expansion")
         self.assertEqual(objective_check["recommended_setup"], "continuation_breakout")
         self.assertTrue(objective_check["checks"])
         self.assertFalse(objective_check["blockers"])
@@ -1288,6 +1534,15 @@ class BacktestEngineTests(unittest.TestCase):
             risk_engine_summary={
                 "risk_blocked_count": 190,
             },
+            market_state_summary=[
+                {
+                    "market_state": "breakout_expansion",
+                    "total_trades": 32,
+                    "profit_factor": 0.88,
+                    "win_rate": 41.0,
+                    "net_profit": -540.0,
+                }
+            ],
             setup_type_summary=[
                 {
                     "setup_type": "continuation_breakout",
@@ -1320,13 +1575,112 @@ class DashboardBacktestIntegrationTests(unittest.TestCase):
         self.assertIn("backtest_scan_results", source)
         self.assertIn("optimize_rsi_parameters(", source)
         self.assertIn("backtest_optimization_results", source)
+        self.assertIn("Preset Operacional", source)
+        self.assertIn("Contexto Operacional:", source)
+        self.assertIn("Leitura de Mercado:", source)
+        self.assertIn("Perfil de Risco do Usuário", source)
+        self.assertIn("Compatibilidade Legada de Execução", source)
+        self.assertIn("bt_setup_focus", source)
+        self.assertIn("Cesta de Setups", source)
+        self.assertIn('allowed_execution_setups = list(dict.fromkeys(bt_setup_focus)) or None', source)
+        self.assertIn("context_timeframe=execution_context_timeframe", source)
+        self.assertIn("Criterios de Aprovacao Real", source)
+        self.assertIn("Meta de throughput", source)
         self.assertIn("trade_autopsy", source)
         self.assertIn("signal_audit", source)
         self.assertIn("time_analytics", source)
         self.assertIn("objective_check", source)
         self.assertIn("Checagem Objetiva de Sobrevivência", source)
-        self.assertIn("Linha do Tempo da Execução", source)
+        self.assertTrue(
+            "Linha do Tempo da Execução" in source
+            or "Timeline de Sinais (Backtest)" in source
+        )
         self.assertIn("Taxa Aprovação %", source)
+
+
+class ObjectiveCheckBasketTests(unittest.TestCase):
+    def test_objective_check_uses_explicit_setup_basket_for_runtime_promotion(self):
+        engine = BacktestEngine(trading_bot=mock.Mock())
+
+        objective = engine._build_objective_setup_check(
+            stats={
+                "total_trades": 60,
+                "total_return_pct": 8.2,
+                "profit_factor": 1.36,
+                "expectancy_pct": 0.11,
+                "max_drawdown": 9.5,
+            },
+            validation={
+                "oos_passed": True,
+                "out_of_sample": {
+                    "stats": {
+                        "total_trades": 18,
+                        "total_return_pct": 2.4,
+                        "profit_factor": 1.22,
+                        "expectancy_pct": 0.04,
+                    }
+                },
+            },
+            walk_forward={
+                "total_windows": 3,
+                "overall_passed": True,
+                "pass_rate_pct": 66.7,
+                "avg_oos_return_pct": 1.1,
+                "avg_oos_profit_factor": 1.19,
+                "avg_oos_expectancy_pct": 0.03,
+            },
+            signal_pipeline_stats={
+                "approval_rate_pct": 21.0,
+                "candidate_count": 140,
+            },
+            risk_engine_summary={
+                "risk_blocked_count": 14,
+            },
+            market_state_summary=[
+                {
+                    "market_state": "breakout_expansion",
+                    "total_trades": 42,
+                    "profit_factor": 1.42,
+                    "win_rate": 54.0,
+                    "net_profit": 460.0,
+                },
+                {
+                    "market_state": "trend_pullback",
+                    "total_trades": 18,
+                    "profit_factor": 1.21,
+                    "win_rate": 51.0,
+                    "net_profit": 140.0,
+                },
+            ],
+            setup_type_summary=[
+                {
+                    "setup_type": "continuation_breakout",
+                    "total_trades": 42,
+                    "profit_factor": 1.42,
+                    "win_rate": 54.0,
+                    "net_profit": 460.0,
+                },
+                {
+                    "setup_type": "pullback_trend",
+                    "total_trades": 18,
+                    "profit_factor": 1.21,
+                    "win_rate": 51.0,
+                    "net_profit": 140.0,
+                },
+            ],
+            allowed_execution_setups=["pullback_trend", "continuation_breakout"],
+            start_date=datetime(2026, 2, 1, 0, 0),
+            end_date=datetime(2026, 3, 5, 0, 0),
+        )
+
+        self.assertEqual(objective["approved_market_state_mode"], "basket")
+        self.assertEqual(objective["approved_market_states"], ["breakout_expansion", "trend_pullback"])
+        self.assertEqual(objective["approved_market_state_trades"], 60)
+        self.assertEqual(objective["approved_market_state"], "breakout_expansion")
+        self.assertEqual(objective["approved_setup_mode"], "basket")
+        self.assertEqual(objective["approved_setup_types"], ["ema_rsi_resume_long", "ema_rsi_resume_short"])
+        self.assertEqual(objective["approved_setup_trades"], 60)
+        self.assertEqual(objective["approved_setup_type"], "ema_rsi_resume_long")
 
 
 if __name__ == "__main__":

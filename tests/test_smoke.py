@@ -60,12 +60,34 @@ class BillingServiceSmokeTests(unittest.TestCase):
     def test_billing_service_fails_safe_without_stripe_config(self):
         with mock.patch.object(ProductionConfig, "STRIPE_SECRET_KEY", ""), \
              mock.patch.object(ProductionConfig, "STRIPE_WEBHOOK_SECRET", ""), \
+             mock.patch.object(ProductionConfig, "STRIPE_SUCCESS_URL", ""), \
+             mock.patch.object(ProductionConfig, "STRIPE_CANCEL_URL", ""), \
              mock.patch.object(ProductionConfig, "PREMIUM_PRICE_MONTHLY", 19.90):
             service = BillingService()
             result = asyncio.run(service.create_payment_link(123))
 
         self.assertFalse(service.enabled)
         self.assertIn("Billing indisponivel", result)
+
+    def test_billing_service_uses_configured_redirect_urls(self):
+        stripe_stub = mock.Mock()
+        stripe_stub.Customer.create.return_value = mock.Mock(id="cus_123")
+        stripe_stub.checkout.Session.create.return_value = mock.Mock(url="https://checkout.stripe.test/session")
+
+        with mock.patch("services.billing_service.stripe", stripe_stub), \
+             mock.patch.object(ProductionConfig, "STRIPE_SECRET_KEY", "sk_test_123"), \
+             mock.patch.object(ProductionConfig, "STRIPE_WEBHOOK_SECRET", "whsec_123"), \
+             mock.patch.object(ProductionConfig, "STRIPE_SUCCESS_URL", "https://bot.example.com/success"), \
+             mock.patch.object(ProductionConfig, "STRIPE_CANCEL_URL", "https://bot.example.com/cancel"), \
+             mock.patch.object(ProductionConfig, "PREMIUM_PRICE_MONTHLY", 19.90):
+            service = BillingService()
+            result = asyncio.run(service.create_payment_link(123))
+
+        self.assertTrue(service.enabled)
+        self.assertEqual(result, "https://checkout.stripe.test/session")
+        kwargs = stripe_stub.checkout.Session.create.call_args.kwargs
+        self.assertEqual(kwargs["success_url"], "https://bot.example.com/success")
+        self.assertEqual(kwargs["cancel_url"], "https://bot.example.com/cancel")
 
 
 class RateLimiterSmokeTests(unittest.TestCase):
@@ -103,8 +125,10 @@ class ImportSmokeTests(unittest.TestCase):
         self.assertNotIn("config.exchange_config", source)
         self.assertNotIn("config.app_config", source)
         self.assertNotIn("admin123", source)
+        self.assertNotIn("Salvar Configuração", source)
         self.assertNotIn("use_container_width", source)
-        self.assertIn("TradingBot(allow_simulated_data=False)", source)
+        self.assertIn("TradingBot()", source)
+        self.assertIn("Aplicar nesta sessao", source)
         self.assertGreaterEqual(source.count("st.session_state.futures_trading = None"), 2)
 
     def test_dashboard_and_telegram_use_central_signal_pipeline(self):
@@ -127,6 +151,13 @@ class ImportSmokeTests(unittest.TestCase):
         self.assertIn("Pipeline de Sinais", app_source)
         self.assertIn("Taxa de Aprovação", app_source)
         self.assertIn("single_setup_symbol", app_source)
+
+    def test_dashboard_highlights_market_reading_sections(self):
+        with open("app.py", "r", encoding="utf-8") as app_file:
+            app_source = app_file.read()
+
+        self.assertIn("Leitura Operacional", app_source)
+        self.assertIn("Evolução do Portfólio", app_source)
 
     def test_main_production_source_checks_telegram_library_before_logging_success(self):
         with open("main_production.py", "r", encoding="utf-8") as main_file:
@@ -170,6 +201,52 @@ class ProductionConfigSmokeTests(unittest.TestCase):
         self.assertIn(AppConfig.PRIMARY_SYMBOL, supported_pairs)
         self.assertIn("ETH/USDT", supported_pairs)
         self.assertGreater(len(supported_pairs), 1)
+
+    def test_admin_users_default_to_empty_without_environment_configuration(self):
+        import importlib
+        import config.config as config_module
+
+        with mock.patch.dict(os.environ, {"ADMIN_USERS": ""}, clear=False):
+            reloaded = importlib.reload(config_module)
+            self.assertEqual(reloaded.ProductionConfig.ADMIN_USERS, [])
+            importlib.reload(config_module)
+
+    def test_public_app_url_derives_stripe_redirect_urls(self):
+        import importlib
+        import config.config as config_module
+
+        with mock.patch.dict(
+            os.environ,
+            {
+                "PUBLIC_APP_URL": "https://bot.example.com/",
+                "STRIPE_SUCCESS_URL": "",
+                "STRIPE_CANCEL_URL": "",
+            },
+            clear=False,
+        ):
+            reloaded = importlib.reload(config_module)
+            self.assertEqual(reloaded.ProductionConfig.STRIPE_SUCCESS_URL, "https://bot.example.com/success")
+            self.assertEqual(reloaded.ProductionConfig.STRIPE_CANCEL_URL, "https://bot.example.com/cancel")
+            importlib.reload(config_module)
+
+
+class SqliteHardeningSmokeTests(unittest.TestCase):
+    def test_user_manager_enables_busy_timeout_and_wal(self):
+        temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".db")
+        temp_file.close()
+
+        try:
+            manager = UserManager(db_file=temp_file.name)
+            conn = manager._get_connection()
+            busy_timeout = conn.execute("PRAGMA busy_timeout").fetchone()[0]
+            journal_mode = conn.execute("PRAGMA journal_mode").fetchone()[0]
+            conn.close()
+
+            self.assertEqual(busy_timeout, 30000)
+            self.assertEqual(str(journal_mode).lower(), "wal")
+        finally:
+            if os.path.exists(temp_file.name):
+                os.remove(temp_file.name)
 
 
 class RailwayConfigSmokeTests(unittest.TestCase):

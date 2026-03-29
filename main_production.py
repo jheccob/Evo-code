@@ -85,7 +85,7 @@ def main():
                 logger.info("TELEGRAM_CHAT_ID nao configurado. Alertas outbound do dashboard ficam desabilitados neste modo.")
 
             # iniciar bot
-            telegram_bot = TelegramTradingBot(allow_simulated_data=False)
+            telegram_bot = TelegramTradingBot()
 
             if not telegram_bot.is_configured():
                 raise Exception("Bot Telegram não está configurado corretamente")

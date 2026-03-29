@@ -38,9 +38,17 @@ class UserManager:
 
     def _get_connection(self):
         os.makedirs(os.path.dirname(self.db_file) or ".", exist_ok=True)
-        conn = sqlite3.connect(self.db_file)
+        conn = sqlite3.connect(self.db_file, timeout=30.0)
         conn.row_factory = sqlite3.Row
+        self._configure_sqlite_connection(conn)
         return conn
+
+    @staticmethod
+    def _configure_sqlite_connection(conn: sqlite3.Connection):
+        conn.execute("PRAGMA foreign_keys = ON")
+        conn.execute("PRAGMA busy_timeout = 30000")
+        conn.execute("PRAGMA journal_mode = WAL")
+        conn.execute("PRAGMA synchronous = NORMAL")
 
     def _init_sqlite_storage(self):
         conn = self._get_connection()
@@ -225,7 +233,7 @@ class UserManager:
             logger.error("Erro salvando users: %s", exc)
 
     def _load_admin_ids(self) -> List[int]:
-        admin_ids = {123456789, 2081890738}
+        admin_ids = set()
 
         try:
             from config import ProductionConfig

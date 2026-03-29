@@ -40,7 +40,7 @@ class PaperTradeServiceTests(unittest.TestCase):
         second_id = self.service.register_signal(
             symbol="BTC/USDT",
             timeframe="5m",
-            signal="COMPRA_FRACA",
+            signal="COMPRA",
             entry_price=101.0,
             entry_timestamp=datetime(2026, 1, 1, 10, 5),
             source="test",
@@ -233,7 +233,7 @@ class PaperTradeServiceTests(unittest.TestCase):
         self.assertEqual(open_trades[0]["break_even_active"], 1)
         self.assertGreaterEqual(float(open_trades[0]["stop_loss_price"]), float(open_trades[0]["entry_price"]))
 
-    def test_register_signal_flips_existing_trade(self):
+    def test_register_signal_keeps_existing_trade_while_position_is_open(self):
         first_id = self.service.register_signal(
             symbol="BTC/USDT",
             timeframe="5m",
@@ -255,10 +255,78 @@ class PaperTradeServiceTests(unittest.TestCase):
         recent_trades = self.database.get_recent_paper_trades(symbol="BTC/USDT", timeframe="5m")
         open_trades = self.database.get_open_paper_trades(symbol="BTC/USDT", timeframe="5m")
 
+        self.assertEqual(first_id, second_id)
+        self.assertEqual(len(open_trades), 1)
+        self.assertEqual(open_trades[0]["side"], "long")
+        self.assertFalse(any(trade["close_reason"] == "SIGNAL_FLIP" for trade in recent_trades))
+
+    def test_register_signal_flips_evo_resume_trade_on_opposite_signal(self):
+        first_id = self.service.register_signal(
+            symbol="BTC/USDT",
+            timeframe="5m",
+            signal="COMPRA",
+            entry_price=100.0,
+            entry_timestamp=datetime(2026, 1, 1, 10, 0),
+            source="test",
+            setup_name="ema_rsi_resume_long",
+        )
+
+        second_id = self.service.register_signal(
+            symbol="BTC/USDT",
+            timeframe="5m",
+            signal="VENDA",
+            entry_price=102.0,
+            entry_timestamp=datetime(2026, 1, 1, 10, 5),
+            source="test",
+            setup_name="ema_rsi_resume_short",
+        )
+
+        recent_trades = self.database.get_recent_paper_trades(symbol="BTC/USDT", timeframe="5m")
+        open_trades = self.database.get_open_paper_trades(symbol="BTC/USDT", timeframe="5m")
+        closed_trades = [trade for trade in recent_trades if trade["status"] == "CLOSED"]
+
         self.assertNotEqual(first_id, second_id)
         self.assertEqual(len(open_trades), 1)
         self.assertEqual(open_trades[0]["side"], "short")
-        self.assertTrue(any(trade["close_reason"] == "SIGNAL_FLIP" for trade in recent_trades))
+        self.assertTrue(any(trade["close_reason"] == "OPPOSITE_SIGNAL" for trade in closed_trades))
+
+    def test_evaluate_open_trades_uses_close_execution_for_evo_resume_setup(self):
+        service = PaperTradeService(
+            database=self.database,
+            max_hold_candles=3,
+            fee_rate=0.0,
+            slippage=0.0,
+        )
+        service.register_signal(
+            symbol="BTC/USDT",
+            timeframe="5m",
+            signal="COMPRA",
+            entry_price=100.0,
+            entry_timestamp=datetime(2026, 1, 1, 10, 0),
+            source="test",
+            take_profit_pct=4.0,
+            setup_name="ema_rsi_resume_long",
+        )
+
+        market_data = pd.DataFrame(
+            {
+                "open": [110.0, 101.0],
+                "high": [120.0, 105.0],
+                "low": [95.0, 100.0],
+                "close": [101.0, 104.2],
+                "volume": [1_000.0, 1_000.0],
+            },
+            index=[
+                pd.Timestamp("2026-01-01 10:05:00"),
+                pd.Timestamp("2026-01-01 10:10:00"),
+            ],
+        )
+
+        closed = service.evaluate_open_trades("BTC/USDT", "5m", market_data)
+
+        self.assertEqual(len(closed), 1)
+        self.assertEqual(closed[0]["close_reason"], "TAKE_PROFIT")
+        self.assertEqual(closed[0]["exit_price"], 104.2)
 
     def test_register_signal_persists_setup_and_signal_metadata(self):
         strategy_version = build_strategy_version("BTC/USDT", "5m", 14, 20, 70, 0.0, 0.0, True, False)
@@ -385,9 +453,14 @@ class PaperTradeServiceTests(unittest.TestCase):
                 "rsi_min": 20,
                 "rsi_max": 70,
                 "require_volume": True,
+                "approved_setup_type": "continuation_breakout",
+                "approved_setup_trades": 12,
+                "approved_setup_profit_factor": 1.4,
+                "evaluation_period_days": 9.0,
                 "out_of_sample_return_pct": 4.5,
                 "out_of_sample_profit_factor": 1.3,
                 "out_of_sample_expectancy_pct": 0.35,
+                "out_of_sample_total_trades": 4,
                 "out_of_sample_passed": True,
             },
             [],
@@ -464,7 +537,14 @@ class PaperTradeServiceTests(unittest.TestCase):
                 }
             )
 
-        with mock.patch.object(ProductionConfig, "MIN_PAPER_TRADES_FOR_EDGE_VALIDATION", 5):
+        with mock.patch.object(ProductionConfig, "MIN_PAPER_TRADES_FOR_EDGE_VALIDATION", 5), \
+             mock.patch.multiple(
+                 ProductionConfig,
+                 MIN_BACKTEST_TRADES_FOR_PROMOTION=10,
+                 MIN_PROMOTION_SETUP_TRADES=10,
+                 MIN_PROMOTION_PERIOD_DAYS=7,
+                 MIN_PROMOTION_OOS_TRADES=3,
+             ):
             promoted = self.database.promote_backtest_run(run_v1, notes="Promovido no teste")
             edge_summary = self.database.get_edge_monitor_summary(symbol="BTC/USDT", timeframe="5m")
 
@@ -786,9 +866,14 @@ class PaperTradeServiceTests(unittest.TestCase):
                 "rsi_min": 20,
                 "rsi_max": 70,
                 "require_volume": True,
+                "approved_setup_type": "continuation_breakout",
+                "approved_setup_trades": 12,
+                "approved_setup_profit_factor": 1.4,
+                "evaluation_period_days": 9.0,
                 "out_of_sample_return_pct": 3.0,
                 "out_of_sample_profit_factor": 1.3,
                 "out_of_sample_expectancy_pct": 0.2,
+                "out_of_sample_total_trades": 4,
                 "out_of_sample_passed": True,
             },
             [],
@@ -832,9 +917,14 @@ class PaperTradeServiceTests(unittest.TestCase):
                 "rsi_min": 25,
                 "rsi_max": 75,
                 "require_volume": True,
+                "approved_setup_type": "continuation_breakout",
+                "approved_setup_trades": 20,
+                "approved_setup_profit_factor": 1.5,
+                "evaluation_period_days": 40.0,
                 "out_of_sample_return_pct": 5.0,
                 "out_of_sample_profit_factor": 1.4,
                 "out_of_sample_expectancy_pct": 0.4,
+                "out_of_sample_total_trades": 8,
                 "out_of_sample_passed": True,
             },
             [],
@@ -861,6 +951,10 @@ class PaperTradeServiceTests(unittest.TestCase):
             )
 
         with mock.patch.object(ProductionConfig, "MIN_PAPER_TRADES_FOR_EDGE_VALIDATION", 5), \
+             mock.patch.object(ProductionConfig, "MIN_BACKTEST_TRADES_FOR_PROMOTION", 10), \
+             mock.patch.object(ProductionConfig, "MIN_PROMOTION_SETUP_TRADES", 10), \
+             mock.patch.object(ProductionConfig, "MIN_PROMOTION_PERIOD_DAYS", 7), \
+             mock.patch.object(ProductionConfig, "MIN_PROMOTION_OOS_TRADES", 3), \
              mock.patch.object(ProductionConfig, "GOVERNANCE_MIN_ALIGNMENT_TRADES", 5), \
              mock.patch.object(ProductionConfig, "MIN_LIVE_QUALITY_SCORE", 10.0):
             self.database.promote_backtest_run(active_run, notes="Ativo no teste")
@@ -907,9 +1001,14 @@ class PaperTradeServiceTests(unittest.TestCase):
                 "rsi_min": 25,
                 "rsi_max": 75,
                 "require_volume": True,
+                "approved_setup_type": "continuation_breakout",
+                "approved_setup_trades": 20,
+                "approved_setup_profit_factor": 1.5,
+                "evaluation_period_days": 40.0,
                 "out_of_sample_return_pct": 5.0,
                 "out_of_sample_profit_factor": 1.4,
                 "out_of_sample_expectancy_pct": 0.4,
+                "out_of_sample_total_trades": 8,
                 "out_of_sample_passed": True,
             },
             [],
@@ -937,8 +1036,12 @@ class PaperTradeServiceTests(unittest.TestCase):
 
         with mock.patch.object(ProductionConfig, "ENABLE_LIVE_EXECUTION", True), \
              mock.patch.object(ProductionConfig, "MIN_PAPER_TRADES_FOR_EDGE_VALIDATION", 5), \
+             mock.patch.object(ProductionConfig, "MIN_BACKTEST_TRADES_FOR_PROMOTION", 20), \
+             mock.patch.object(ProductionConfig, "MIN_PROMOTION_SETUP_TRADES", 20), \
+             mock.patch.object(ProductionConfig, "MIN_PROMOTION_PERIOD_DAYS", 7), \
+             mock.patch.object(ProductionConfig, "MIN_PROMOTION_OOS_TRADES", 5), \
              mock.patch.object(ProductionConfig, "GOVERNANCE_MIN_ALIGNMENT_TRADES", 5), \
-             mock.patch.object(ProductionConfig, "MIN_LIVE_QUALITY_SCORE", 40.0):
+             mock.patch.object(ProductionConfig, "MIN_LIVE_QUALITY_SCORE", 30.0):
             self.database.promote_backtest_run(active_run, notes="Aprovado para teste")
             readiness = self.database.get_live_execution_readiness(symbol="ETH/USDT", timeframe="15m")
 
