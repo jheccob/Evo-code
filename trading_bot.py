@@ -104,7 +104,8 @@ class TradingBot:
             markets = self.exchange.load_markets()
             # Symbol já está no formato correto para Binance (BTC/USDT)
             return symbol in markets
-        except:
+        except Exception:
+            logger.debug("Falha ao validar simbolo %s na exchange %s.", symbol, self.exchange_name, exc_info=True)
             return False
 
     def format_symbol_for_binance(self, symbol):

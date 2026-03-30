@@ -144,6 +144,18 @@ class ImportSmokeTests(unittest.TestCase):
         self.assertIn(".evaluate_signal_pipeline(", bot_source)
         self.assertNotIn("data[data['signal'].isin(", app_source)
 
+    def test_dashboard_uses_async_helper_and_avoids_bare_except_in_hot_paths(self):
+        with open("app.py", "r", encoding="utf-8") as app_file:
+            app_source = app_file.read()
+        with open("trading_bot.py", "r", encoding="utf-8") as trading_bot_file:
+            trading_bot_source = trading_bot_file.read()
+
+        self.assertIn("def run_async_task_sync(", app_source)
+        self.assertEqual(app_source.count("asyncio.new_event_loop()"), 1)
+        self.assertNotIn("except:\n", app_source)
+        self.assertNotIn("pass  # Silent fail", app_source)
+        self.assertNotIn("except:\n", trading_bot_source)
+
     def test_dashboard_exposes_backtest_signal_pipeline_metrics(self):
         with open("app.py", "r", encoding="utf-8") as app_file:
             app_source = app_file.read()
@@ -158,6 +170,92 @@ class ImportSmokeTests(unittest.TestCase):
 
         self.assertIn("Leitura Operacional", app_source)
         self.assertIn("Evolução do Portfólio", app_source)
+
+    def test_dashboard_organizes_backtest_results_by_lightweight_views(self):
+        with open("app.py", "r", encoding="utf-8") as app_file:
+            app_source = app_file.read()
+
+        self.assertIn("Visão do Resultado", app_source)
+        self.assertIn('options=["Resumo", "Validação", "Execução", "Governança", "Trades"]', app_source)
+        self.assertIn("Modo leve: a dashboard monta só o grupo selecionado", app_source)
+        self.assertIn("if show_execution_view:", app_source)
+        self.assertIn("if show_trades_view:", app_source)
+
+    def test_dashboard_exposes_trader_bot_runtime_controls(self):
+        with open("app.py", "r", encoding="utf-8") as app_file:
+            app_source = app_file.read()
+
+        self.assertIn("def start_trader_bot_process()", app_source)
+        self.assertIn("def stop_trader_bot_process()", app_source)
+        self.assertIn("def render_trader_bot_runtime_controls(", app_source)
+        self.assertIn("Ligar Bot Trader", app_source)
+        self.assertIn("Parar Bot Trader", app_source)
+        self.assertIn("trader_bot_pid", app_source)
+
+    def test_dashboard_organizes_admin_panel_by_lightweight_views(self):
+        with open("app.py", "r", encoding="utf-8") as app_file:
+            app_source = app_file.read()
+
+        self.assertIn("Visão Admin", app_source)
+        self.assertIn('options=["Resumo", "Acessos", "Contas", "Usuários", "Bots"]', app_source)
+        self.assertIn("Modo leve do admin: carregue apenas a área que você quer operar", app_source)
+        self.assertIn("if admin_show_summary:", app_source)
+        self.assertIn("if admin_show_access:", app_source)
+        self.assertIn("if admin_show_accounts:", app_source)
+        self.assertIn("if admin_show_users:", app_source)
+        self.assertIn("if admin_show_bots:", app_source)
+
+    def test_dashboard_uses_lazy_runtime_helpers_for_optional_services(self):
+        with open("app.py", "r", encoding="utf-8") as app_file:
+            app_source = app_file.read()
+
+        self.assertIn("def get_or_init_session_telegram_bot()", app_source)
+        self.assertIn("def get_or_init_backtest_engine()", app_source)
+        self.assertIn("st.session_state.telegram_bot = None", app_source)
+        self.assertIn("st.session_state.backtest_engine = None", app_source)
+        self.assertNotIn("st.session_state.telegram_bot = SecureTelegramService()", app_source)
+        self.assertNotIn("st.session_state.backtest_engine = BacktestEngine()", app_source)
+
+    def test_dashboard_limits_live_sidebar_controls_to_live_sections(self):
+        with open("app.py", "r", encoding="utf-8") as app_file:
+            app_source = app_file.read()
+
+        self.assertIn("show_live_sidebar_controls = sidebar_active_section in live_sidebar_sections", app_source)
+        self.assertIn('live_sidebar_sections = {"market"}', app_source)
+        self.assertIn("Controles de mercado ao vivo ficam visíveis apenas na seção Mercado", app_source)
+
+    def test_dashboard_reorganizes_navigation_into_core_sections(self):
+        with open("app.py", "r", encoding="utf-8") as app_file:
+            app_source = app_file.read()
+
+        self.assertIn('("workspace", "👤 Workspace")', app_source)
+        self.assertIn('("market", "📈 Mercado")', app_source)
+        self.assertIn('("bot", "🤖 Bot Trader")', app_source)
+        self.assertIn('("backtest", "🔬 Backtest")', app_source)
+        self.assertIn('("admin", "👑 Admin")', app_source)
+        self.assertIn('"websocket": "market"', app_source)
+        self.assertIn('"futures": "market"', app_source)
+        self.assertIn('"export": "backtest"', app_source)
+
+    def test_dashboard_concentrates_market_and_bot_workflows(self):
+        with open("app.py", "r", encoding="utf-8") as app_file:
+            app_source = app_file.read()
+
+        self.assertIn("Visao de Mercado", app_source)
+        self.assertIn("Painel Operacional", app_source)
+        self.assertIn('options=["Graficos & Streaming", "Operacao & Risco"]', app_source)
+        self.assertIn('if active_dashboard_section == "bot":', app_source)
+        self.assertIn("Central do Bot Trader", app_source)
+        self.assertIn("Visao do Bot", app_source)
+        self.assertIn('options=["Runtime", "Prontidao", "Guia"]', app_source)
+        self.assertIn("O grafico completo fica em Graficos & Streaming", app_source)
+        self.assertIn("def render_market_operational_summary(", app_source)
+        self.assertIn("def render_market_signal_history(", app_source)
+        self.assertIn('with st.expander("💾 Exportacoes", expanded=False):', app_source)
+        self.assertIn(
+            'render_export_data_panel(symbol=symbol, timeframe=timeframe, key_prefix="backtest_hub")',
+            app_source,
+        )
 
     def test_main_production_source_checks_telegram_library_before_logging_success(self):
         with open("main_production.py", "r", encoding="utf-8") as main_file:
@@ -243,6 +341,19 @@ class ProductionConfigSmokeTests(unittest.TestCase):
         self.assertTrue(updates["bt_enable_trend_filter"])
         self.assertTrue(updates["bt_enable_avoid_ranging"])
         self.assertEqual(updates["bt_risk_profile"], "conservative")
+
+    def test_app_config_exposes_global_validation_basket_and_runtime_family_overrides(self):
+        validation_symbols = AppConfig.get_global_validation_symbols()
+        validation_horizons = AppConfig.get_global_validation_horizons()
+        trend_alt_runtime = AppConfig.get_backtest_family_runtime_overrides("SOL/USDT")
+
+        self.assertIn("BTC/USDT", validation_symbols)
+        self.assertIn("ETH/USDT", validation_symbols)
+        self.assertIn(30, validation_horizons)
+        self.assertIn(365, validation_horizons)
+        self.assertTrue(trend_alt_runtime["require_trend"])
+        self.assertTrue(trend_alt_runtime["avoid_ranging"])
+        self.assertEqual(trend_alt_runtime["stop_loss_pct"], 0.9)
 
     def test_admin_users_default_to_empty_without_environment_configuration(self):
         import importlib

@@ -853,6 +853,105 @@ class BacktestEngine:
             },
         }
 
+    def run_global_robustness_matrix(
+        self,
+        symbols: List[str],
+        horizon_days: List[int],
+        timeframe: str,
+        end_date: datetime,
+        family_overlay_mode: str = "disabled",
+        **backtest_kwargs,
+    ) -> Dict:
+        unique_symbols = list(dict.fromkeys(symbol for symbol in symbols if symbol))
+        unique_horizons = sorted({int(days) for days in horizon_days if int(days) > 0})
+        resolved_timeframe = str(timeframe or "").strip()
+        if not unique_symbols:
+            raise ValueError("Selecione ao menos um simbolo para a matriz de robustez")
+        if not unique_horizons:
+            raise ValueError("Selecione ao menos um horizonte para a matriz de robustez")
+        if not resolved_timeframe:
+            raise ValueError("Selecione um timeframe para a matriz de robustez")
+
+        resolved_end_date = pd.Timestamp(end_date).to_pydatetime()
+        normalized_overlay_mode = str(family_overlay_mode or "disabled").strip().lower()
+        if normalized_overlay_mode not in {"disabled", "recommended"}:
+            normalized_overlay_mode = "disabled"
+
+        base_backtest_kwargs = dict(backtest_kwargs)
+        base_backtest_kwargs.pop("start_date", None)
+        base_backtest_kwargs.pop("end_date", None)
+        base_backtest_kwargs.pop("timeframe", None)
+
+        rows: List[Dict] = []
+        failed_runs: List[Dict] = []
+        best_result: Optional[Dict] = None
+
+        for symbol in unique_symbols:
+            family_profile = AppConfig.get_backtest_family_profile(symbol)
+            family_runtime_overrides = (
+                AppConfig.get_backtest_family_runtime_overrides(symbol)
+                if normalized_overlay_mode == "recommended"
+                else {}
+            )
+
+            for horizon in unique_horizons:
+                scenario_start_date = (pd.Timestamp(resolved_end_date) - pd.Timedelta(days=int(horizon))).to_pydatetime()
+                scenario_kwargs = dict(base_backtest_kwargs)
+                if family_runtime_overrides:
+                    scenario_kwargs.update(family_runtime_overrides)
+
+                try:
+                    result = self.run_backtest(
+                        symbol=symbol,
+                        timeframe=resolved_timeframe,
+                        start_date=scenario_start_date,
+                        end_date=resolved_end_date,
+                        **scenario_kwargs,
+                    )
+                    row = self._build_robustness_matrix_row(
+                        result=result,
+                        horizon_days=int(horizon),
+                        family_profile=family_profile,
+                        family_overlay_mode=normalized_overlay_mode,
+                        family_runtime_overrides=family_runtime_overrides,
+                    )
+                    rows.append(row)
+
+                    if best_result is None or self._robustness_matrix_sort_key(row) > self._robustness_matrix_sort_key(best_result["row"]):
+                        best_result = {"row": row, "result": result}
+                except Exception as exc:
+                    failed_runs.append(
+                        {
+                            "symbol": symbol,
+                            "timeframe": resolved_timeframe,
+                            "horizon_days": int(horizon),
+                            "symbol_family": family_profile.get("family_key"),
+                            "symbol_family_label": family_profile.get("label"),
+                            "error": str(exc),
+                        }
+                    )
+
+        rows.sort(key=self._robustness_matrix_sort_key, reverse=True)
+        family_breakdown = self._build_robustness_breakdown(rows, group_key="symbol_family", label_key="symbol_family_label")
+        horizon_breakdown = self._build_robustness_breakdown(rows, group_key="horizon_days", label_key="horizon_label")
+        summary = self._build_robustness_matrix_summary(
+            rows=rows,
+            requested_runs=len(unique_symbols) * len(unique_horizons),
+            failed_runs=failed_runs,
+            anchor_end_date=resolved_end_date,
+            family_overlay_mode=normalized_overlay_mode,
+        )
+
+        return {
+            "rows": rows,
+            "best": best_result["row"] if best_result else None,
+            "best_result": best_result["result"] if best_result else None,
+            "failed_runs": failed_runs,
+            "family_breakdown": family_breakdown,
+            "horizon_breakdown": horizon_breakdown,
+            "summary": summary,
+        }
+
     def optimize_rsi_parameters(
         self,
         symbol: str,
@@ -1207,6 +1306,39 @@ class BacktestEngine:
             "saved_run_id": result.get("saved_run_id"),
         }
 
+    def _build_robustness_matrix_row(
+        self,
+        result: Dict,
+        horizon_days: int,
+        family_profile: Dict[str, object],
+        family_overlay_mode: str,
+        family_runtime_overrides: Dict[str, object],
+    ) -> Dict:
+        row = self._build_market_scan_row(result)
+        validation = result.get("validation") or {}
+        walk_forward = result.get("walk_forward") or {}
+        robust_candidate = bool(validation.get("oos_passed", False)) and (
+            not walk_forward or bool(walk_forward.get("overall_passed", False))
+        )
+        family_key = str(family_profile.get("family_key") or "global")
+        family_label = str(family_profile.get("label") or AppConfig.get_symbol_profile_family_label(row.get("symbol")))
+
+        row.update(
+            {
+                "horizon_days": int(horizon_days),
+                "horizon_label": f"{int(horizon_days)}d",
+                "symbol_family": family_key,
+                "symbol_family_label": family_label,
+                "family_overlay_mode": family_overlay_mode,
+                "family_overlay_label": family_label if family_overlay_mode == "recommended" else "Configuração Atual",
+                "family_runtime_overrides_applied": bool(family_runtime_overrides),
+                "window_start": result.get("meta", {}).get("start_date"),
+                "window_end": result.get("meta", {}).get("end_date"),
+                "robust_candidate": robust_candidate,
+            }
+        )
+        return row
+
     def _build_optimization_row(self, result: Dict, optimization_metric: str, metric_value: float) -> Dict:
         row = self._build_market_scan_row(result)
         meta = result.get("meta", {})
@@ -1265,6 +1397,174 @@ class BacktestEngine:
         score -= min(max(max_drawdown, 0.0), 30.0) * 1.1
 
         return round(min(100.0, max(0.0, score)), 2)
+
+    def _calculate_robustness_matrix_score(self, rows: List[Dict]) -> float:
+        if not rows:
+            return 0.0
+
+        total_runs = max(len(rows), 1)
+        profitable_runs = sum(1 for row in rows if float(row.get("total_return_pct", 0.0)) > 0.0)
+        positive_oos_runs = sum(1 for row in rows if float(row.get("oos_return_pct", 0.0)) > 0.0)
+        oos_passed_runs = sum(1 for row in rows if bool(row.get("oos_passed", False)))
+        walk_forward_passed_runs = sum(1 for row in rows if bool(row.get("walk_forward_passed", False)))
+        robust_runs = sum(1 for row in rows if bool(row.get("robust_candidate", False)))
+
+        quality_scores = [float(row.get("quality_score", 0.0) or 0.0) for row in rows]
+        profit_factors = [float(row.get("profit_factor", 0.0) or 0.0) for row in rows]
+        oos_profit_factors = [float(row.get("oos_profit_factor", 0.0) or 0.0) for row in rows]
+        total_returns = [float(row.get("total_return_pct", 0.0) or 0.0) for row in rows]
+        oos_returns = [float(row.get("oos_return_pct", 0.0) or 0.0) for row in rows]
+        drawdowns = [float(row.get("max_drawdown", 0.0) or 0.0) for row in rows]
+
+        profitable_rate_pct = (profitable_runs / total_runs) * 100.0
+        positive_oos_rate_pct = (positive_oos_runs / total_runs) * 100.0
+        oos_pass_rate_pct = (oos_passed_runs / total_runs) * 100.0
+        walk_forward_pass_rate_pct = (walk_forward_passed_runs / total_runs) * 100.0
+        robust_rate_pct = (robust_runs / total_runs) * 100.0
+        avg_quality_score = float(np.mean(quality_scores)) if quality_scores else 0.0
+        median_profit_factor = float(np.median(profit_factors)) if profit_factors else 0.0
+        median_oos_profit_factor = float(np.median(oos_profit_factors)) if oos_profit_factors else 0.0
+        median_return_pct = float(np.median(total_returns)) if total_returns else 0.0
+        median_oos_return_pct = float(np.median(oos_returns)) if oos_returns else 0.0
+        worst_drawdown = max(drawdowns) if drawdowns else 0.0
+        worst_return_pct = min(total_returns) if total_returns else 0.0
+
+        score = 0.0
+        score += min(avg_quality_score, 100.0) * 0.45
+        score += profitable_rate_pct * 0.15
+        score += positive_oos_rate_pct * 0.08
+        score += oos_pass_rate_pct * 0.15
+        score += walk_forward_pass_rate_pct * 0.08
+        score += robust_rate_pct * 0.09
+        score += min(max(median_profit_factor - 1.0, 0.0), 1.5) * 8.0
+        score += min(max(median_oos_profit_factor - 1.0, 0.0), 1.5) * 10.0
+        score += min(max(median_return_pct, 0.0), 15.0) * 0.6
+        score += min(max(median_oos_return_pct, 0.0), 10.0) * 0.8
+        score -= min(max(worst_drawdown, 0.0), 40.0) * 0.6
+        score -= min(max(-worst_return_pct, 0.0), 25.0) * 0.4
+
+        if total_runs < 6:
+            score -= 12.0
+        elif total_runs < 10:
+            score -= 6.0
+
+        return round(min(100.0, max(0.0, score)), 2)
+
+    def _build_robustness_breakdown(
+        self,
+        rows: List[Dict],
+        group_key: str,
+        label_key: str,
+    ) -> List[Dict]:
+        grouped_rows: Dict[object, List[Dict]] = {}
+        for row in rows:
+            grouped_rows.setdefault(row.get(group_key), []).append(row)
+
+        breakdown: List[Dict] = []
+        for group_value, subset in grouped_rows.items():
+            total_runs = len(subset)
+            profitable_runs = sum(1 for row in subset if float(row.get("total_return_pct", 0.0)) > 0.0)
+            oos_passed_runs = sum(1 for row in subset if bool(row.get("oos_passed", False)))
+            walk_forward_passed_runs = sum(1 for row in subset if bool(row.get("walk_forward_passed", False)))
+            robust_runs = sum(1 for row in subset if bool(row.get("robust_candidate", False)))
+
+            breakdown.append(
+                {
+                    "group_key": group_key,
+                    "group_value": group_value,
+                    "label": subset[0].get(label_key) if subset else group_value,
+                    "runs": total_runs,
+                    "profitable_runs": profitable_runs,
+                    "profitable_rate_pct": round((profitable_runs / total_runs) * 100.0 if total_runs else 0.0, 2),
+                    "oos_passed_runs": oos_passed_runs,
+                    "oos_pass_rate_pct": round((oos_passed_runs / total_runs) * 100.0 if total_runs else 0.0, 2),
+                    "walk_forward_passed_runs": walk_forward_passed_runs,
+                    "walk_forward_pass_rate_pct": round((walk_forward_passed_runs / total_runs) * 100.0 if total_runs else 0.0, 2),
+                    "robust_runs": robust_runs,
+                    "robust_rate_pct": round((robust_runs / total_runs) * 100.0 if total_runs else 0.0, 2),
+                    "avg_quality_score": round(
+                        float(np.mean([float(row.get("quality_score", 0.0) or 0.0) for row in subset])) if subset else 0.0,
+                        2,
+                    ),
+                    "median_return_pct": round(
+                        float(np.median([float(row.get("total_return_pct", 0.0) or 0.0) for row in subset])) if subset else 0.0,
+                        2,
+                    ),
+                    "median_profit_factor": round(
+                        float(np.median([float(row.get("profit_factor", 0.0) or 0.0) for row in subset])) if subset else 0.0,
+                        2,
+                    ),
+                    "worst_drawdown": round(
+                        max(float(row.get("max_drawdown", 0.0) or 0.0) for row in subset) if subset else 0.0,
+                        2,
+                    ),
+                    "robustness_score": self._calculate_robustness_matrix_score(subset),
+                }
+            )
+
+        if breakdown and all(isinstance(item.get("group_value"), int) for item in breakdown):
+            breakdown.sort(key=lambda item: int(item.get("group_value", 0)))
+        else:
+            breakdown.sort(
+                key=lambda item: (
+                    float(item.get("robustness_score", 0.0)),
+                    float(item.get("avg_quality_score", 0.0)),
+                ),
+                reverse=True,
+            )
+        return breakdown
+
+    def _build_robustness_matrix_summary(
+        self,
+        rows: List[Dict],
+        requested_runs: int,
+        failed_runs: List[Dict],
+        anchor_end_date: datetime,
+        family_overlay_mode: str,
+    ) -> Dict:
+        total_runs = len(rows)
+        profitable_runs = sum(1 for row in rows if float(row.get("total_return_pct", 0.0)) > 0.0)
+        positive_oos_runs = sum(1 for row in rows if float(row.get("oos_return_pct", 0.0)) > 0.0)
+        oos_passed_runs = sum(1 for row in rows if bool(row.get("oos_passed", False)))
+        walk_forward_passed_runs = sum(1 for row in rows if bool(row.get("walk_forward_passed", False)))
+        robust_runs = sum(1 for row in rows if bool(row.get("robust_candidate", False)))
+        quality_scores = [float(row.get("quality_score", 0.0) or 0.0) for row in rows]
+        total_returns = [float(row.get("total_return_pct", 0.0) or 0.0) for row in rows]
+        oos_returns = [float(row.get("oos_return_pct", 0.0) or 0.0) for row in rows]
+        profit_factors = [float(row.get("profit_factor", 0.0) or 0.0) for row in rows]
+        oos_profit_factors = [float(row.get("oos_profit_factor", 0.0) or 0.0) for row in rows]
+        drawdowns = [float(row.get("max_drawdown", 0.0) or 0.0) for row in rows]
+
+        completed_runs = len(rows)
+        return {
+            "requested_runs": requested_runs,
+            "completed_runs": completed_runs,
+            "failed_runs": len(failed_runs),
+            "profitable_runs": profitable_runs,
+            "profitable_rate_pct": round((profitable_runs / completed_runs) * 100.0 if completed_runs else 0.0, 2),
+            "positive_oos_runs": positive_oos_runs,
+            "positive_oos_rate_pct": round((positive_oos_runs / completed_runs) * 100.0 if completed_runs else 0.0, 2),
+            "oos_passed_runs": oos_passed_runs,
+            "oos_pass_rate_pct": round((oos_passed_runs / completed_runs) * 100.0 if completed_runs else 0.0, 2),
+            "walk_forward_passed_runs": walk_forward_passed_runs,
+            "walk_forward_pass_rate_pct": round((walk_forward_passed_runs / completed_runs) * 100.0 if completed_runs else 0.0, 2),
+            "robust_runs": robust_runs,
+            "robust_rate_pct": round((robust_runs / completed_runs) * 100.0 if completed_runs else 0.0, 2),
+            "avg_quality_score": round(float(np.mean(quality_scores)) if quality_scores else 0.0, 2),
+            "best_quality_score": round(max(quality_scores) if quality_scores else 0.0, 2),
+            "median_return_pct": round(float(np.median(total_returns)) if total_returns else 0.0, 2),
+            "median_oos_return_pct": round(float(np.median(oos_returns)) if oos_returns else 0.0, 2),
+            "median_profit_factor": round(float(np.median(profit_factors)) if profit_factors else 0.0, 2),
+            "median_oos_profit_factor": round(float(np.median(oos_profit_factors)) if oos_profit_factors else 0.0, 2),
+            "worst_drawdown": round(max(drawdowns) if drawdowns else 0.0, 2),
+            "families_covered": len({row.get("symbol_family") for row in rows}),
+            "symbols_covered": len({row.get("symbol") for row in rows}),
+            "horizons_covered": len({row.get("horizon_days") for row in rows}),
+            "anchor_end_date": pd.Timestamp(anchor_end_date).isoformat(),
+            "family_overlay_mode": family_overlay_mode,
+            "family_overlay_mode_label": "Overlay por Familia" if family_overlay_mode == "recommended" else "Configuracao Atual",
+            "robustness_score": self._calculate_robustness_matrix_score(rows),
+        }
 
     def _build_objective_setup_check(
         self,
@@ -1838,6 +2138,16 @@ class BacktestEngine:
             float(row.get("oos_profit_factor", 0.0)),
             float(row.get("walk_forward_pass_rate_pct", 0.0)),
             float(row.get("total_return_pct", 0.0)),
+        )
+
+    def _robustness_matrix_sort_key(self, row: Dict) -> Tuple[bool, float, float, float, float, float]:
+        return (
+            bool(row.get("robust_candidate", False)),
+            float(row.get("quality_score", 0.0)),
+            float(row.get("oos_profit_factor", 0.0)),
+            float(row.get("walk_forward_pass_rate_pct", 0.0)),
+            float(row.get("total_return_pct", 0.0)),
+            float(row.get("horizon_days", 0.0)),
         )
 
     def _extract_optimization_metric(self, result: Dict, optimization_metric: str) -> float:

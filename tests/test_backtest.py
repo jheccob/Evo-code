@@ -9,7 +9,7 @@ from unittest import mock
 import pandas as pd
 
 from backtest import BacktestEngine
-from config import ProductionConfig
+from config import AppConfig, ProductionConfig
 from database.database import TradingDatabase
 
 
@@ -343,6 +343,42 @@ class ComparisonBacktestEngine(BacktestEngine):
                 "timeframe": timeframe,
                 "start_date": "2026-01-01T00:00:00",
                 "end_date": "2026-01-10T00:00:00",
+            },
+            "stats": scenario["stats"],
+            "validation": scenario.get("validation"),
+            "walk_forward": scenario.get("walk_forward"),
+            "saved_run_id": scenario.get("saved_run_id"),
+            "trades": [],
+            "portfolio_values": [],
+        }
+
+
+class RobustnessMatrixBacktestEngine(BacktestEngine):
+    def __init__(self, result_map):
+        super().__init__(trading_bot=DeterministicTradingBot())
+        self.result_map = result_map
+        self.calls = []
+
+    def run_backtest(self, symbol, timeframe, start_date, end_date, **kwargs):
+        horizon_days = int(round((pd.Timestamp(end_date) - pd.Timestamp(start_date)).total_seconds() / 86400.0))
+        self.calls.append(
+            {
+                "symbol": symbol,
+                "timeframe": timeframe,
+                "horizon_days": horizon_days,
+                "kwargs": dict(kwargs),
+            }
+        )
+        scenario = self.result_map[(symbol, horizon_days)]
+        if isinstance(scenario, Exception):
+            raise scenario
+
+        return {
+            "meta": {
+                "symbol": symbol,
+                "timeframe": timeframe,
+                "start_date": pd.Timestamp(start_date).isoformat(),
+                "end_date": pd.Timestamp(end_date).isoformat(),
             },
             "stats": scenario["stats"],
             "validation": scenario.get("validation"),
@@ -1297,6 +1333,166 @@ class BacktestEngineTests(unittest.TestCase):
                 end_date=datetime(2026, 1, 2, 0, 0),
             )
 
+    def test_run_global_robustness_matrix_aggregates_by_family_and_horizon(self):
+        engine = RobustnessMatrixBacktestEngine(
+            {
+                ("BTC/USDT", 30): {
+                    "stats": {
+                        "total_return_pct": 8.5,
+                        "profit_factor": 1.42,
+                        "expectancy_pct": 0.6,
+                        "win_rate": 57.0,
+                        "total_trades": 18,
+                        "max_drawdown": 7.5,
+                    },
+                    "validation": {
+                        "oos_passed": True,
+                        "out_of_sample": {
+                            "stats": {
+                                "total_return_pct": 2.8,
+                                "profit_factor": 1.21,
+                                "expectancy_pct": 0.22,
+                                "total_trades": 6,
+                            }
+                        },
+                    },
+                    "walk_forward": {
+                        "overall_passed": True,
+                        "pass_rate_pct": 100.0,
+                        "avg_oos_return_pct": 2.0,
+                        "avg_oos_profit_factor": 1.18,
+                    },
+                    "saved_run_id": 31,
+                },
+                ("BTC/USDT", 90): {
+                    "stats": {
+                        "total_return_pct": -1.2,
+                        "profit_factor": 0.96,
+                        "expectancy_pct": -0.08,
+                        "win_rate": 48.0,
+                        "total_trades": 20,
+                        "max_drawdown": 9.4,
+                    },
+                    "validation": {
+                        "oos_passed": False,
+                        "out_of_sample": {
+                            "stats": {
+                                "total_return_pct": -0.7,
+                                "profit_factor": 0.93,
+                                "expectancy_pct": -0.05,
+                                "total_trades": 7,
+                            }
+                        },
+                    },
+                    "walk_forward": {
+                        "overall_passed": False,
+                        "pass_rate_pct": 33.3,
+                        "avg_oos_return_pct": -0.4,
+                        "avg_oos_profit_factor": 0.92,
+                    },
+                    "saved_run_id": 32,
+                },
+                ("SOL/USDT", 30): {
+                    "stats": {
+                        "total_return_pct": 5.4,
+                        "profit_factor": 1.28,
+                        "expectancy_pct": 0.33,
+                        "win_rate": 54.0,
+                        "total_trades": 14,
+                        "max_drawdown": 8.8,
+                    },
+                    "validation": {
+                        "oos_passed": True,
+                        "out_of_sample": {
+                            "stats": {
+                                "total_return_pct": 1.6,
+                                "profit_factor": 1.12,
+                                "expectancy_pct": 0.14,
+                                "total_trades": 5,
+                            }
+                        },
+                    },
+                    "walk_forward": {
+                        "overall_passed": True,
+                        "pass_rate_pct": 66.7,
+                        "avg_oos_return_pct": 1.2,
+                        "avg_oos_profit_factor": 1.08,
+                    },
+                    "saved_run_id": 33,
+                },
+                ("SOL/USDT", 90): RuntimeError("Dados insuficientes"),
+            }
+        )
+
+        matrix_results = engine.run_global_robustness_matrix(
+            symbols=["BTC/USDT", "SOL/USDT"],
+            horizon_days=[30, 90],
+            timeframe="15m",
+            end_date=datetime(2026, 3, 29, 23, 59),
+            family_overlay_mode="recommended",
+            initial_balance=1_000,
+            stop_loss_pct=0.8,
+            take_profit_pct=1.8,
+            require_volume=False,
+            require_trend=False,
+            avoid_ranging=False,
+        )
+
+        self.assertEqual(matrix_results["summary"]["requested_runs"], 4)
+        self.assertEqual(matrix_results["summary"]["completed_runs"], 3)
+        self.assertEqual(matrix_results["summary"]["failed_runs"], 1)
+        self.assertEqual(matrix_results["summary"]["families_covered"], 2)
+        self.assertEqual(matrix_results["summary"]["horizons_covered"], 2)
+        self.assertEqual(matrix_results["summary"]["family_overlay_mode_label"], "Overlay por Familia")
+        self.assertGreater(matrix_results["summary"]["robustness_score"], 0.0)
+        self.assertEqual(matrix_results["best"]["symbol"], "BTC/USDT")
+        self.assertEqual(matrix_results["best"]["horizon_days"], 30)
+
+        family_labels = {row["label"] for row in matrix_results["family_breakdown"]}
+        self.assertIn("Majors", family_labels)
+        self.assertIn("Trend Alts", family_labels)
+        horizon_labels = {row["label"] for row in matrix_results["horizon_breakdown"]}
+        self.assertEqual(horizon_labels, {"30d", "90d"})
+
+        btc_call = next(call for call in engine.calls if call["symbol"] == "BTC/USDT" and call["horizon_days"] == 30)
+        self.assertEqual(btc_call["kwargs"]["stop_loss_pct"], 0.8)
+        self.assertEqual(btc_call["kwargs"]["take_profit_pct"], 1.8)
+        self.assertFalse(btc_call["kwargs"]["require_trend"])
+        self.assertFalse(btc_call["kwargs"]["avoid_ranging"])
+
+        sol_call = next(call for call in engine.calls if call["symbol"] == "SOL/USDT" and call["horizon_days"] == 30)
+        self.assertEqual(sol_call["kwargs"]["stop_loss_pct"], AppConfig.get_backtest_family_runtime_overrides("SOL/USDT")["stop_loss_pct"])
+        self.assertEqual(sol_call["kwargs"]["take_profit_pct"], AppConfig.get_backtest_family_runtime_overrides("SOL/USDT")["take_profit_pct"])
+        self.assertTrue(sol_call["kwargs"]["require_trend"])
+        self.assertTrue(sol_call["kwargs"]["avoid_ranging"])
+
+    def test_run_global_robustness_matrix_requires_symbols_horizons_and_timeframe(self):
+        engine = RobustnessMatrixBacktestEngine({})
+
+        with self.assertRaises(ValueError):
+            engine.run_global_robustness_matrix(
+                symbols=[],
+                horizon_days=[30],
+                timeframe="15m",
+                end_date=datetime(2026, 3, 29, 23, 59),
+            )
+
+        with self.assertRaises(ValueError):
+            engine.run_global_robustness_matrix(
+                symbols=["BTC/USDT"],
+                horizon_days=[],
+                timeframe="15m",
+                end_date=datetime(2026, 3, 29, 23, 59),
+            )
+
+        with self.assertRaises(ValueError):
+            engine.run_global_robustness_matrix(
+                symbols=["BTC/USDT"],
+                horizon_days=[30],
+                timeframe="",
+                end_date=datetime(2026, 3, 29, 23, 59),
+            )
+
     def test_optimize_rsi_parameters_prioritizes_robust_candidate(self):
         engine = OptimizationBacktestEngine(
             {
@@ -1572,9 +1768,11 @@ class DashboardBacktestIntegrationTests(unittest.TestCase):
         self.assertIn("validation_split_pct=validation_split_pct if enable_oos_validation else 0.0", source)
         self.assertIn("walk_forward_windows=walk_forward_windows if enable_walk_forward else 0", source)
         self.assertIn("run_market_scan(", source)
+        self.assertIn("run_global_robustness_matrix(", source)
         self.assertIn("backtest_scan_results", source)
         self.assertIn("optimize_rsi_parameters(", source)
         self.assertIn("backtest_optimization_results", source)
+        self.assertIn("backtest_robustness_results", source)
         self.assertIn("Preset Operacional", source)
         self.assertIn("Contexto Operacional:", source)
         self.assertIn("Leitura de Mercado:", source)
@@ -1591,6 +1789,7 @@ class DashboardBacktestIntegrationTests(unittest.TestCase):
         self.assertIn("time_analytics", source)
         self.assertIn("objective_check", source)
         self.assertIn("Checagem Objetiva de Sobrevivência", source)
+        self.assertIn("Matriz de Robustez Global", source)
         self.assertTrue(
             "Linha do Tempo da Execução" in source
             or "Timeline de Sinais (Backtest)" in source

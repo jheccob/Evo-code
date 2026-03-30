@@ -140,6 +140,26 @@ class AppConfig:
             },
         },
     }
+    BACKTEST_RUNTIME_OVERRIDE_KEY_MAP = {
+        "bt_enable_volume_filter": "require_volume",
+        "bt_enable_trend_filter": "require_trend",
+        "bt_enable_avoid_ranging": "avoid_ranging",
+        "bt_stop_loss_pct": "stop_loss_pct",
+        "bt_take_profit_pct": "take_profit_pct",
+    }
+    GLOBAL_VALIDATION_SYMBOLS = (
+        "BTC/USDT",
+        "ETH/USDT",
+        "SOL/USDT",
+        "AVAX/USDT",
+        "LINK/USDT",
+        "ADA/USDT",
+        "DOT/USDT",
+        "MATIC/USDT",
+        "UNI/USDT",
+        "XLM/USDT",
+    )
+    GLOBAL_VALIDATION_HORIZONS_DAYS = (30, 90, 180, 365)
 
     @classmethod
     def get_supported_pairs(cls):
@@ -332,6 +352,15 @@ class AppConfig:
         }
 
     @classmethod
+    def get_backtest_family_runtime_overrides(cls, symbol: Optional[str]) -> dict[str, object]:
+        overlay_updates = cls.get_backtest_family_profile(symbol).get("overrides") or {}
+        runtime_overrides: dict[str, object] = {}
+        for session_key, runtime_key in cls.BACKTEST_RUNTIME_OVERRIDE_KEY_MAP.items():
+            if session_key in overlay_updates:
+                runtime_overrides[runtime_key] = overlay_updates[session_key]
+        return runtime_overrides
+
+    @classmethod
     def get_backtest_preset_updates(
         cls,
         preset_name: str,
@@ -343,6 +372,19 @@ class AppConfig:
             family_profile = cls.get_backtest_family_profile(symbol)
             preset_updates.update(family_profile.get("overrides") or {})
         return preset_updates
+
+    @classmethod
+    def get_global_validation_symbols(cls) -> list[str]:
+        supported_pairs = set(cls.get_supported_pairs())
+        return [
+            symbol
+            for symbol in cls.GLOBAL_VALIDATION_SYMBOLS
+            if symbol in supported_pairs
+        ]
+
+    @classmethod
+    def get_global_validation_horizons(cls) -> list[int]:
+        return sorted({int(days) for days in cls.GLOBAL_VALIDATION_HORIZONS_DAYS if int(days) > 0})
 
     @classmethod
     def get_runtime_allowed_execution_setups(
