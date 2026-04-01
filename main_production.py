@@ -9,6 +9,12 @@ import logging
 import sys
 import time
 
+# Avoid UnicodeEncodeError on Windows consoles when logs contain non-ASCII text.
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
 # =========================
 # LOG CONFIG
 # =========================
@@ -30,6 +36,8 @@ logger = logging.getLogger(__name__)
 # =========================
 
 try:
+    from telegram import Bot  # noqa: F401
+    from telegram.ext import Application  # noqa: F401
 
     logger.info("python-telegram-bot importado com sucesso")
 
@@ -70,8 +78,11 @@ def main():
     for attempt in range(1, 4):
         try:
             # validar config
-            if not ProductionConfig.validate_config():
+            if not ProductionConfig.validate_polling_runtime_config():
                 raise Exception("Config inválida")
+
+            if not ProductionConfig.TELEGRAM_CHAT_ID:
+                logger.info("TELEGRAM_CHAT_ID nao configurado. Alertas outbound do dashboard ficam desabilitados neste modo.")
 
             # iniciar bot
             telegram_bot = TelegramTradingBot()
@@ -85,12 +96,14 @@ def main():
             logger.info("Digite /start no Telegram")
 
             # START NORMAL (sem async)
-            telegram_bot.start_polling()
-            return
+            if telegram_bot.start_polling():
+                return 0
+
+            raise RuntimeError("Falha ao iniciar ou manter o polling do bot")
 
         except KeyboardInterrupt:
             logger.info("Bot interrompido pelo usuário")
-            return
+            return 0
 
         except Exception as e:
             logger.error(f"Erro fatal (tentativa {attempt}/3): {e}")
@@ -100,10 +113,10 @@ def main():
                 continue
             else:
                 logger.critical("Falha após 3 tentativas. Verificar logs e configuração.")
-                return
+                return 1
 
 
 # =========================
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

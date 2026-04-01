@@ -1,0 +1,7 @@
+# Mantido como alias para deploy no Railway.
+-r requirements.txt
+
+# Marcadores explicitos para o worker/deploy.
+python-telegram-bot==22.6
+ccxt==4.5.5
+streamlit==1.49.1

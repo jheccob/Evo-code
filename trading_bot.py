@@ -1,28 +1,65 @@
-import ccxt
 import pandas as pd
-import numpy as np
 import logging
-from datetime import datetime
-import os
+from typing import Dict, Iterable, Optional
 from indicators import TechnicalIndicators
-
+from config import AppConfig, ProductionConfig
+from market_state_engine import MarketStateEngine
+from trading_core import market_data as trading_market_data
+from trading_core import pipeline_engine as trading_pipeline_engine
+from trading_core import pipeline_v2
+from trading_core import signal_engine as trading_signal_engine
+from trading_core.constants import MAX_STREAM_CLIENTS, STREAM_CLIENT_STALE_SECONDS
 logger = logging.getLogger(__name__)
 
 class TradingBot:
+    # Runtime E Configuracao
+
     def __init__(self):
         # Usar sempre Binance WebSocket público
-        from config import ExchangeConfig
-        self.exchange = ExchangeConfig.get_exchange_instance('binance', testnet=False)
-        self.exchange_name = 'binance'
-        self.symbol = "BTC/USDT"  # Símbolo padrão mais popular
-        self.timeframe = "5m"
-        self.rsi_period = 14  # Padrão RSI
-        self.rsi_min = 20
-        self.rsi_max = 80
+        self.exchange_name = "binance"
+        self._exchange_testnet = False
+        self._exchange = None
+        self.symbol = AppConfig.DEFAULT_SYMBOL
+        self.timeframe = AppConfig.DEFAULT_TIMEFRAME
+        self.rsi_period = AppConfig.DEFAULT_RSI_PERIOD
+        self.rsi_min = AppConfig.DEFAULT_RSI_MIN
+        self.rsi_max = AppConfig.DEFAULT_RSI_MAX
         self.indicators = TechnicalIndicators()
+        self.market_state_engine = MarketStateEngine()
+        self._cache_data = {}
+        self._stream_clients = {}
+        self._last_context_evaluation = None
+        self._last_regime_evaluation = None
+        self._last_price_structure_evaluation = None
+        self._last_confirmation_evaluation = None
+        self._last_entry_quality_evaluation = None
+        self._last_scenario_evaluation = None
+        self._last_market_state_evaluation = None
+        self._last_trade_decision = None
+        self._last_hard_block_evaluation = None
+        self._last_candidate_signal = "NEUTRO"
+        self._last_signal_pipeline = None
 
         logger.info("🚀 TradingBot inicializado com BINANCE WEBSOCKET PÚBLICO")
         logger.info("📡 Usando dados em tempo real sem necessidade de credenciais")
+
+    def _load_exchange(self):
+        if self._exchange is None:
+            from config import ExchangeConfig
+
+            self._exchange = ExchangeConfig.get_exchange_instance(
+                self.exchange_name,
+                testnet=self._exchange_testnet,
+            )
+        return self._exchange
+
+    @property
+    def exchange(self):
+        return self._load_exchange()
+
+    @exchange.setter
+    def exchange(self, value):
+        self._exchange = value
 
     def update_config(self, symbol=None, timeframe=None, rsi_period=None, rsi_min=None, rsi_max=None):
         """Update bot configuration parameters"""
@@ -61,11 +98,49 @@ class TradingBot:
 
         return changed
 
-    def _fetch_public_ohlcv(self, limit=200):
+    def validate_symbol(self, symbol):
+        """Validate if symbol exists on the exchange"""
+        try:
+            markets = self.exchange.load_markets()
+            # Symbol já está no formato correto para Binance (BTC/USDT)
+            return symbol in markets
+        except Exception:
+            logger.debug("Falha ao validar simbolo %s na exchange %s.", symbol, self.exchange_name, exc_info=True)
+            return False
+
+    def format_symbol_for_binance(self, symbol):
+        """Ensure symbol is in correct format for Binance"""
+        # Binance usa formato BTC/USDT
+        if not '/' in symbol:
+            # Se não tem barra, adicionar /USDT como padrão
+            return f"{symbol}/USDT"
+        return symbol
+
+    # Mercado E Infra
+
+    def cleanup_stream_clients(
+        self,
+        keep_keys: Optional[Iterable[str]] = None,
+        stale_after_seconds: int = STREAM_CLIENT_STALE_SECONDS,
+        max_clients: int = MAX_STREAM_CLIENTS,
+    ):
+        trading_market_data.cleanup_stream_clients(
+            self,
+            keep_keys=keep_keys,
+            stale_after_seconds=stale_after_seconds,
+            max_clients=max_clients,
+        )
+
+    def reset_stream_client(self, symbol: Optional[str] = None, timeframe: Optional[str] = None):
+        trading_market_data.reset_stream_client(self, symbol=symbol, timeframe=timeframe)
+
+    def _fetch_public_ohlcv(self, limit=200, symbol: Optional[str] = None, timeframe: Optional[str] = None):
         """Fetch OHLCV data from Binance public APIs"""
         import requests
 
-        symbol_formatted = self.symbol.replace('/', '')  # BTC/USDT -> BTCUSDT
+        symbol = symbol or self.symbol
+        timeframe = timeframe or self.timeframe
+        symbol_formatted = symbol.replace('/', '').replace(':USDT', '')  # BTC/USDT -> BTCUSDT
 
         timeframe_map = {
             '1m': '1m', '3m': '3m', '5m': '5m', '15m': '15m',
@@ -73,11 +148,11 @@ class TradingBot:
             '6h': '6h', '8h': '8h', '12h': '12h', '1d': '1d'
         }
 
-        binance_timeframe = timeframe_map.get(self.timeframe, '5m')
+        binance_timeframe = timeframe_map.get(timeframe, '5m')
 
         endpoints = [
-            f"https://api.binance.com/api/v3/klines?symbol={symbol_formatted}&interval={binance_timeframe}&limit={limit}",
             f"https://fapi.binance.com/fapi/v1/klines?symbol={symbol_formatted}&interval={binance_timeframe}&limit={limit}",
+            f"https://api.binance.com/api/v3/klines?symbol={symbol_formatted}&interval={binance_timeframe}&limit={limit}",
             f"https://api.binance.us/api/v3/klines?symbol={symbol_formatted}&interval={binance_timeframe}&limit={limit}"
         ]
 
@@ -115,706 +190,33 @@ class TradingBot:
 
         raise ConnectionError("Não foi possível obter dados públicos de nenhum endpoint Binance")
 
-    def _simulate_market_data(self, limit=200):
-        logger.info("🎯 Usando dados simulados para demonstração (WebSocket simulado)")
-        import random
+    def _get_realtime_stream_client(self, symbol: Optional[str] = None, timeframe: Optional[str] = None):
+        return trading_market_data.get_realtime_stream_client(
+            self,
+            symbol=symbol,
+            timeframe=timeframe,
+        )
 
-        base_prices = {
-            'BTC/USDT': 65000,
-            'ETH/USDT': 3200,
-            'ADA/USDT': 0.45,
-            'SOL/USDT': 150,
-            'DOT/USDT': 8.5,
-            'XLM/USDT': 0.12,
-            'DOGE/USDT': 0.08,
-            'LTC/USDT': 85,
-            'AVAX/USDT': 35
-        }
-
-        base_price = base_prices.get(self.symbol, 1.0)
-        current_dt = datetime.now()
-
-        candles = []
-        price = base_price
-
-        for i in range(limit):
-            timestamp = current_dt - pd.Timedelta(minutes=(limit - i - 1) * 5)
-            change_pct = random.normalvariate(0, 0.5) / 100
-            price = price * (1 + change_pct)
-            open_price = price
-            close_price = price * random.uniform(0.995, 1.005)
-            high_price = max(open_price, close_price) * random.uniform(1.001, 1.01)
-            low_price = min(open_price, close_price) * random.uniform(0.99, 0.999)
-            volume = random.uniform(1000000, 10000000)
-
-            candles.append([timestamp, open_price, high_price, low_price, close_price, volume])
-
-        df = pd.DataFrame(candles, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-        df.set_index('timestamp', inplace=True)
-
-        logger.info(f"📊 Dados simulados criados: {len(df)} candles para {self.symbol}")
-        return df
-
-    def get_market_data(self, limit=200):
-        """Fetch OHLCV data with cache + retry + public fallback"""
-        cache_key = f"{self.symbol}_{self.timeframe}_{limit}"
-        current_time = datetime.now()
-
-        if hasattr(self, '_cache_data') and cache_key in self._cache_data:
-            cached_item = self._cache_data[cache_key]
-            cache_age = (current_time - cached_item['timestamp']).total_seconds()
-            if cache_age < 60:
-                logger.info(f"📊 Usando dados em cache para {self.symbol} (cache: {cache_age:.1f}s)")
-                return cached_item['data']
-
-        df = None
-        for attempt in range(1, 4):
-            try:
-                logger.info(f"🔄 Buscando dados públicos (tentativa {attempt}/3) para {self.symbol}")
-                df = self._fetch_public_ohlcv(limit=limit)
-                break
-            except Exception as e:
-                logger.warning(f"⚠️ Tentativa {attempt} falhou: {e}")
-
-        if df is None:
-            logger.warning("⚠️ Falha em toda tentativa pública, utilizando dados simulados")
-            df = self._simulate_market_data(limit=limit)
-
-        try:
-            df = self.calculate_indicators(df)
-
-            if not hasattr(self, '_cache_data'):
-                self._cache_data = {}
-
-            self._cache_data[cache_key] = {'data': df.copy(), 'timestamp': current_time}
-
-            if len(self._cache_data) > 5:
-                oldest_key = min(self._cache_data.keys(), key=lambda k: self._cache_data[k]['timestamp'])
-                del self._cache_data[oldest_key]
-
-            return df
-
-        except Exception as e:
-            logger.error(f"❌ Erro ao calcular indicadores: {e}")
-            raise
+    def get_market_data(self, limit=200, symbol: Optional[str] = None, timeframe: Optional[str] = None):
+        """Fetch real-only OHLCV data from websocket buffers using closed candles only."""
+        return trading_market_data.get_market_data(
+            self,
+            limit=limit,
+            symbol=symbol,
+            timeframe=timeframe,
+        )
 
     def calculate_indicators(self, df):
-        """Calculate comprehensive technical indicators for the dataframe"""
-        # Basic indicators
-        print(f"DEBUG: Calculando RSI com período {self.rsi_period}")
-        df['rsi'] = self.indicators.calculate_rsi(df['close'], self.rsi_period)
-
-        # Debug: Mostrar valores atuais do RSI
-        current_rsi = df['rsi'].iloc[-1] if not df['rsi'].empty else None
-        if current_rsi is not None and not pd.isna(current_rsi):
-            print(f"📊 RSI ATUAL: {current_rsi:.2f} (Min: {self.rsi_min}, Max: {self.rsi_max})")
-        else:
-            print("⚠️ RSI não calculado ou inválido")
-
-        # Multiple moving averages for trend analysis
-        smas = self.indicators.calculate_multiple_sma(df['close'], periods=[21, 50, 200])
-        df['sma_21'] = smas['sma_21']
-        df['sma_50'] = smas['sma_50']
-        df['sma_200'] = smas['sma_200']
-        df['sma_20'] = df['close'].rolling(window=20).mean()
-
-        # MACD
-        macd_data = self.indicators.calculate_macd(df['close'])
-        df['macd'] = macd_data['macd']
-        df['macd_signal'] = macd_data['signal']
-        df['macd_histogram'] = macd_data['histogram']
-
-        # Advanced volatility indicators
-        df['atr'] = self.indicators.calculate_atr(df['high'], df['low'], df['close'])
-
-        # Stochastic RSI for better overbought/oversold detection
-        stoch_rsi = self.indicators.calculate_stochastic_rsi(df['rsi'])
-        df['stoch_rsi_k'] = stoch_rsi['stoch_rsi_k']
-        df['stoch_rsi_d'] = stoch_rsi['stoch_rsi_d']
-
-        # ADX for trend strength
-        adx_data = self.indicators.calculate_adx(df['high'], df['low'], df['close'])
-        df['adx'] = adx_data['adx']
-        df['di_plus'] = adx_data['di_plus']
-        df['di_minus'] = adx_data['di_minus']
-
-        # Williams %R
-        df['williams_r'] = self.indicators.calculate_williams_r(df['high'], df['low'], df['close'])
-
-        # Bollinger Bands for volatility
-        bb = self.indicators.calculate_bollinger_bands(df['close'])
-        df['bb_upper'] = bb['upper']
-        df['bb_middle'] = bb['middle']
-        df['bb_lower'] = bb['lower']
-        df['bb_width'] = (bb['upper'] - bb['lower']) / bb['middle']
-
-        # Volume analysis
-        df['volume_ma'] = df['volume'].rolling(window=20).mean()
-        df['volume_ratio'] = df['volume'] / df['volume_ma']
-
-        # Market regime detection
-        df['market_regime'] = 'trending'  # Default
-        if len(df) >= 50:
-            for i in range(49, len(df)):
-                regime = self.indicators.detect_market_regime(
-                    df['close'].iloc[max(0, i-20):i+1],
-                    df['volume'].iloc[max(0, i-20):i+1],
-                    df['atr'].iloc[max(0, i-20):i+1],
-                    df['adx'].iloc[max(0, i-20):i+1]
-                )
-                df.iloc[i, df.columns.get_loc('market_regime')] = regime
-
-        # Trend analysis
-        df['trend_analysis'] = ''
-        df['trend_strength'] = 0
-        if len(df) >= 200:
-            for i in range(199, len(df)):
-                if not pd.isna(df['sma_200'].iloc[i]):
-                    trend_data = self.indicators.analyze_trend_strength(
-                        df['close'].iloc[i:i+1],
-                        df['sma_21'].iloc[i:i+1],
-                        df['sma_50'].iloc[i:i+1],
-                        df['sma_200'].iloc[i:i+1]
-                    )
-                    df.iloc[i, df.columns.get_loc('trend_analysis')] = trend_data['trend']
-                    df.iloc[i, df.columns.get_loc('trend_strength')] = trend_data['strength']
-
-        # Generate advanced signals
-        df['signal'] = df.apply(self._generate_advanced_signal, axis=1)
-        df['signal_confidence'] = df.apply(self._calculate_signal_confidence, axis=1)
-
-        return df
-
-    def _generate_advanced_signal(self, row):
-        """Generate optimized trading signal with special 5m timeframe optimization"""
-        # Skip if basic indicators are missing
-        if pd.isna(row['rsi']) or pd.isna(row['macd']) or pd.isna(row['macd_signal']):
-            return "NEUTRO"
-
-        # Otimização específica para 5m - filtros mais rigorosos
-        timeframe = getattr(self, 'timeframe', '5m')
-        
-        if timeframe == '5m':
-            # Para 5m, exigir condições mais específicas
-            market_regime = row.get('market_regime', 'trending')
-            if market_regime == 'ranging':
-                return "NEUTRO"  # Evitar mercados laterais em 5m
-            
-            # ADX mais restritivo para 5m
-            adx = row.get('adx', 0)
-            if not pd.isna(adx) and adx < 25:  # Aumentado de 18 para 25
-                return "NEUTRO"
-            
-            # Filtro de volatilidade mais restritivo para 5m
-            bb_width = row.get('bb_width', 0)
-            atr = row.get('atr', 0)
-            if not pd.isna(bb_width) and not pd.isna(atr):
-                # Tolerância menor para 5m
-                if bb_width > 0.15 or atr > row.get('close', 1) * 0.05:  # Mais restritivo
-                    return "NEUTRO"
-        else:
-            # Configurações originais para outros timeframes
-            market_regime = row.get('market_regime', 'trending')
-            adx = row.get('adx', 0)
-            if not pd.isna(adx) and adx < 18:
-                return "NEUTRO"
-            
-            bb_width = row.get('bb_width', 0)
-            atr = row.get('atr', 0)
-            if not pd.isna(bb_width) and not pd.isna(atr):
-                if bb_width > 0.25 or atr > row.get('close', 1) * 0.08:
-                    return "NEUTRO"
-
-        # Core indicators with optimized thresholds
-        rsi = row['rsi']
-        stoch_rsi_k = row.get('stoch_rsi_k', 50)
-        williams_r = row.get('williams_r', -50)
-        macd = row['macd']
-        macd_signal = row['macd_signal']
-        macd_histogram = row['macd_histogram']
-
-        # Enhanced trend analysis
-        price = row['close']
-        sma_21 = row.get('sma_21', price)
-        sma_50 = row.get('sma_50', price)
-        sma_200 = row.get('sma_200', price)
-
-        # Multi-timeframe trend alignment
-        price_above_sma21 = price > sma_21
-        sma21_above_sma50 = sma_21 > sma_50 if not pd.isna(sma_50) else True
-        sma50_above_sma200 = sma_50 > sma_200 if not pd.isna(sma_200) else True
-
-        # Volume analysis with multiple confirmations
-        volume_ratio = row.get('volume_ratio', 1)
-        strong_volume = volume_ratio > 1.5  # Increased threshold
-        exceptional_volume = volume_ratio > 2.0  # New threshold
-
-        # Bollinger Bands with dynamic thresholds
-        bb_upper = row.get('bb_upper', price)
-        bb_middle = row.get('bb_middle', price)
-        bb_lower = row.get('bb_lower', price)
-        bb_position = (price - bb_lower) / (bb_upper - bb_lower) if bb_upper != bb_lower else 0.5
-
-        # Sistema de scoring otimizado especialmente para 5m
-        bullish_score = 0
-        bearish_score = 0
-        confidence_multiplier = 1.0
-
-        # Usar os thresholds configurados no dashboard
-        rsi_oversold_threshold = self.rsi_min if hasattr(self, 'rsi_min') else 20
-        rsi_overbought_threshold = self.rsi_max if hasattr(self, 'rsi_max') else 80
-        
-        # Multiplicador especial para 5m
-        if timeframe == '5m':
-            confidence_multiplier = 1.2  # Aumentar exigência base para 5m
-
-        # RSI scoring mais permissivo - expandir as zonas de trading
-        oversold_extreme = rsi_oversold_threshold - 5  # Zona extrema de compra
-        oversold_moderate = rsi_oversold_threshold + 15  # Zona moderada de compra (expandida)
-        overbought_moderate = rsi_overbought_threshold - 15  # Zona moderada de venda (expandida)
-        overbought_extreme = rsi_overbought_threshold + 5  # Zona extrema de venda
-
-        if rsi <= oversold_extreme:  # Extremo oversold (usuário definiu)
-            bullish_score += 5
-            confidence_multiplier += 0.3
-        elif rsi <= rsi_oversold_threshold:  # Oversold configurado pelo usuário
-            bullish_score += 4
-            confidence_multiplier += 0.2
-        elif rsi <= oversold_moderate:  # Zona moderada de compra (NOVA - mais permissiva)
-            bullish_score += 3
-            confidence_multiplier += 0.1
-        elif rsi >= overbought_extreme:  # Extremo overbought (usuário definiu)
-            bearish_score += 5
-            confidence_multiplier += 0.3
-        elif rsi >= rsi_overbought_threshold:  # Overbought configurado pelo usuário
-            bearish_score += 4
-            confidence_multiplier += 0.2
-        elif rsi >= overbought_moderate:  # Zona moderada de venda (NOVA - mais permissiva)
-            bearish_score += 3
-            confidence_multiplier += 0.1
-
-        # Enhanced Stochastic RSI (more sensitive)
-        if not pd.isna(stoch_rsi_k):
-            if stoch_rsi_k < 15:  # Extreme oversold
-                bullish_score += 3
-                confidence_multiplier += 0.1
-            elif stoch_rsi_k < 25:
-                bullish_score += 2
-            elif stoch_rsi_k > 85:  # Extreme overbought
-                bearish_score += 3
-                confidence_multiplier += 0.1
-            elif stoch_rsi_k > 75:
-                bearish_score += 2
-
-        # Williams %R with tighter levels
-        if not pd.isna(williams_r):
-            if williams_r < -85:  # Extreme oversold
-                bullish_score += 3
-            elif williams_r < -75:
-                bullish_score += 2
-            elif williams_r > -15:  # Extreme overbought
-                bearish_score += 3
-            elif williams_r > -25:
-                bearish_score += 2
-
-        # MACD with momentum analysis
-        macd_bullish = macd > macd_signal and macd_histogram > 0
-        macd_bearish = macd < macd_signal and macd_histogram < 0
-        macd_strengthening = abs(macd_histogram) > abs(row.get('prev_macd_histogram', 0))
-
-        if macd_bullish:
-            bullish_score += 3 if macd_strengthening else 2
-            if macd > 0:  # Above zero line
-                bullish_score += 1
-        elif macd_bearish:
-            bearish_score += 3 if macd_strengthening else 2
-            if macd < 0:  # Below zero line
-                bearish_score += 1
-
-        # Enhanced trend alignment (higher weight)
-        trend_score = 0
-        if price_above_sma21 and sma21_above_sma50 and sma50_above_sma200:
-            trend_score = 5  # Strong uptrend
-            bullish_score += trend_score
-        elif not price_above_sma21 and not sma21_above_sma50 and not sma50_above_sma200:
-            trend_score = 5  # Strong downtrend
-            bearish_score += trend_score
-        elif price_above_sma21 and sma21_above_sma50:
-            trend_score = 3  # Medium uptrend
-            bullish_score += trend_score
-        elif not price_above_sma21 and not sma21_above_sma50:
-            trend_score = 3  # Medium downtrend
-            bearish_score += trend_score
-
-        # Volume confirmation with enhanced scoring
-        if exceptional_volume:
-            if bullish_score > bearish_score:
-                bullish_score += 3
-                confidence_multiplier += 0.15
-            elif bearish_score > bullish_score:
-                bearish_score += 3
-                confidence_multiplier += 0.15
-        elif strong_volume:
-            if bullish_score > bearish_score:
-                bullish_score += 2
-            elif bearish_score > bullish_score:
-                bearish_score += 2
-
-        # Bollinger Bands mean reversion + momentum
-        if bb_position < 0.1 and bullish_score > 0:  # Near lower band
-            bullish_score += 2
-        elif bb_position > 0.9 and bearish_score > 0:  # Near upper band
-            bearish_score += 2
-        elif bb_position < 0.3 and macd_bullish:  # Mean reversion setup
-            bullish_score += 1
-        elif bb_position > 0.7 and macd_bearish:  # Mean reversion setup
-            bearish_score += 1
-
-        # ADX trend strength bonus (enhanced)
-        if not pd.isna(adx):
-            if adx > 40:  # Very strong trend
-                trend_bonus = 3
-                confidence_multiplier += 0.2
-            elif adx > 30:  # Strong trend
-                trend_bonus = 2
-                confidence_multiplier += 0.1
-            else:
-                trend_bonus = 1
-
-            if bullish_score > bearish_score:
-                bullish_score += trend_bonus
-            elif bearish_score > bullish_score:
-                bearish_score += trend_bonus
-
-        # Divergence detection (if available)
-        price_momentum = price - row.get('prev_close', price)
-        if not pd.isna(price_momentum) and price_momentum != 0:
-            rsi_momentum = rsi - row.get('prev_rsi', rsi)
-            if price_momentum > 0 and rsi_momentum < 0:  # Bearish divergence
-                bearish_score += 2
-            elif price_momentum < 0 and rsi_momentum > 0:  # Bullish divergence
-                bullish_score += 2
-
-        # Apply confidence multiplier
-        bullish_score = int(bullish_score * confidence_multiplier)
-        bearish_score = int(bearish_score * confidence_multiplier)
-
-        # Thresholds otimizados por timeframe
-        if timeframe == '5m':
-            # Para 5m: menos trades, mais qualidade
-            min_strong_signal = 8    # Aumentado de 6 para 8
-            min_weak_signal = 6      # Aumentado de 4 para 6
-            min_difference = 3       # Aumentado de 2 para 3
-        else:
-            # Outros timeframes: configuração original
-            min_strong_signal = 6
-            min_weak_signal = 4
-            min_difference = 2
-
-        # Sistema multi-tier otimizado
-        if bullish_score >= min_strong_signal + 3 and bullish_score > bearish_score + min_difference + 2:
-            return "COMPRA"  # High confidence buy
-        elif bearish_score >= min_strong_signal + 3 and bearish_score > bullish_score + min_difference + 2:
-            return "VENDA"   # High confidence sell
-        elif bullish_score >= min_strong_signal and bullish_score > bearish_score + min_difference:
-            return "COMPRA_FRACA"  # Medium confidence buy
-        elif bearish_score >= min_strong_signal and bearish_score > bullish_score + min_difference:
-            return "VENDA_FRACA"   # Medium confidence sell
-        elif timeframe != '5m':  # Só permitir sinais fracos em outros timeframes
-            if bullish_score >= min_weak_signal and bullish_score > bearish_score + 1:
-                return "COMPRA_FRACA"
-            elif bearish_score >= min_weak_signal and bearish_score > bullish_score + 1:
-                return "VENDA_FRACA"
-        
-        return "NEUTRO"
-
-    def _calculate_signal_confidence(self, row):
-        """Calculate confidence score for the signal"""
-        indicators_dict = {
-            'rsi': row['rsi'],
-            'macd': row['macd'],
-            'macd_signal': row['macd_signal'],
-            'macd_histogram': row['macd_histogram'],
-            'trend_analysis': row.get('trend_analysis', 'LATERAL'),
-            'adx': row.get('adx', 0),
-            'stoch_rsi_k': row.get('stoch_rsi_k', 50),
-            'volume_ratio': row.get('volume_ratio', 1),
-            'market_regime': row.get('market_regime', 'trending')
-        }
-
-        return self.indicators.calculate_signal_confidence(indicators_dict)
-
-    def _generate_basic_signal(self, row):
-        """Basic signal generation for when SMAs are not available"""
-        # RSI signals
-        rsi_bullish = row['rsi'] < self.rsi_min
-        rsi_bearish = row['rsi'] > self.rsi_max
-
-        # MACD signals
-        macd_bullish = row['macd'] > row['macd_signal'] and row['macd_histogram'] > 0
-        macd_bearish = row['macd'] < row['macd_signal'] and row['macd_histogram'] < 0
-
-        # Combined signals - both indicators need to agree for strong signal
-        if rsi_bullish and macd_bullish:
-            return "COMPRA"
-        elif rsi_bearish and macd_bearish:
-            return "VENDA"
-        elif rsi_bullish or macd_bullish:
-            return "COMPRA_FRACA"
-        elif rsi_bearish or macd_bearish:
-            return "VENDA_FRACA"
-        else:
-            return "NEUTRO"
-
-    def check_signal(self, df, min_confidence=60, require_volume=True, require_trend=False, avoid_ranging=False,
-                    crypto_optimized=True, timeframe="5m", day_trading_mode=False):
-        """Check trading signal with special optimization for 5m timeframe"""
-        if df is None or df.empty:
-            return "NEUTRO"
-
-        last_row = df.iloc[-1]
-
-        # SEMPRE usar as configurações atuais do bot (definidas no dashboard)
-        actual_rsi_min = self.rsi_min
-        actual_rsi_max = self.rsi_max
-        actual_rsi_period = self.rsi_period
-        
-        # Aplicar otimizações específicas para 5m
-        if timeframe == "5m" or self.timeframe == "5m":
-            try:
-                from config import TimeFrame5mConfig
-                signal = self._generate_advanced_signal(last_row)
-                current_hour = last_row.get('timestamp', pd.Timestamp.now()).hour if hasattr(last_row, 'get') else None
-                signal = TimeFrame5mConfig.apply_5m_filters(signal, last_row, current_hour)
-                return signal
-            except ImportError:
-                pass  # Continuar com lógica normal se config não existir
-
-        # Configurações otimizadas para mais trades com melhor precisão
-        if day_trading_mode:
-            from config import AppConfig
-            day_settings = AppConfig.get_day_trading_settings(timeframe)
-
-            min_confidence = max(55, day_settings['min_confidence'] - 15)  # Reduced confidence threshold
-            min_volume_ratio = day_settings['min_volume_ratio'] * 0.8  # More permissive volume
-            volatility_threshold = day_settings['volatility_filter'] * 1.3  # Allow more volatility
-            min_adx_threshold = day_settings['min_adx'] * 0.7  # Lower ADX requirement
-
-            print(f"DEBUG: Day Trading otimizado - RSI: {actual_rsi_min}-{actual_rsi_max}, Conf: {min_confidence}%")
-
-            # Less restrictive time filters
-            current_hour = last_row.get('timestamp', pd.Timestamp.now()).hour
-            # Removed lunch time filter to allow more trades
-
-        elif crypto_optimized:
-            from config import AppConfig
-            crypto_settings = AppConfig.get_crypto_timeframe_settings(timeframe)
-
-            min_confidence = max(55, crypto_settings['min_confidence'] - 10)  # Lower confidence threshold
-            min_volume_ratio = max(1.1, crypto_settings['min_volume_ratio'] * 0.7)  # More permissive volume
-            volatility_threshold = crypto_settings['volatility_filter'] * 1.5  # Allow higher volatility
-            min_adx_threshold = 20  # Reduced from 28
-
-            print(f"DEBUG: Crypto otimizado - RSI: {actual_rsi_min}-{actual_rsi_max}, Conf: {min_confidence}%")
-
-            # More permissive filters for crypto markets
-            # Removed ranging market filter - crypto can be profitable in ranging markets
-            
-            # Optional trend requirement (less strict)
-            if require_trend and last_row.get('adx', 0) < min_adx_threshold:
-                return "NEUTRO"
-
-            # More lenient volume requirement
-            if require_volume and last_row.get('volume_ratio', 1) < min_volume_ratio:
-                return "NEUTRO"
-        else:
-            # More balanced default settings
-            min_confidence = 55  # Reduced from 70
-            min_volume_ratio = 1.1  # More permissive
-            volatility_threshold = 0.10  # Allow more volatility
-            min_adx_threshold = 15  # Keep low threshold
-
-            print(f"DEBUG: Configuração padrão otimizada - RSI: {actual_rsi_min}-{actual_rsi_max}")
-
-            # Very permissive filters for more opportunities
-            if require_trend and last_row.get('adx', 0) < min_adx_threshold:
-                return "NEUTRO"
-
-            if require_volume and last_row.get('volume_ratio', 1) < min_volume_ratio:
-                return "NEUTRO"
-
-        # Gerar sinal usando configurações atuais
-        signal = self._generate_advanced_signal(last_row)
-        confidence = self._calculate_signal_confidence(last_row)
-
-        # Log apenas sinais não-neutros
-        if signal != "NEUTRO":
-            rsi_atual = last_row.get('rsi', 50)
-            print(f"🎯 Sinal {signal}: RSI {rsi_atual:.1f} | Confiança {confidence:.0f}%")
-
-        # Optimized confidence filter for better trade frequency
-        effective_min_confidence = min_confidence - 10  # Even more permissive
-        if confidence < effective_min_confidence:
-            print(f"  DEBUG: Rejeitado por confiança baixa: {confidence:.1f}% < {effective_min_confidence}%")
-            return "NEUTRO"
-
-        # Relaxed volatility check - crypto markets need volatility
-        atr_pct = last_row.get('atr', 0) / last_row.get('close', 1) * 100
-        max_volatility = (volatility_threshold * 100) * 2.0  # Double the threshold
-        if atr_pct > max_volatility:
-            return "NEUTRO"
-
-        # More intelligent RSI validation
-        rsi_atual = last_row.get('rsi', 50)
-        
-        # Dynamic RSI tolerance based on market conditions
-        market_volatility = last_row.get('bb_width', 0.05)
-        base_tolerance = 15 if market_volatility > 0.1 else 12
-        
-        # Smart signal adjustment instead of rejection
-        if signal == 'COMPRA':
-            # Allow buy signals even if RSI is moderately higher
-            if rsi_atual > (actual_rsi_max - base_tolerance):
-                print(f"  DEBUG: COMPRA convertida para FRACA - RSI {rsi_atual:.1f}")
-                signal = 'COMPRA_FRACA'
-        elif signal == 'VENDA':
-            # Allow sell signals even if RSI is moderately lower  
-            if rsi_atual < (actual_rsi_min + base_tolerance):
-                print(f"  DEBUG: VENDA convertida para FRACA - RSI {rsi_atual:.1f}")
-                signal = 'VENDA_FRACA'
-
-        # More permissive secondary indicator filters for crypto
-        if crypto_optimized:
-            # Allow StochRSI in moderate zones
-            stoch_rsi_k = last_row.get('stoch_rsi_k', 50)
-            if signal in ['COMPRA', 'COMPRA_FRACA'] and stoch_rsi_k > 70:  # Was 50
-                print(f"  DEBUG: Sinal compra ajustado por StochRSI {stoch_rsi_k:.1f}")
-                if signal == 'COMPRA':
-                    signal = 'COMPRA_FRACA'  # Downgrade instead of reject
-            if signal in ['VENDA', 'VENDA_FRACA'] and stoch_rsi_k < 30:  # Was 50
-                print(f"  DEBUG: Sinal venda ajustado por StochRSI {stoch_rsi_k:.1f}")
-                if signal == 'VENDA':
-                    signal = 'VENDA_FRACA'  # Downgrade instead of reject
-
-            # More reasonable Williams %R thresholds
-            williams_r = last_row.get('williams_r', -50)
-            if signal in ['COMPRA', 'COMPRA_FRACA'] and williams_r > -20:  # Was -50
-                if signal == 'COMPRA':
-                    signal = 'COMPRA_FRACA'
-            if signal in ['VENDA', 'VENDA_FRACA'] and williams_r < -80:  # Was -50
-                if signal == 'VENDA':
-                    signal = 'VENDA_FRACA'
-
-        # Combine rule-based signal with advanced score for robust decision
-        advanced_score = self.calculate_advanced_score(last_row)
-        self.logger = logger
-        logger.debug(f"💡 Advanced score: {advanced_score:.2f}")
-
-        if advanced_score < 0.45 and signal in ['COMPRA', 'VENDA', 'COMPRA_FRACA', 'VENDA_FRACA']:
-            logger.debug("📉 score baixo, converte para NEUTRO")
-            return "NEUTRO"
-
-        if advanced_score >= 0.80:
-            if signal in ['COMPRA', 'COMPRA_FRACA']:
-                return "COMPRA"
-            if signal in ['VENDA', 'VENDA_FRACA']:
-                return "VENDA"
-
-        if advanced_score >= 0.60:
-            return signal
-
-        # Se score intermediário e sinal fraco, devolver NEUTRO
-        if signal in ['COMPRA_FRACA', 'VENDA_FRACA'] and advanced_score < 0.65:
-            logger.debug("🔁 sinal fraco + score médio, NEUTRO")
-            return "NEUTRO"
-
-        return signal
-
-    def get_signal_with_confidence(self, df):
-        """Get signal with confidence score"""
-        if df is None or df.empty:
-            return {"signal": "NEUTRO", "confidence": 0}
-
-        last_row = df.iloc[-1]
-        signal = self._generate_advanced_signal(last_row)
-        confidence = self._calculate_signal_confidence(last_row)
-
-        return {"signal": signal, "confidence": confidence}
-
-    def calculate_advanced_score(self, row):
-        """Calculate an ensemble score from advanced indicators"""
-        # Basic checks
-        if row is None or row.empty:
-            return 0.0
-
-        scores = []
-
-        # RSI score: favorable se 20-80 (caminho expandido para trades de alta qualidade)
-        rsi = row.get('rsi', 50)
-        if not np.isnan(rsi):
-            if rsi < 20:
-                scores.append(0.95)
-            elif rsi < 30:
-                scores.append(0.75)
-            elif rsi < 40:
-                scores.append(0.55)
-            elif rsi > 80:
-                scores.append(0.05)
-            elif rsi > 70:
-                scores.append(0.2)
-            else:
-                scores.append(0.5)
-
-        # MACD score
-        macd = row.get('macd', 0)
-        macd_signal = row.get('macd_signal', 0)
-        macd_hist = row.get('macd_histogram', 0)
-        if not np.isnan(macd) and not np.isnan(macd_signal):
-            if macd > macd_signal and macd_hist > 0:
-                scores.append(0.85)
-            elif macd < macd_signal and macd_hist < 0:
-                scores.append(0.15)
-            else:
-                scores.append(0.45)
-
-        # ADX score
-        adx = row.get('adx', 0)
-        if not np.isnan(adx):
-            if adx > 40:
-                scores.append(0.85)
-            elif adx > 25:
-                scores.append(0.65)
-            else:
-                scores.append(0.35)
-
-        # Volume confirmation
-        vol_ratio = row.get('volume_ratio', 1.0)
-        if not np.isnan(vol_ratio):
-            if vol_ratio > 2.0:
-                scores.append(0.85)
-            elif vol_ratio > 1.3:
-                scores.append(0.65)
-            else:
-                scores.append(0.45)
-
-        # Regime/instrumentos: tonar de 0.4 a 0.6 se market_regime unknown
-        market_regime = row.get('market_regime', 'trending')
-        if market_regime == 'trending':
-            scores.append(0.7)
-        elif market_regime == 'ranging':
-            scores.append(0.4)
-        else:
-            scores.append(0.5)
-
-        if not scores:
-            return 0.0
-
-        final_score = float(np.mean(scores))
-        return min(1.0, max(0.0, final_score))
+        return trading_market_data.calculate_indicators(self, df)
 
     def get_market_summary(self, df):
         """Get market summary statistics"""
         if df is None or df.empty:
+            return None
+
+        df = self._prefer_closed_candles(df)
+
+        if df.empty:
             return None
 
         last_candle = df.iloc[-1]
@@ -838,19 +240,701 @@ class TradingBot:
             'signal': self.check_signal(df)
         }
 
-    def validate_symbol(self, symbol):
-        """Validate if symbol exists on the exchange"""
-        try:
-            markets = self.exchange.load_markets()
-            # Symbol já está no formato correto para Binance (BTC/USDT)
-            return symbol in markets
-        except:
-            return False
+    # Contexto E Regime
 
-    def format_symbol_for_binance(self, symbol):
-        """Ensure symbol is in correct format for Binance"""
-        # Binance usa formato BTC/USDT
-        if not '/' in symbol:
-            # Se não tem barra, adicionar /USDT como padrão
-            return f"{symbol}/USDT"
-        return symbol
+    @staticmethod
+    def _calculate_context_slope(series: pd.Series, lookback: int = 5) -> float:
+        if series is None:
+            return float("nan")
+
+        clean_series = series.dropna()
+        if len(clean_series) < 2:
+            return float("nan")
+
+        effective_lookback = min(lookback, len(clean_series) - 1)
+        start_value = float(clean_series.iloc[-(effective_lookback + 1)])
+        end_value = float(clean_series.iloc[-1])
+        if start_value == 0:
+            return float("nan")
+        return (end_value - start_value) / abs(start_value)
+
+    @staticmethod
+    def _normalize_strategy_pct(value: Optional[float], default_pct: float) -> float:
+        raw_value = default_pct if value is None else float(value or 0.0)
+        return raw_value / 100 if raw_value > 1 else raw_value
+
+    @staticmethod
+    def _prefer_closed_candles(df: Optional[pd.DataFrame]) -> Optional[pd.DataFrame]:
+        if df is None or df.empty:
+            return None
+        
+        working_df = df
+        if "is_closed" in working_df.columns:
+            closed_df = working_df[working_df["is_closed"].fillna(False)]
+            if not closed_df.empty:
+                return closed_df
+            if len(working_df) > 1:
+                return working_df.iloc[:-1]
+        return working_df
+
+    def _build_resume_snapshot(
+        self,
+        df: Optional[pd.DataFrame],
+        timeframe: Optional[str] = None,
+        context_df: Optional[pd.DataFrame] = None,
+        stop_loss_pct: Optional[float] = None,
+        take_profit_pct: Optional[float] = None,
+    ) -> Dict[str, object]:
+        working_df = pipeline_v2._prefer_closed_candles(self, df)
+        if working_df.empty:
+            reason = "Sem candles suficientes para leitura do motor EMA/RSI."
+            neutral_market_state = pipeline_v2._build_wait_market_state(reason)
+            return {
+                "analysis": {
+                    "signal": "NEUTRO",
+                    "side": None,
+                    "reason": reason,
+                    "market_bias": "neutral",
+                    "atr_pct": 0.0,
+                    "confirmation_state": "weak",
+                    "price_location": "mid_range",
+                    "entry_score": 0.0,
+                    "scenario_score": 0.0,
+                    "setup_type": None,
+                    "market_state": "neutral_chop",
+                    "structure_state": "flat",
+                    "entry_quality": "bad",
+                },
+                "context_evaluation": {
+                    "market_bias": "neutral",
+                    "bias": "neutral",
+                    "context_strength": 0.0,
+                    "is_tradeable": False,
+                    "reason": reason,
+                },
+                "regime_evaluation": {
+                    "timeframe": timeframe or self.timeframe,
+                    "regime": "range",
+                    "regime_score": 0.0,
+                    "market_bias": "neutral",
+                    "adx": 0.0,
+                    "atr_pct": 0.0,
+                    "ema_distance_pct": 0.0,
+                    "ema_slope": 0.0,
+                    "volatility_state": "low_volatility",
+                    "trend_state": "range",
+                    "parabolic": False,
+                    "legacy_regime": "ranging",
+                    "price_above_ema_200": False,
+                    "is_tradeable": False,
+                    "has_minimum_history": False,
+                    "notes": [reason],
+                    "reason": reason,
+                },
+                "structure_evaluation": {
+                    "structure_state": "flat",
+                    "structure_quality": 0.0,
+                    "price_location": "mid_range",
+                    "notes": [reason],
+                    "breakout_pressure": False,
+                    "breakout_pressure_side": "",
+                    "trend_bias": "neutral",
+                    "timeframe": timeframe or self.timeframe,
+                    "has_minimum_history": False,
+                },
+                "confirmation_evaluation": {
+                    "confirmation_state": "weak",
+                    "confirmation_score": 0.0,
+                    "hypothesis_side": None,
+                    "notes": [reason],
+                    "conflicts": [reason],
+                    "has_minimum_history": False,
+                },
+                "entry_evaluation": {
+                    "entry_quality": "bad",
+                    "entry_score": 0.0,
+                    "objective_passed": False,
+                    "objective_quality": "bad",
+                    "setup_type": None,
+                    "rr_estimate": 0.0,
+                    "rejection_reason": reason,
+                    "notes": [reason],
+                    "minimum_scenario_score": 6.0,
+                    "entry_reason": None,
+                    "has_minimum_history": False,
+                },
+                "scenario_evaluation": {
+                    "scenario_score": 0.0,
+                    "scenario_grade": "D",
+                    "pullback_intensity": "not_applicable",
+                    "pullback_score": 0.0,
+                    "notes": [reason],
+                    "has_minimum_history": False,
+                },
+                "market_state_evaluation": neutral_market_state,
+                "trade_decision": {
+                    "action": "wait",
+                    "confidence": 0.0,
+                    "market_bias": "neutral",
+                    "market_state": "neutral_chop",
+                    "execution_mode": "standby",
+                    "setup_type": None,
+                    "entry_reason": None,
+                    "block_reason": reason,
+                    "invalid_if": None,
+                },
+            }
+
+        working_df = pipeline_v2._ensure_indicator_columns(self, working_df.copy())
+        buy_threshold, sell_threshold = pipeline_v2._resolve_resume_thresholds(self)
+        analysis = pipeline_v2._analyze_resume_signal(
+            working_df,
+            buy_threshold=buy_threshold,
+            sell_threshold=sell_threshold,
+        )
+        context_evaluation = pipeline_v2._build_resume_context_evaluation(
+            self,
+            context_df=context_df,
+            buy_threshold=buy_threshold,
+            sell_threshold=sell_threshold,
+        ) or {
+            "market_bias": analysis["market_bias"],
+            "bias": analysis["market_bias"],
+            "context_strength": 6.0 if analysis["market_bias"] in {"bullish", "bearish"} else 3.0,
+            "is_tradeable": analysis["market_bias"] in {"bullish", "bearish"},
+            "reason": analysis["reason"],
+        }
+        regime_evaluation = pipeline_v2._build_resume_regime_evaluation(
+            working_df,
+            timeframe=timeframe or self.timeframe,
+        )
+
+        rr_estimate = 0.0
+        if float(stop_loss_pct or 0.0) > 0 and float(take_profit_pct or 0.0) > 0:
+            rr_estimate = float(take_profit_pct) / float(stop_loss_pct)
+        elif float(ProductionConfig.DEFAULT_LIVE_STOP_LOSS_PCT or 0.0) > 0:
+            rr_estimate = (
+                float(ProductionConfig.DEFAULT_LIVE_TAKE_PROFIT_PCT)
+                / float(ProductionConfig.DEFAULT_LIVE_STOP_LOSS_PCT)
+            )
+
+        structure_evaluation = {
+            "structure_state": analysis["structure_state"],
+            "structure_quality": 7.0 if analysis["signal"] in {"COMPRA", "VENDA"} else 4.0,
+            "price_location": analysis["price_location"],
+            "notes": [analysis["reason"]],
+            "breakout_pressure": False,
+            "breakout_pressure_side": "",
+            "trend_bias": analysis["market_bias"],
+            "timeframe": timeframe or self.timeframe,
+            "has_minimum_history": True,
+        }
+        confirmation_state = analysis["confirmation_state"]
+        confirmation_evaluation = {
+            "confirmation_state": confirmation_state,
+            "confirmation_score": 7.4 if confirmation_state == "confirmed" else 5.6 if confirmation_state == "waiting" else 3.5,
+            "hypothesis_side": analysis["market_bias"] if analysis["market_bias"] in {"bullish", "bearish"} else None,
+            "notes": [analysis["reason"]],
+            "conflicts": [] if analysis["signal"] in {"COMPRA", "VENDA"} else [analysis["reason"]],
+            "has_minimum_history": True,
+        }
+        entry_evaluation = {
+            "entry_quality": analysis["entry_quality"],
+            "entry_score": round(float(analysis["entry_score"]), 2),
+            "objective_passed": analysis["signal"] in {"COMPRA", "VENDA"},
+            "objective_quality": analysis["entry_quality"],
+            "setup_type": analysis["setup_type"],
+            "rr_estimate": round(float(rr_estimate), 2),
+            "rejection_reason": None if analysis["signal"] in {"COMPRA", "VENDA"} else analysis["reason"],
+            "notes": [analysis["reason"]],
+            "minimum_scenario_score": 6.0,
+            "entry_reason": analysis["reason"] if analysis["signal"] in {"COMPRA", "VENDA"} else None,
+            "has_minimum_history": True,
+        }
+        scenario_score = max(float(analysis["scenario_score"]), float(analysis["entry_score"]) - 0.2)
+        scenario_evaluation = {
+            "scenario_score": round(float(scenario_score), 2),
+            "scenario_grade": "A" if scenario_score >= 7.5 else "B" if scenario_score >= 6.4 else "C" if scenario_score >= 5.0 else "D",
+            "pullback_intensity": "not_applicable",
+            "pullback_score": 0.0,
+            "notes": [analysis["reason"]],
+            "has_minimum_history": True,
+        }
+        market_state_evaluation = self.evaluate_market_state(
+            context_result=context_evaluation,
+            regime_result=regime_evaluation,
+            structure_result=structure_evaluation,
+            confirmation_result=confirmation_evaluation,
+            entry_result=entry_evaluation,
+            scenario_score_result=scenario_evaluation,
+        )
+        trade_decision = trading_signal_engine.make_trade_decision(
+            self,
+            context_result=context_evaluation,
+            structure_result=structure_evaluation,
+            confirmation_result=confirmation_evaluation,
+            entry_result=entry_evaluation,
+            hard_block_result={"hard_block": False, "block_reason": None, "block_source": None, "notes": []},
+            scenario_score_result=scenario_evaluation,
+            risk_result=None,
+            regime_result=regime_evaluation,
+        )
+        return {
+            "analysis": analysis,
+            "context_evaluation": context_evaluation,
+            "regime_evaluation": regime_evaluation,
+            "structure_evaluation": structure_evaluation,
+            "confirmation_evaluation": confirmation_evaluation,
+            "entry_evaluation": entry_evaluation,
+            "scenario_evaluation": scenario_evaluation,
+            "market_state_evaluation": market_state_evaluation,
+            "trade_decision": trade_decision,
+        }
+
+    def evaluate_market_regime(
+        self,
+        df: Optional[pd.DataFrame],
+        timeframe: Optional[str] = None,
+        as_of_timestamp=None,
+        persist: bool = True,
+    ) -> Dict[str, object]:
+        del as_of_timestamp, persist
+        snapshot = self._build_resume_snapshot(df, timeframe=timeframe)
+        self._last_regime_evaluation = snapshot["regime_evaluation"]
+        return snapshot["regime_evaluation"]
+
+    def get_context_evaluation(
+        self,
+        context_df: Optional[pd.DataFrame],
+        as_of_timestamp=None,
+        context_timeframe: Optional[str] = None,
+    ) -> Dict[str, object]:
+        del as_of_timestamp
+        snapshot = self._build_resume_snapshot(
+            df=context_df,
+            timeframe=context_timeframe,
+            context_df=context_df,
+        )
+        self._last_context_evaluation = snapshot["context_evaluation"]
+        return snapshot["context_evaluation"]
+
+    def _fetch_context_df(self, context_timeframe: str, limit: int = 260) -> Optional[pd.DataFrame]:
+        return self.get_market_data(
+            limit=limit,
+            symbol=self.symbol,
+            timeframe=context_timeframe,
+        )
+
+    # Estrutura
+
+    def analyze_price_structure(
+        self,
+        df: Optional[pd.DataFrame],
+        market_bias: Optional[str] = None,
+        timeframe: Optional[str] = None,
+    ) -> Dict[str, object]:
+        del market_bias
+        snapshot = self._build_resume_snapshot(df, timeframe=timeframe)
+        self._last_price_structure_evaluation = snapshot["structure_evaluation"]
+        return snapshot["structure_evaluation"]
+
+    def get_price_structure_evaluation(
+        self,
+        df: Optional[pd.DataFrame],
+        timeframe: Optional[str] = None,
+        market_bias: Optional[str] = None,
+    ) -> Dict[str, object]:
+        return self.analyze_price_structure(
+            df=df,
+            market_bias=market_bias,
+            timeframe=timeframe,
+        )
+
+    # Confirmacao
+
+    @staticmethod
+    def _resolve_confirmation_side(
+        signal_hypothesis: Optional[str] = None,
+        context_evaluation: Optional[Dict[str, object]] = None,
+        last_row: Optional[pd.Series] = None,
+    ) -> str:
+        del last_row
+        normalized_signal = str(signal_hypothesis or "").strip().upper()
+        if normalized_signal == "COMPRA":
+            return "bullish"
+        if normalized_signal == "VENDA":
+            return "bearish"
+        context_bias = str(
+            (context_evaluation or {}).get("market_bias")
+            or (context_evaluation or {}).get("bias")
+            or ""
+        ).strip().lower()
+        if context_bias in {"bullish", "bearish"}:
+            return context_bias
+        return "neutral"
+
+    def analyze_confirmation(
+        self,
+        df: Optional[pd.DataFrame],
+        market_bias: Optional[str] = None,
+        structure_state: Optional[str] = None,
+    ) -> Dict[str, object]:
+        del market_bias, structure_state
+        snapshot = self._build_resume_snapshot(df, timeframe=self.timeframe)
+        self._last_confirmation_evaluation = snapshot["confirmation_evaluation"]
+        return snapshot["confirmation_evaluation"]
+
+    def get_confirmation_evaluation(
+        self,
+        df: Optional[pd.DataFrame],
+        signal_hypothesis: Optional[str] = None,
+        timeframe: Optional[str] = None,
+        context_evaluation: Optional[Dict[str, object]] = None,
+        structure_evaluation: Optional[Dict[str, object]] = None,
+    ) -> Dict[str, object]:
+        del signal_hypothesis, context_evaluation, structure_evaluation
+        snapshot = self._build_resume_snapshot(df, timeframe=timeframe)
+        self._last_confirmation_evaluation = snapshot["confirmation_evaluation"]
+        return snapshot["confirmation_evaluation"]
+
+    # Entrada
+
+    def evaluate_contextual_entry(
+        self,
+        df: Optional[pd.DataFrame],
+        market_bias: Optional[str] = None,
+        structure_state: Optional[str] = None,
+        regime_evaluation: Optional[Dict[str, object]] = None,
+        structure_evaluation: Optional[Dict[str, object]] = None,
+        signal_hypothesis: Optional[str] = None,
+        timeframe: Optional[str] = None,
+    ) -> Dict[str, object]:
+        del market_bias, structure_state, regime_evaluation, structure_evaluation, signal_hypothesis
+        snapshot = self._build_resume_snapshot(df, timeframe=timeframe)
+        self._last_entry_quality_evaluation = snapshot["entry_evaluation"]
+        return snapshot["entry_evaluation"]
+
+    @staticmethod
+    def _classify_entry_quality(
+        rr_estimate: float,
+        quality_score: float,
+        late_entry: bool,
+        stretched_price: bool,
+        price_in_middle: bool,
+        candle_is_acceptable: bool,
+        structure_state: Optional[str] = None,
+        low_volatility: bool = False,
+        dead_range: bool = False,
+    ) -> str:
+        del late_entry, stretched_price, price_in_middle, candle_is_acceptable, structure_state, low_volatility, dead_range
+        if quality_score >= 7.0 and rr_estimate >= 1.3:
+            return "strong"
+        if quality_score >= 5.2:
+            return "acceptable"
+        return "bad"
+
+    @staticmethod
+    def _evaluate_setup_objective_gate(
+        setup_type: Optional[str],
+        regime_name: Optional[str],
+        structure_state: Optional[str],
+        structure_quality: float,
+        candle_quality: Optional[str],
+        momentum_state: Optional[str],
+        rsi_state: Optional[str],
+        rr_estimate: float,
+        low_volatility: bool,
+        dead_range: bool,
+        stretched_price: bool,
+        late_entry: bool,
+        price_in_middle: bool,
+        regime_available: bool,
+        aligned_trend_regime: bool,
+        strong_trend_regime: bool,
+        reversal_confirmed: bool,
+        volatility_state: Optional[str],
+        price_location: Optional[str],
+        micro_breakout_recent: bool,
+    ) -> Dict[str, object]:
+        del regime_name, candle_quality, momentum_state, rsi_state, low_volatility, dead_range
+        del stretched_price, late_entry, price_in_middle, regime_available, aligned_trend_regime
+        del strong_trend_regime, reversal_confirmed, volatility_state, price_location, micro_breakout_recent
+        objective_passed = bool(
+            setup_type in {"ema_rsi_resume_long", "ema_rsi_resume_short"}
+            and structure_quality >= 4.0
+            and structure_state in {"trend_resume", "trend_resume_wait"}
+        )
+        return {
+            "objective_passed": objective_passed,
+            "objective_quality": "strong" if objective_passed and rr_estimate >= 1.5 else "acceptable" if objective_passed else "bad",
+            "rejection_reason": None if objective_passed else "Motor EMA/RSI sem gatilho objetivo valido.",
+        }
+
+    def _apply_objective_entry_gate(self, evaluation: Optional[Dict[str, object]]) -> Dict[str, object]:
+        return dict(evaluation or {})
+
+    @staticmethod
+    def _normalize_entry_quality_label(label: Optional[str]) -> str:
+        normalized = str(label or "bad").strip().lower()
+        if normalized == "good":
+            return "strong"
+        if normalized in {"strong", "acceptable", "bad"}:
+            return normalized
+        return "bad"
+
+    @staticmethod
+    def _is_soft_entry_rejection(
+        entry_evaluation: Optional[Dict[str, object]],
+        structure_state: Optional[str] = None,
+        structure_quality: float = 0.0,
+        confirmation_state: Optional[str] = None,
+    ) -> bool:
+        return (
+            str((entry_evaluation or {}).get("entry_quality") or "bad").strip().lower() == "bad"
+            and structure_state in {"trend_resume", "trend_resume_wait"}
+            and structure_quality >= 4.0
+            and confirmation_state in {"confirmed", "waiting"}
+        )
+
+    def get_entry_quality_evaluation(
+        self,
+        df: Optional[pd.DataFrame],
+        signal_hypothesis: Optional[str] = None,
+        timeframe: Optional[str] = None,
+        regime_evaluation: Optional[Dict[str, object]] = None,
+        structure_evaluation: Optional[Dict[str, object]] = None,
+        stop_loss_pct: Optional[float] = None,
+        take_profit_pct: Optional[float] = None,
+    ) -> Dict[str, object]:
+        del signal_hypothesis, regime_evaluation, structure_evaluation
+        snapshot = self._build_resume_snapshot(
+            df,
+            timeframe=timeframe,
+            stop_loss_pct=stop_loss_pct,
+            take_profit_pct=take_profit_pct,
+        )
+        self._last_entry_quality_evaluation = snapshot["entry_evaluation"]
+        return snapshot["entry_evaluation"]
+
+    # Cenario E Estado
+
+    def build_scenario_score(
+        self,
+        context_result: Optional[Dict[str, object]],
+        structure_result: Optional[Dict[str, object]],
+        confirmation_result: Optional[Dict[str, object]],
+        entry_result: Optional[Dict[str, object]],
+        regime_result: Optional[Dict[str, object]] = None,
+    ) -> Dict[str, object]:
+        context_score = float((context_result or {}).get("context_strength", 0.0) or 0.0)
+        structure_score = float((structure_result or {}).get("structure_quality", 0.0) or 0.0)
+        confirmation_score = float((confirmation_result or {}).get("confirmation_score", 0.0) or 0.0)
+        entry_score = float((entry_result or {}).get("entry_score", 0.0) or 0.0)
+        regime_score = float((regime_result or {}).get("regime_score", 0.0) or 0.0)
+        weighted_score = (
+            context_score * 0.25
+            + structure_score * 0.25
+            + confirmation_score * 0.20
+            + entry_score * 0.20
+            + min(regime_score, 10.0) * 0.10
+        )
+        scenario_score = round(float(max(0.0, min(10.0, weighted_score))), 2)
+        evaluation = {
+            "scenario_score": scenario_score,
+            "scenario_grade": "A" if scenario_score >= 7.5 else "B" if scenario_score >= 6.3 else "C" if scenario_score >= 5.0 else "D",
+            "pullback_intensity": "not_applicable",
+            "pullback_score": 0.0,
+            "notes": list(
+                dict.fromkeys(
+                    note
+                    for note in [
+                        *((context_result or {}).get("notes") or []),
+                        *((structure_result or {}).get("notes") or []),
+                        *((confirmation_result or {}).get("notes") or []),
+                        *((entry_result or {}).get("notes") or []),
+                    ]
+                    if note
+                )
+            ),
+            "has_minimum_history": any(
+                result and result.get("has_minimum_history", True)
+                for result in (context_result, structure_result, confirmation_result, entry_result, regime_result)
+            ),
+        }
+        self._last_scenario_evaluation = evaluation
+        return evaluation
+
+    def evaluate_market_state(
+        self,
+        context_result: Optional[Dict[str, object]],
+        regime_result: Optional[Dict[str, object]],
+        structure_result: Optional[Dict[str, object]],
+        confirmation_result: Optional[Dict[str, object]],
+        entry_result: Optional[Dict[str, object]],
+        scenario_score_result: Optional[Dict[str, object]],
+        hard_block_result: Optional[Dict[str, object]] = None,
+        risk_result: Optional[Dict[str, object]] = None,
+    ) -> Dict[str, object]:
+        engine = getattr(self, "market_state_engine", None)
+        if engine is None:
+            engine = MarketStateEngine()
+            self.market_state_engine = engine
+
+        evaluation = engine.evaluate(
+            context_result=context_result,
+            regime_result=regime_result,
+            structure_result=structure_result,
+            confirmation_result=confirmation_result,
+            entry_result=entry_result,
+            scenario_score_result=scenario_score_result,
+            hard_block_result=hard_block_result,
+            risk_result=risk_result,
+        )
+        self._last_market_state_evaluation = evaluation
+        return evaluation
+
+    # Decisao E Bloqueios
+
+    def make_trade_decision(
+        self,
+        context_result: Optional[Dict[str, object]],
+        structure_result: Optional[Dict[str, object]],
+        confirmation_result: Optional[Dict[str, object]],
+        entry_result: Optional[Dict[str, object]],
+        hard_block_result: Optional[Dict[str, object]],
+        scenario_score_result: Optional[Dict[str, object]],
+        risk_result: Optional[Dict[str, object]] = None,
+        regime_result: Optional[Dict[str, object]] = None,
+    ) -> Dict[str, object]:
+        return trading_signal_engine.make_trade_decision(
+            self,
+            context_result=context_result,
+            structure_result=structure_result,
+            confirmation_result=confirmation_result,
+            entry_result=entry_result,
+            hard_block_result=hard_block_result,
+            scenario_score_result=scenario_score_result,
+            risk_result=risk_result,
+            regime_result=regime_result,
+        )
+
+    def _clear_hard_block(self):
+        trading_pipeline_engine.clear_hard_block(self)
+
+    def _set_hard_block(self, block_reason: str, block_source: str = "signal_engine") -> str:
+        return trading_pipeline_engine.set_hard_block(
+            self,
+            block_reason=block_reason,
+            block_source=block_source,
+        )
+
+    # Pipeline De Sinal
+
+    @staticmethod
+    def _normalize_setup_allowlist(allowed_execution_setups: Optional[Iterable[str]]) -> Optional[set[str]]:
+        return trading_pipeline_engine.normalize_setup_allowlist(allowed_execution_setups)
+
+    def _apply_runtime_setup_execution_policy(
+        self,
+        analytical_signal: str,
+        allowed_execution_setups: Optional[Iterable[str]] = None,
+    ) -> str:
+        return trading_pipeline_engine.apply_runtime_setup_execution_policy(
+            self,
+            analytical_signal=analytical_signal,
+            allowed_execution_setups=allowed_execution_setups,
+        )
+
+    def _finalize_signal_pipeline(self, analytical_signal: str) -> Dict[str, object]:
+        return trading_pipeline_engine.finalize_signal_pipeline(self, analytical_signal)
+
+    def evaluate_signal_pipeline(
+        self,
+        df,
+        min_confidence=60,
+        require_volume=True,
+        require_trend=False,
+        avoid_ranging=False,
+        crypto_optimized=True,
+        timeframe="5m",
+        day_trading_mode=False,
+        context_df=None,
+        context_timeframe: Optional[str] = None,
+        stop_loss_pct: Optional[float] = None,
+        take_profit_pct: Optional[float] = None,
+        allowed_execution_setups: Optional[Iterable[str]] = None,
+    ) -> Dict[str, object]:
+        return trading_pipeline_engine.evaluate_signal_pipeline(
+            self,
+            df,
+            min_confidence=min_confidence,
+            require_volume=require_volume,
+            require_trend=require_trend,
+            avoid_ranging=avoid_ranging,
+            crypto_optimized=crypto_optimized,
+            timeframe=timeframe,
+            day_trading_mode=day_trading_mode,
+            context_df=context_df,
+            context_timeframe=context_timeframe,
+            stop_loss_pct=stop_loss_pct,
+            take_profit_pct=take_profit_pct,
+            allowed_execution_setups=allowed_execution_setups,
+        )
+
+    def check_signal(self, df, min_confidence=60, require_volume=True, require_trend=False, avoid_ranging=False,
+                    crypto_optimized=True, timeframe="5m", day_trading_mode=False, context_df=None,
+                    context_timeframe: Optional[str] = None, stop_loss_pct: Optional[float] = None,
+                    take_profit_pct: Optional[float] = None):
+        return trading_signal_engine.check_signal(
+            self,
+            df,
+            min_confidence=min_confidence,
+            require_volume=require_volume,
+            require_trend=require_trend,
+            avoid_ranging=avoid_ranging,
+            crypto_optimized=crypto_optimized,
+            timeframe=timeframe,
+            day_trading_mode=day_trading_mode,
+            context_df=context_df,
+            context_timeframe=context_timeframe,
+            stop_loss_pct=stop_loss_pct,
+            take_profit_pct=take_profit_pct,
+        )
+
+    def get_signal_with_confidence(self, df):
+        return trading_signal_engine.get_signal_with_confidence(self, df)
+
+    # Auxiliares De Sinal
+
+    def _generate_advanced_signal(self, row):
+        return trading_signal_engine.generate_advanced_signal(self, row)
+
+    def _calculate_signal_confidence(self, row):
+        return trading_signal_engine.calculate_signal_confidence(self, row)
+
+    def _get_effective_min_confidence(self, min_confidence: float, timeframe: Optional[str]) -> float:
+        return trading_signal_engine.get_effective_min_confidence(
+            self,
+            min_confidence,
+            timeframe,
+        )
+
+    @staticmethod
+    def _relax_low_confidence_signal(
+        signal: str,
+        confidence: float,
+        effective_min_confidence: float,
+        timeframe: Optional[str],
+    ) -> Optional[str]:
+        return trading_signal_engine.relax_low_confidence_signal(
+            signal,
+            confidence,
+            effective_min_confidence,
+            timeframe,
+        )
+
+    def _generate_trend_signal(self, row, rsi_min: float, rsi_max: float) -> str:
+        return trading_signal_engine.generate_trend_signal(self, row, rsi_min, rsi_max)
+
+    def calculate_advanced_score(self, row, signal=None):
+        return trading_signal_engine.calculate_advanced_score(self, row, signal=signal)
